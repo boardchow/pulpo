@@ -141,7 +141,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Sessions;
     let sessions_block = block("Terminals", focused);
     if app.terms.is_empty() {
-        let hint = Line::from(" n: new shell").fg(MUTED);
+        let hint = Line::from(" s: new shell").fg(MUTED);
         frame.render_widget(Paragraph::new(hint).block(sessions_block), sessions);
     } else {
         let items: Vec<ListItem> = app
@@ -373,8 +373,7 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
                 Line::default(),
                 Line::from("  No terminals open.").bold(),
                 Line::default(),
-                key("n", "open a shell in this workspace (then type claude for an agent)"),
-                key("ctrl-s", "switch between the sidebar and the terminal"),
+                key("s", "open a shell in this workspace (then type claude for an agent)"),
             ];
             frame.render_widget(Paragraph::new(hint), inner);
         }
