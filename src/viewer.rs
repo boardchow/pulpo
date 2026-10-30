@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use ratatui::style::{Color, Modifier, Style, Stylize};
 
-use crate::theme::{ADDED_BG, DIM, FIND_BG, GREEN, MARK_BG, RED, REMOVED_BG};
+use crate::theme::{ADDED_BG, BORDER, DIM, FIND_BG, GREEN, HOVER, MARK_BG, RED, REMOVED_BG};
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Theme};
@@ -26,7 +26,8 @@ pub enum Source {
 pub struct Viewer {
     pub source: Option<Source>,
     pub title: String,
-    pub lines: Vec<Line<'static>>,
+    /// Rows of the single-column layout.
+    lines: Vec<Line<'static>>,
     pub scroll: usize,
     /// Visible rows, set when drawing.
     pub height: usize,
@@ -43,7 +44,26 @@ pub struct Viewer {
     /// jumped to.
     changes: Vec<usize>,
     change_at: Option<usize>,
+    /// Side-by-side layout of a diff (old | new), its change starts, and the
+    /// row maps between the two layouts.
+    pairs: Vec<Pair>,
+    pair_changes: Vec<usize>,
+    to_pair: Vec<usize>,
+    to_inline: Vec<usize>,
+    /// Showing the side-by-side layout; rows, scroll and marks are then pair rows.
+    split: bool,
+    /// Columns of code scrolled off to the left (line numbers stay), and the
+    /// longest line, which bounds it.
+    hscroll: usize,
+    widest: usize,
 }
+
+/// Old and new version of a side-by-side row; None leaves that side blank.
+type Pair = (Option<Line<'static>>, Option<Line<'static>>);
+
+/// A diff shows side by side when each side gets at least 85 columns, enough
+/// for most code lines (a 14" laptop stays in one column, larger screens split).
+const SPLIT_MIN_WIDTH: u16 = 2 * 85 + 1;
 
 /// Search inside the open file.
 #[derive(Default)]
@@ -82,6 +102,7 @@ impl Viewer {
             self.mark = None;
             self.find = None;
             self.change_at = None;
+            self.hscroll = 0;
             self.reload(root);
             // Land on the first change.
             self.next_change(1);
@@ -114,9 +135,53 @@ impl Viewer {
         self.lines = content.lines;
         self.gutter = content.gutter;
         self.changes = content.changes;
+        self.pairs = content.pairs;
+        self.pair_changes = content.pair_changes;
+        self.to_pair = content.to_pair;
+        self.to_inline = content.to_inline;
+        self.split &= !self.pairs.is_empty();
+        let gutter = self.gutter;
+        self.widest = self.lines.iter().map(|l| plain(l, gutter).trim_end().chars().count()).max().unwrap_or(0);
+        self.hscroll = self.hscroll.min(self.widest);
         self.change_at = self.change_at.filter(|&i| i < self.changes.len());
         self.scroll_by(0);
         self.update_find(false);
+    }
+
+    /// Pick the layout for the available width, keeping the same place in view.
+    pub fn set_width(&mut self, width: u16) {
+        let split = width >= SPLIT_MIN_WIDTH && !self.pairs.is_empty();
+        if split == self.split {
+            return;
+        }
+        let map = if split { self.to_pair.clone() } else { self.to_inline.clone() };
+        let convert = |row: usize| map.get(row).copied().unwrap_or(0);
+        self.scroll = convert(self.scroll);
+        self.goto = self.goto.map(convert);
+        self.mark = self.mark.map(convert);
+        if let Some(find) = &mut self.find {
+            find.origin = convert(find.origin);
+        }
+        self.split = split;
+        if self.find.is_some() {
+            self.update_find(false);
+            self.mark = self.find.as_ref().and_then(|f| f.matches.get(f.current)).copied();
+        }
+    }
+
+    pub fn row_count(&self) -> usize {
+        if self.split { self.pairs.len() } else { self.lines.len() }
+    }
+
+    /// The searchable text of a row, without line numbers.
+    fn row_text(&self, row: usize) -> String {
+        if self.split {
+            let side = |line: &Option<Line>| line.as_ref().map(|l| plain(l, self.gutter)).unwrap_or_default();
+            let (old, new) = &self.pairs[row];
+            format!("{}\n{}", side(old), side(new))
+        } else {
+            plain(&self.lines[row], self.gutter)
+        }
     }
 
     pub fn is_diff(&self) -> bool {
@@ -133,16 +198,17 @@ impl Viewer {
     }
 
     fn next_change(&mut self, step: isize) {
-        if self.changes.is_empty() {
+        let changes = if self.split { &self.pair_changes } else { &self.changes };
+        if changes.is_empty() {
             return;
         }
-        let count = self.changes.len() as isize;
+        let count = changes.len() as isize;
         let i = match self.change_at {
             Some(i) => (i as isize + step).rem_euclid(count) as usize,
-            None => self.changes.iter().position(|&line| line >= self.scroll).unwrap_or(0),
+            None => changes.iter().position(|&row| row >= self.scroll).unwrap_or(0),
         };
+        self.goto = Some(changes[i]);
         self.change_at = Some(i);
-        self.goto = Some(self.changes[i]);
     }
 
     pub fn start_find(&mut self) {
@@ -181,15 +247,17 @@ impl Viewer {
     }
 
     fn update_find(&mut self, jump: bool) {
-        let Some(find) = &mut self.find else { return };
-        let ignore_case = find.ignore_case();
-        let needle = fold(&find.query, ignore_case);
-        find.matches = if needle.is_empty() {
+        let Some((needle, ignore_case)) = self.find.as_ref().map(|f| (fold(&f.query, f.ignore_case()), f.ignore_case()))
+        else {
+            return;
+        };
+        let matches = if needle.is_empty() {
             Vec::new()
         } else {
-            let gutter = self.gutter;
-            (0..self.lines.len()).filter(|&i| fold(&plain(&self.lines[i], gutter), ignore_case).contains(&needle)).collect()
+            (0..self.row_count()).filter(|&row| fold(&self.row_text(row), ignore_case).contains(&needle)).collect()
         };
+        let Some(find) = &mut self.find else { return };
+        find.matches = matches;
         find.current = if jump {
             let origin = find.origin;
             find.matches.iter().position(|&line| line >= origin).unwrap_or(0)
@@ -212,21 +280,48 @@ impl Viewer {
         }
     }
 
-    /// Line `i` as drawn: the marked line gets a background, search matches
-    /// are highlighted.
-    pub fn decorated(&self, i: usize) -> Line<'static> {
-        let mut line = self.lines[i].clone();
-        if let Some(find) = self.find.as_ref().filter(|f| !f.query.is_empty()) {
-            line = highlight_matches(line, &find.query, find.ignore_case(), self.gutter);
-        }
+    /// Row `i` as drawn at `width`: search matches are highlighted, the
+    /// marked row gets a background, side-by-side halves are fitted.
+    pub fn decorated(&self, i: usize, width: u16) -> Line<'static> {
+        let find = self.find.as_ref().filter(|f| !f.query.is_empty());
+        let highlight = |line: Line<'static>| {
+            let line = match find {
+                Some(f) => highlight_matches(line, &f.query, f.ignore_case(), self.gutter),
+                None => line,
+            };
+            shift(line, self.gutter, self.hscroll)
+        };
+        let mut line = if self.split {
+            let left = (width.saturating_sub(1) / 2) as usize;
+            let (old, new) = &self.pairs[i];
+            let mut spans = fit(old.clone().map(highlight), left);
+            spans.push(Span::styled("│", Style::default().fg(BORDER)));
+            spans.extend(fit(new.clone().map(highlight), (width as usize).saturating_sub(left + 1)));
+            Line::from(spans)
+        } else {
+            highlight(self.lines[i].clone())
+        };
         if self.mark == Some(i) {
             line = line.patch_style(Style::default().bg(MARK_BG));
         }
         line
     }
 
+    /// The title, with the column when scrolled sideways.
+    pub fn heading(&self) -> String {
+        match self.hscroll {
+            0 => self.title.clone(),
+            n => format!("{}  · from column {}", self.title, n + 1),
+        }
+    }
+
+    /// Scroll sideways; 0 columns goes back to the start of the lines.
+    pub fn scroll_sideways(&mut self, columns: isize) {
+        self.hscroll = if columns == 0 { 0 } else { self.hscroll.saturating_add_signed(columns).min(self.widest) };
+    }
+
     pub fn scroll_by(&mut self, rows: isize) {
-        let max = self.lines.len().saturating_sub(self.height.max(1));
+        let max = self.row_count().saturating_sub(self.height.max(1));
         self.scroll = self.scroll.saturating_add_signed(rows).min(max);
     }
 }
@@ -241,6 +336,11 @@ struct Content {
     changes: Vec<usize>,
     /// Lines added and removed (diffs only).
     counts: Option<(usize, usize)>,
+    /// Side-by-side layout (diffs only), see Viewer.
+    pairs: Vec<Pair>,
+    pair_changes: Vec<usize>,
+    to_pair: Vec<usize>,
+    to_inline: Vec<usize>,
 }
 
 impl Content {
@@ -310,14 +410,14 @@ fn load_diff(root: &Path, path: &Path, untracked: bool) -> Content {
         return Content::note("binary file changed");
     }
 
-    // (kind, line number: new for added and unchanged lines, old for removed, text)
-    let mut rows: Vec<(Kind, usize, &str)> = Vec::new();
+    // (kind, old line number, new line number, text)
+    let mut rows: Vec<(Kind, usize, usize, &str)> = Vec::new();
     let (mut old, mut new) = (0, 0);
     let mut in_hunk = false;
     for line in text.lines() {
         if let Some(header) = line.strip_prefix("@@ ") {
             if in_hunk {
-                rows.push((Kind::Gap, 0, ""));
+                rows.push((Kind::Gap, 0, 0, ""));
             }
             in_hunk = true;
             (old, new) = hunk_starts(header);
@@ -328,16 +428,16 @@ fn load_diff(root: &Path, path: &Path, untracked: bool) -> Content {
         }
         match line.chars().next() {
             Some('+') => {
-                rows.push((Kind::Added, new, &line[1..]));
+                rows.push((Kind::Added, 0, new, &line[1..]));
                 new += 1;
             }
             Some('-') => {
-                rows.push((Kind::Removed, old, &line[1..]));
+                rows.push((Kind::Removed, old, 0, &line[1..]));
                 old += 1;
             }
             Some('\\') => {} // "\ No newline at end of file"
             _ => {
-                rows.push((Kind::Same, new, line.get(1..).unwrap_or("")));
+                rows.push((Kind::Same, old, new, line.get(1..).unwrap_or("")));
                 (old, new) = (old + 1, new + 1);
             }
         }
@@ -347,14 +447,17 @@ fn load_diff(root: &Path, path: &Path, untracked: bool) -> Content {
     let (syntaxes, theme) = assets();
     let syntax = syntax_for(path);
     let (mut new_side, mut old_side) = (HighlightLines::new(syntax, theme), HighlightLines::new(syntax, theme));
-    let width = rows.iter().map(|r| r.1).max().unwrap_or(0).to_string().len();
+    let width = rows.iter().map(|r| r.1.max(r.2)).max().unwrap_or(0).to_string().len();
     let mut content = Content { gutter: width + 3, ..Content::default() };
     let (mut added, mut removed) = (0, 0);
-    for (i, &(kind, number, text)) in rows.iter().enumerate() {
+    // Unchanged rows as the old side shows them (with old line numbers).
+    let mut old_same: Vec<Option<Line<'static>>> = vec![None; rows.len()];
+    for (i, &(kind, old_number, new_number, text)) in rows.iter().enumerate() {
         if kind == Kind::Gap {
             content.lines.push(note("⋯"));
             continue;
         }
+        let number = if kind == Kind::Removed { old_number } else { new_number };
         let with_newline = format!("{text}\n");
         let ranges = match kind {
             _ if i >= MAX_HIGHLIGHTED_LINES => None,
@@ -378,8 +481,14 @@ fn load_diff(root: &Path, path: &Path, untracked: bool) -> Content {
             Kind::Removed => removed += 1,
             _ => {}
         }
+        let code = styled(ranges, &with_newline);
+        if kind == Kind::Same {
+            let mut spans = vec![Span::styled(format!("{old_number:>width$}   "), Style::default().fg(fg))];
+            spans.extend(code.clone());
+            old_same[i] = Some(Line::from(spans));
+        }
         let mut spans = vec![Span::styled(format!("{number:>width$} {marker} "), Style::default().fg(fg))];
-        spans.extend(styled(ranges, &with_newline));
+        spans.extend(code);
         let mut line = Line::from(spans);
         if let Some(bg) = bg {
             // Pad so the background reaches across the view.
@@ -389,7 +498,97 @@ fn load_diff(root: &Path, path: &Path, untracked: bool) -> Content {
         content.lines.push(line);
     }
     content.counts = Some((added, removed));
+
+    // Side by side: the same rows, removed ones next to what replaced them.
+    let kinds: Vec<Kind> = rows.iter().map(|r| r.0).collect();
+    content.to_pair = vec![0; rows.len()];
+    let mut was_change = false;
+    for (old, new) in pair_rows(&kinds) {
+        let p = content.pairs.len();
+        for i in old.into_iter().chain(new) {
+            content.to_pair[i] = p;
+        }
+        content.to_inline.push(old.into_iter().chain(new).min().unwrap_or(0));
+        let is_change = [old, new].iter().flatten().any(|&i| matches!(kinds[i], Kind::Added | Kind::Removed));
+        if is_change && !was_change {
+            content.pair_changes.push(p);
+        }
+        was_change = is_change;
+        let left = old.map(|i| old_same[i].clone().unwrap_or_else(|| content.lines[i].clone()));
+        let right = new.map(|i| content.lines[i].clone());
+        content.pairs.push((left, right));
+    }
     content
+}
+
+/// Side-by-side rows as indices into `kinds`: unchanged rows on both sides, a
+/// run of removed rows next to the added rows that replaced it.
+fn pair_rows(kinds: &[Kind]) -> Vec<(Option<usize>, Option<usize>)> {
+    fn flush(pairs: &mut Vec<(Option<usize>, Option<usize>)>, removed: &mut Vec<usize>, added: &mut Vec<usize>) {
+        for k in 0..removed.len().max(added.len()) {
+            pairs.push((removed.get(k).copied(), added.get(k).copied()));
+        }
+        removed.clear();
+        added.clear();
+    }
+    let (mut pairs, mut removed, mut added) = (Vec::new(), Vec::new(), Vec::new());
+    for (i, &kind) in kinds.iter().enumerate() {
+        match kind {
+            Kind::Removed => removed.push(i),
+            Kind::Added => added.push(i),
+            Kind::Same | Kind::Gap => {
+                flush(&mut pairs, &mut removed, &mut added);
+                pairs.push((Some(i), Some(i)));
+            }
+        }
+    }
+    flush(&mut pairs, &mut removed, &mut added);
+    pairs
+}
+
+/// Drop `n` characters of code after the first `gutter` ones (the line
+/// numbers), for scrolling sideways.
+fn shift(line: Line<'static>, gutter: usize, n: usize) -> Line<'static> {
+    if n == 0 {
+        return line;
+    }
+    let Line { spans: old, style, alignment } = line;
+    let mut spans = Vec::new();
+    let mut start = 0;
+    for span in old {
+        let chars: Vec<char> = span.content.chars().collect();
+        let end = start + chars.len();
+        let from = gutter.clamp(start, end) - start;
+        let to = (gutter + n).clamp(start, end) - start;
+        let kept: String = chars[..from].iter().chain(&chars[to..]).collect();
+        if !kept.is_empty() {
+            spans.push(Span::styled(kept, span.style));
+        }
+        start = end;
+    }
+    Line { spans, style, alignment }
+}
+
+/// A side-by-side half: the line cut or padded to `width` columns, keeping
+/// its background; a missing line is a shaded blank.
+fn fit(line: Option<Line<'static>>, width: usize) -> Vec<Span<'static>> {
+    let Some(Line { spans, style, .. }) = line else {
+        return vec![Span::styled(" ".repeat(width), Style::default().bg(HOVER))];
+    };
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        if used >= width {
+            break;
+        }
+        let text: String = span.content.chars().take(width - used).collect();
+        used += text.chars().count();
+        out.push(Span::styled(text, style.patch(span.style)));
+    }
+    if used < width {
+        out.push(Span::styled(" ".repeat(width - used), style));
+    }
+    out
 }
 
 const ROW_WIDTH: usize = 400;
@@ -517,6 +716,25 @@ fn color(c: syntect::highlighting::Color) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairs_removed_rows_with_their_replacements() {
+        use Kind::*;
+        let pairs = pair_rows(&[Same, Removed, Removed, Added, Same, Added]);
+        assert_eq!(
+            pairs,
+            [(Some(0), Some(0)), (Some(1), Some(3)), (Some(2), None), (Some(4), Some(4)), (None, Some(5))]
+        );
+    }
+
+    #[test]
+    fn scrolls_code_sideways_keeping_line_numbers() {
+        let line = Line::from(vec![Span::from("12  "), Span::from("let x"), Span::from(" = 1;")]);
+        let text = |l: Line| l.spans.iter().map(|s| s.content.to_string()).collect::<Vec<_>>();
+        assert_eq!(text(shift(line.clone(), 4, 0)), ["12  ", "let x", " = 1;"]);
+        assert_eq!(text(shift(line.clone(), 4, 4)), ["12  ", "x", " = 1;"]);
+        assert_eq!(text(shift(line, 4, 7)), ["12  ", " 1;"]);
+    }
 
     #[test]
     fn highlights_matches_across_spans() {

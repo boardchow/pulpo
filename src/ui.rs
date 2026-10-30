@@ -242,16 +242,17 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
-    let block = block(&app.viewer.title, app.focus == Focus::Viewer).style(Style::new().bg(EDITOR_BG));
+    let block = block(&app.viewer.heading(), app.focus == Focus::Viewer).style(Style::new().bg(EDITOR_BG));
     let inner = block.inner(area);
     app.viewer.height = inner.height as usize;
+    app.viewer.set_width(inner.width);
     if let Some(line) = app.viewer.goto.take() {
         app.viewer.scroll = line.saturating_sub(inner.height as usize / 3);
     }
     app.viewer.scroll_by(0);
     app.areas.viewer = area;
-    let (scroll, end) = (app.viewer.scroll, (app.viewer.scroll + inner.height as usize).min(app.viewer.lines.len()));
-    let lines: Vec<Line> = (scroll..end).map(|i| app.viewer.decorated(i)).collect();
+    let (scroll, end) = (app.viewer.scroll, (app.viewer.scroll + inner.height as usize).min(app.viewer.row_count()));
+    let lines: Vec<Line> = (scroll..end).map(|i| app.viewer.decorated(i, inner.width)).collect();
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 

@@ -655,6 +655,8 @@ impl App {
                             }
                         }
                     }
+                    // Shift + wheel scrolls sideways, like most editors.
+                    Focus::Viewer if mouse.modifiers.contains(KeyModifiers::SHIFT) => self.viewer.scroll_sideways(rows * 2),
                     Focus::Viewer => self.viewer.scroll_by(rows),
                     _ if !area.is_empty() => {
                         self.set_focus(target);
@@ -662,6 +664,10 @@ impl App {
                     }
                     _ => {}
                 }
+            }
+            // Horizontal swipes on a trackpad.
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight if target == Focus::Viewer => {
+                self.viewer.scroll_sideways(if mouse.kind == MouseEventKind::ScrollLeft { -4 } else { 4 });
             }
             _ => {}
         }
@@ -777,7 +783,9 @@ impl App {
             KeyCode::PageUp | KeyCode::Char('u') => self.viewer.scroll_by(-half),
             KeyCode::Home | KeyCode::Char('g') => self.viewer.scroll_by(isize::MIN),
             KeyCode::End | KeyCode::Char('G') => self.viewer.scroll_by(isize::MAX),
-            KeyCode::Left | KeyCode::Char('h') => self.set_focus(self.sidebar_focus),
+            KeyCode::Left | KeyCode::Char('h') => self.viewer.scroll_sideways(-8),
+            KeyCode::Right | KeyCode::Char('l') => self.viewer.scroll_sideways(8),
+            KeyCode::Char('0') => self.viewer.scroll_sideways(0),
             KeyCode::Enter => self.viewer.expanded = !self.viewer.expanded,
             _ => {}
         }
