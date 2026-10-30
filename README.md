@@ -12,6 +12,7 @@ you quit: quitting Pulpo stops the agents too.
 | **Workspaces** | Your git repositories. Open Pulpo inside one and it remembers it. Each workspace is the normal folder you already work in. |
 | **Terminals**  | Shells running inside Pulpo, in tabs. Type `claude` in one to start an agent; each tab is named after what runs in it, and the sidebar shows which ones are busy. |
 | **Changes**    | What changed in the current workspace since the last commit. Open one to see the diff, side by side when the window is wide. |
+| **Graph**      | The history of your local branches, drawn like `git log --graph`. ⏎ on a commit lists the files it changed, under it; open one to read its diff, the same way as in Changes. |
 | **Files**      | The workspace's file tree. Open a file to read it, highlighted. Read only: agents do the editing. |
 | **Search**     | `/` finds a file by name; tab switches to searching inside files. In the viewer, `/` searches only the file you are reading. |
 
@@ -28,8 +29,9 @@ the same folder and branch. Pulpo doesn't create git worktrees.
 │  2 ○ zsh api        │├ src/auth.rs  +3 −1 ─────────────────────────┤
 │ Changes 2           ││  11   fn login(user: &User) {                │
 │  M auth.rs +3 −1    ││  12 -     check(user)?;                      │
-│ Files               ││  12 +     check(user).await?;                │
-│ ▾ src               ││  13   }                                      │
+│ Graph               ││  12 +     check(user).await?;                │
+│ ● main Fix login    ││  13   }                                      │
+│ Files               ││                                             │
 └─────────────────────┘└─────────────────────────────────────────────┘
 ```
 
@@ -53,7 +55,7 @@ line always shows the keys that work where you are.
 
 | Sidebar   | Does                                                       |
 |-----------|------------------------------------------------------------|
-| w t c f v | go to Workspaces, Terminals, Changes, Files, Viewer        |
+| w t c g f v | go to Workspaces, Terminals, Changes, Graph, Files, Viewer |
 | s         | into the current shell                                     |
 | z         | into the current shell, full height (hides the viewer)     |
 | n         | new: a workspace in Workspaces, a shell anywhere else      |
@@ -95,7 +97,11 @@ left and the new one on the right, lined up instead.
 
 ## Agent status
 
-Without setup, a terminal that printed something in the last second or so
-shows as busy. For precise states (running a tool, waiting for you, done),
-add the Claude Code hooks: run `pulpo hooks` and merge its output into
+A terminal shows a turning spinner while the program in it works on its own
+(Claude answering, a build running); typing, scrolling or resizing doesn't
+count. When it stops after a task, or rings the bell, it turns magenta: there
+is something to read, a result or a question. It stays that way, in the
+sidebar and on its tab, until you go into that terminal; then it is dim again.
+To also see which tool Claude is running and what it asks you, add the
+Claude Code hooks: run `pulpo hooks` and merge its output into
 `~/.claude/settings.json`.

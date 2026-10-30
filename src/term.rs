@@ -13,10 +13,18 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, Mo
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::agents::State;
 use crate::{Msg, theme};
 
 const SCROLLBACK: usize = 5000;
 const BUSY_FOR: Duration = Duration::from_millis(1500);
+/// Output this soon after you type, paste, click, scroll or resize is the
+/// program answering you (echo, redraw), not working on its own.
+const ECHO: Duration = Duration::from_millis(400);
+/// Output shorter than this is a blip (a redraw), not work.
+const BLIP: Duration = Duration::from_millis(300);
+/// Working at least this long counts as a task, with a result to read.
+const TASK: Duration = Duration::from_secs(1);
 
 /// Things the emulated program asks of its terminal.
 #[derive(Default)]
@@ -67,9 +75,16 @@ pub struct Term {
     /// The workspace directory the program was started in.
     pub cwd: PathBuf,
     pub title: String,
-    /// The program rang the bell while this tab was in the background.
-    pub bell: bool,
-    last_output: Instant,
+    /// It finished something or asked you something since you last looked.
+    pub unread: bool,
+    /// The agent state its hooks last reported, to notice when it changes.
+    pub reported: State,
+    /// Last output the program made on its own, and since when it has been
+    /// working without a pause.
+    last_activity: Instant,
+    working_since: Option<Instant>,
+    /// Last thing sent to the program, or resize.
+    last_input: Instant,
     parser: vt100::Parser<Events>,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -111,8 +126,11 @@ impl Term {
             running: None,
             cwd: cwd.to_path_buf(),
             title: String::new(),
-            bell: false,
-            last_output: Instant::now(),
+            unread: false,
+            reported: State::Idle,
+            last_activity: Instant::now(),
+            working_since: None,
+            last_input: Instant::now(),
             parser: vt100::Parser::new_with_callbacks(nz(rows), nz(cols), SCROLLBACK, Events::default()),
             master: pair.master,
             writer,
@@ -122,13 +140,19 @@ impl Term {
 
     pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.process(bytes);
-        self.last_output = Instant::now();
+        if self.last_input.elapsed() > ECHO {
+            self.settle();
+            if !self.active() {
+                self.working_since = Some(Instant::now());
+            }
+            self.last_activity = Instant::now();
+        }
         let events = self.parser.callbacks_mut();
         let replies = std::mem::take(&mut events.replies);
         if let Some(title) = events.title.take() {
             self.title = title;
         }
-        self.bell |= std::mem::take(&mut events.bell);
+        self.unread |= std::mem::take(&mut events.bell);
         if !replies.is_empty() {
             let _ = self.writer.write_all(&replies);
         }
@@ -138,6 +162,7 @@ impl Term {
         if self.parser.screen().size() == (nz(rows), nz(cols)) {
             return;
         }
+        self.last_input = Instant::now();
         let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         self.parser.set_size(nz(rows), nz(cols));
     }
@@ -157,6 +182,7 @@ impl Term {
     }
 
     fn send(&mut self, bytes: &[u8]) {
+        self.last_input = Instant::now();
         self.parser.screen_mut().set_scrollback(0);
         let _ = self.writer.write_all(bytes);
         let _ = self.writer.flush();
@@ -179,6 +205,7 @@ impl Term {
         let screen = self.parser.screen();
         match encode_mouse(screen.mouse_protocol_mode(), screen.mouse_protocol_encoding(), kind, col, row, modifiers) {
             Some(bytes) => {
+                self.last_input = Instant::now();
                 let _ = self.writer.write_all(&bytes);
                 let _ = self.writer.flush();
                 true
@@ -206,8 +233,24 @@ impl Term {
         };
     }
 
-    pub fn busy(&self) -> bool {
-        self.last_output.elapsed() < BUSY_FOR
+    /// The program is printing on its own: an agent at work, a build, a server.
+    pub fn working(&self) -> bool {
+        self.active() && self.working_since.is_some_and(|since| self.last_activity - since >= BLIP)
+    }
+
+    fn active(&self) -> bool {
+        self.last_activity.elapsed() < BUSY_FOR
+    }
+
+    /// When the program stops working, a run long enough to be a task leaves
+    /// something to read.
+    pub fn settle(&mut self) {
+        if !self.active()
+            && let Some(since) = self.working_since.take()
+            && self.last_activity - since >= TASK
+        {
+            self.unread = true;
+        }
     }
 
     /// Draw the screen into `area`; returns where the cursor should be shown.

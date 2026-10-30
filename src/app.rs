@@ -13,13 +13,14 @@ use crate::git;
 use crate::search::{Mode, Search};
 use crate::term::Term;
 use crate::viewer::{Source, Viewer};
-use crate::workspace::{self, Workspace};
+use crate::workspace::{self, GraphItem, Workspace};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Focus {
     Workspaces,
     Sessions,
     Changes,
+    Graph,
     Files,
     Viewer,
     Terminal,
@@ -31,6 +32,7 @@ pub struct Areas {
     pub workspaces: Rect,
     pub sessions: Rect,
     pub changes: Rect,
+    pub graph: Rect,
     pub files: Rect,
     pub terminal: Rect,
     pub viewer: Rect,
@@ -266,12 +268,8 @@ impl App {
     }
 
     pub fn on_pty(&mut self, id: usize, bytes: &[u8]) {
-        let visible = self.focus == Focus::Terminal;
-        if let Some((i, term)) = self.terms.iter_mut().enumerate().find(|(_, t)| t.id == id) {
+        if let Some(term) = self.terms.iter_mut().find(|t| t.id == id) {
             term.feed(bytes);
-            if visible && i == self.active {
-                term.bell = false;
-            }
         }
     }
 
@@ -302,13 +300,40 @@ impl App {
         }
     }
 
-    /// Hook-reported state if the agent has hooks, otherwise output activity.
+    /// Working while the program prints on its own; then, until you look at
+    /// it, waiting with something to read (what it asks, with hooks).
     pub fn term_state(&self, term: &Term) -> (State, String) {
-        match self.agents.for_tab(&term.tag) {
-            Some(agent) => (agent.state, agent.detail.clone()),
-            None if term.busy() => (State::Running, String::new()),
-            None => (State::Idle, String::new()),
+        let agent = self.agents.for_tab(&term.tag);
+        let detail = |state: State| agent.filter(|a| a.state == state).map(|a| a.detail.clone()).unwrap_or_default();
+        if term.working() {
+            (State::Running, detail(State::Running))
+        } else if term.unread {
+            (State::Waiting, detail(State::Waiting))
+        } else {
+            (State::Idle, String::new())
         }
+    }
+
+    /// Before each draw: runs that ended and agents that stopped or asked
+    /// leave something to read, unless you are in that terminal.
+    pub fn tick(&mut self) {
+        let viewing = (self.focus == Focus::Terminal).then_some(self.active);
+        for (i, term) in self.terms.iter_mut().enumerate() {
+            term.settle();
+            let reported = self.agents.for_tab(&term.tag).map_or(State::Idle, |a| a.state);
+            if reported != term.reported {
+                term.unread |= matches!(reported, State::Waiting | State::Done);
+                term.reported = reported;
+            }
+            if viewing == Some(i) {
+                term.unread = false;
+            }
+        }
+    }
+
+    /// Something is working, so its spinner needs frequent redraws.
+    pub fn animating(&self) -> bool {
+        self.terms.iter().any(|term| self.term_state(term).0 == State::Running)
     }
 
     pub fn workspace_name(&self, dir: &Path) -> Option<&str> {
@@ -318,9 +343,6 @@ impl App {
     fn select_term(&mut self, i: usize) {
         self.active = i;
         self.sessions_state.select(Some(i));
-        if let Some(term) = self.terms.get_mut(i) {
-            term.bell = false;
-        }
     }
 
     fn after_close(&mut self) {
@@ -367,6 +389,8 @@ impl App {
             KeyCode::Char('w') => self.set_focus(Focus::Workspaces),
             KeyCode::Char('t') => self.set_focus(Focus::Sessions),
             KeyCode::Char('c') => self.set_focus(Focus::Changes),
+            // In the viewer, g goes to the top instead.
+            KeyCode::Char('g') if self.focus != Focus::Viewer => self.set_focus(Focus::Graph),
             KeyCode::Char('f') if !ctrl => self.set_focus(Focus::Files),
             KeyCode::Char('v') if self.viewer.is_open() => self.set_focus(Focus::Viewer),
             KeyCode::Char('s') if ctrl || !self.terms.is_empty() => self.toggle_terminal(),
@@ -513,6 +537,7 @@ impl App {
             (Focus::Workspaces, areas.workspaces),
             (Focus::Sessions, areas.sessions),
             (Focus::Changes, areas.changes),
+            (Focus::Graph, areas.graph),
             (Focus::Files, areas.files),
         ]
         .into_iter()
@@ -565,6 +590,7 @@ impl App {
                             self.ws_mut().reselect(Some(path));
                         }
                     }
+                    Focus::Graph => self.toggle_commit(),
                     _ => {}
                 }
             }
@@ -683,13 +709,13 @@ impl App {
         if focus != Focus::Viewer {
             self.viewer.expanded = false;
         }
-        if matches!(focus, Focus::Workspaces | Focus::Sessions | Focus::Changes | Focus::Files) {
+        if matches!(focus, Focus::Workspaces | Focus::Sessions | Focus::Changes | Focus::Graph | Focus::Files) {
             self.sidebar_focus = focus;
         }
     }
 
     fn cycle_focus(&mut self, dir: isize) {
-        let mut order = vec![Focus::Workspaces, Focus::Sessions, Focus::Changes, Focus::Files];
+        let mut order = vec![Focus::Workspaces, Focus::Sessions, Focus::Changes, Focus::Graph, Focus::Files];
         if self.viewer.is_open() {
             order.push(Focus::Viewer);
         }
@@ -724,7 +750,7 @@ impl App {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => self.step(1),
             KeyCode::Up | KeyCode::Char('k') => self.step(-1),
-            KeyCode::Home | KeyCode::Char('g') => self.step(i32::MIN),
+            KeyCode::Home => self.step(i32::MIN),
             KeyCode::End | KeyCode::Char('G') => self.step(i32::MAX),
             KeyCode::Enter => self.activate(),
             KeyCode::Right | KeyCode::Char('l') => self.expand(true),
@@ -740,6 +766,10 @@ impl App {
             Focus::Workspaces => Some((&mut self.workspaces_state, count)),
             Focus::Sessions => Some((&mut self.sessions_state, self.terms.len())),
             Focus::Changes => Some((&mut w.changes_state, w.status.changes.len())),
+            Focus::Graph => {
+                let len = w.graph_len();
+                Some((&mut w.graph_state, len))
+            }
             Focus::Files => Some((&mut w.files_state, w.tree.rows.len())),
             _ => None,
         }
@@ -750,8 +780,24 @@ impl App {
         if len == 0 {
             return;
         }
-        let next = (state.selected().unwrap_or(0) as i64 + delta as i64).clamp(0, len as i64 - 1);
-        state.select(Some(next as usize));
+        let from = state.selected().unwrap_or(0);
+        let mut next = (from as i64 + delta as i64).clamp(0, len as i64 - 1) as usize;
+        if self.focus == Focus::Graph {
+            // Rows where branches fork or merge have no commit: pass them.
+            let ws = self.ws();
+            while matches!(ws.graph_item(next), Some(GraphItem::Row(row)) if row.commit.is_none()) {
+                match next.checked_add_signed(delta.signum() as isize) {
+                    Some(n) if n < len => next = n,
+                    _ => {
+                        next = from;
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some((state, _)) = self.list(self.focus) {
+            state.select(Some(next));
+        }
         self.on_select();
     }
 
@@ -784,6 +830,20 @@ impl App {
                     self.zoomed = false;
                 }
             }
+            Focus::Graph => {
+                let root = self.ws().root.clone();
+                let source = match self.ws().selected_graph_item() {
+                    Some(GraphItem::Row(row)) => row.commit.as_ref().map(|c| Source::Commit(c.hash.clone())),
+                    Some(GraphItem::File(row, change)) => {
+                        row.commit.as_ref().map(|c| Source::CommitFile { hash: c.hash.clone(), path: root.join(&change.path) })
+                    }
+                    None => None,
+                };
+                if let Some(source) = source {
+                    self.viewer.open(source, &root);
+                    self.zoomed = false;
+                }
+            }
             Focus::Files => {
                 if let Some(path) = self.ws().selected_row().filter(|r| !r.is_dir).map(|r| r.path.clone()) {
                     let root = self.ws().root.clone();
@@ -811,7 +871,8 @@ impl App {
                 let expanded = self.ws().selected_row().is_some_and(|r| r.expanded);
                 self.expand(!expanded);
             }
-            Focus::Changes | Focus::Files => {
+            Focus::Graph if matches!(self.ws().selected_graph_item(), Some(GraphItem::Row(_))) => self.toggle_commit(),
+            Focus::Changes | Focus::Graph | Focus::Files => {
                 self.on_select();
                 if self.viewer.is_open() {
                     self.read_in_viewer();
@@ -821,7 +882,30 @@ impl App {
         }
     }
 
+    /// Unfold the selected commit to list its files, or fold it.
+    fn toggle_commit(&mut self) {
+        let ws = self.ws();
+        if let Some(GraphItem::Row(row)) = ws.selected_graph_item()
+            && let Some(commit) = &row.commit
+        {
+            let (hash, open) = (commit.hash.clone(), !ws.is_commit_open(&commit.hash));
+            self.ws_mut().set_commit_open(&hash, open);
+        }
+    }
+
     fn expand(&mut self, open: bool) {
+        if self.focus == Focus::Graph {
+            let ws = self.ws();
+            let Some(hash) = ws.selected_commit().map(|c| c.hash.clone()) else { return };
+            match ws.selected_graph_item() {
+                // On a file, h goes back to its commit (and h again folds it).
+                Some(GraphItem::File(..)) if !open => self.ws_mut().set_commit_open(&hash, true),
+                Some(GraphItem::Row(_)) if ws.is_commit_open(&hash) != open => self.ws_mut().set_commit_open(&hash, open),
+                _ => return,
+            }
+            self.on_select();
+            return;
+        }
         if self.focus != Focus::Files {
             return;
         }

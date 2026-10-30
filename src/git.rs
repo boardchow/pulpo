@@ -29,6 +29,20 @@ impl Change {
     }
 }
 
+/// A line of `git log --graph`: the lines drawn, and the commit on it (rows
+/// between commits, where branches fork or merge, only carry lines).
+pub struct GraphRow {
+    pub graph: String,
+    pub commit: Option<Commit>,
+}
+
+pub struct Commit {
+    pub hash: String,
+    /// Branches and tags pointing at it, e.g. "main, origin/main".
+    pub refs: String,
+    pub subject: String,
+}
+
 /// Run git in `dir`; stdout on success, the error message otherwise.
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git").args(args).current_dir(dir).output().map_err(|e| e.to_string())?;
@@ -82,6 +96,62 @@ pub fn status(root: &Path) -> Status {
         }
     }
     status
+}
+
+/// Recent history of the local branches, drawn as `git log --graph` does.
+pub fn graph(root: &Path) -> Vec<GraphRow> {
+    git(root, &["--no-optional-locks", "log", "--graph", "--branches", "HEAD", "-n", "200", "--format=%x00%h%x00%D%x00%s"])
+        .map(|out| parse_graph(&out))
+        .unwrap_or_default()
+}
+
+fn parse_graph(out: &str) -> Vec<GraphRow> {
+    out.lines()
+        .map(|line| {
+            let mut fields = line.split('\0');
+            let graph = fields.next().unwrap_or_default().trim_end().to_string();
+            let commit = match (fields.next(), fields.next(), fields.next()) {
+                (Some(hash), Some(refs), Some(subject)) => Some(Commit {
+                    hash: hash.to_string(),
+                    refs: refs.replace("HEAD -> ", "").replace("tag: ", ""),
+                    subject: subject.to_string(),
+                }),
+                _ => None,
+            };
+            GraphRow { graph, commit }
+        })
+        .collect()
+}
+
+/// The files a commit changed (a merge: compared to its first parent).
+pub fn commit_files(root: &Path, hash: &str) -> Vec<Change> {
+    let show = |format: &str| git(root, &["--no-optional-locks", "show", "--diff-merges=first-parent", "--format=", "-z", format, hash]);
+    let counts = show("--numstat").map(|out| parse_numstat(&out)).unwrap_or_default();
+    show("--name-status")
+        .map(|out| parse_name_status(&out))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(kind, path)| {
+            let (added, removed) = counts.get(&path).copied().unwrap_or((0, 0));
+            Change { code: [kind, '.'], path, added, removed }
+        })
+        .collect()
+}
+
+/// `--name-status -z` output: (status letter, path).
+fn parse_name_status(out: &str) -> Vec<(char, String)> {
+    let mut files = Vec::new();
+    let mut fields = out.split('\0').filter(|f| !f.is_empty());
+    while let Some(status) = fields.next() {
+        let kind = status.chars().next().unwrap_or('M');
+        if matches!(kind, 'R' | 'C') {
+            fields.next(); // the old path
+        }
+        if let Some(path) = fields.next() {
+            files.push((kind, path.to_string()));
+        }
+    }
+    files
 }
 
 /// `git diff --numstat -z` output: path -> (added, removed).
@@ -152,6 +222,22 @@ mod tests {
         assert_eq!(counts["src/a.rs"], (3, 1));
         assert_eq!(counts["img.png"], (0, 0));
         assert_eq!(counts["new.rs"], (0, 0));
+    }
+
+    #[test]
+    fn parses_name_status() {
+        let files = parse_name_status("M\0src/a.rs\0R100\0old.rs\0new.rs\0A\0b.rs\0");
+        assert_eq!(files, [('M', "src/a.rs".to_string()), ('R', "new.rs".to_string()), ('A', "b.rs".to_string())]);
+    }
+
+    #[test]
+    fn parses_graph() {
+        let rows = parse_graph("*   \0abc\0HEAD -> main, tag: v1\0Merge x\n|\\  \n| * \0def\0\0Fix: a\n");
+        let got: Vec<(&str, Option<(&str, &str, &str)>)> = rows
+            .iter()
+            .map(|r| (r.graph.as_str(), r.commit.as_ref().map(|c| (c.hash.as_str(), c.refs.as_str(), c.subject.as_str()))))
+            .collect();
+        assert_eq!(got, [("*", Some(("abc", "main, v1", "Merge x"))), ("|\\", None), ("| *", Some(("def", "", "Fix: a")))]);
     }
 
     #[test]

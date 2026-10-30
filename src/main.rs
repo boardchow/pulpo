@@ -109,10 +109,13 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
     let mut last_fs_refresh = Instant::now();
     let mut last_foreground = Instant::now();
     loop {
+        app.tick();
         terminal.draw(|frame| ui::draw(frame, app))?;
 
-        // Wake at least twice a second so "busy" indicators fade out.
-        let first = match rx.recv_timeout(Duration::from_millis(500)) {
+        // Wake at least twice a second so "busy" indicators fade out, and
+        // often enough to turn the spinner while something works.
+        let wake = Duration::from_millis(if app.animating() { 100 } else { 500 });
+        let first = match rx.recv_timeout(wake) {
             Ok(msg) => Some(msg),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => return Ok(()),

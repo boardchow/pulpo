@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use ratatui::style::{Color, Modifier, Style, Stylize};
 
-use crate::theme::{ADDED_BG, BORDER, DIM, FIND_BG, GREEN, HOVER, MARK_BG, RED, REMOVED_BG};
+use crate::theme::{ADDED_BG, BORDER, DIM, FIND_BG, GREEN, HOVER, MARK_BG, RED, REMOVED_BG, YELLOW};
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Theme};
@@ -20,6 +20,10 @@ const MAX_HIGHLIGHTED_LINES: usize = 10_000;
 pub enum Source {
     File(PathBuf),
     Diff { path: PathBuf, untracked: bool },
+    /// A commit, by hash.
+    Commit(String),
+    /// What a commit changed in one file.
+    CommitFile { hash: String, path: PathBuf },
 }
 
 #[derive(Default)]
@@ -123,11 +127,13 @@ impl Viewer {
     /// us while agents work).
     pub fn reload(&mut self, root: &Path) {
         let Some(source) = &self.source else { return };
-        let (path, content) = match source {
-            Source::File(path) => (path, load_file(path)),
-            Source::Diff { path, untracked } => (path, load_diff(root, path, *untracked)),
+        let relative = |path: &Path| path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let (name, content) = match source {
+            Source::File(path) => (relative(path), load_file(path)),
+            Source::Diff { path, untracked } => (relative(path), load_diff(diff_command(root, path, *untracked), path)),
+            Source::Commit(hash) => (format!("commit {hash}"), load_commit(root, hash)),
+            Source::CommitFile { hash, path } => (format!("{hash}  {}", relative(path)), load_diff(show_command(root, hash, path), path)),
         };
-        let name = path.strip_prefix(root).unwrap_or(path).display();
         self.title = match content.counts {
             Some((added, removed)) => format!("{name}  +{added} −{removed}"),
             None => name.to_string(),
@@ -185,7 +191,7 @@ impl Viewer {
     }
 
     pub fn is_diff(&self) -> bool {
-        matches!(self.source, Some(Source::Diff { .. }))
+        matches!(self.source, Some(Source::Diff { .. } | Source::CommitFile { .. }))
     }
 
     /// n / p: the next search match if searching, otherwise the next change.
@@ -385,17 +391,32 @@ enum Kind {
     Gap,
 }
 
-/// The whole file with its changes inline: deleted lines in red where they
-/// were, added lines in green, both syntax highlighted.
-fn load_diff(root: &Path, path: &Path, untracked: bool) -> Content {
+/// A file's uncommitted changes, with enough context to get the whole file
+/// in one hunk.
+fn diff_command(root: &Path, path: &Path, untracked: bool) -> Command {
     let mut cmd = Command::new("git");
-    // Enough context to get the whole file in one hunk.
     cmd.current_dir(root).args(["--no-optional-locks", "diff", "--no-color", "--no-ext-diff", "--unified=1000000"]);
     if untracked {
         cmd.args(["--no-index", "--", "/dev/null"]).arg(path);
     } else {
         cmd.args(["HEAD", "--"]).arg(path);
     }
+    cmd
+}
+
+/// What a commit changed in a file (a merge: compared to its first parent).
+fn show_command(root: &Path, hash: &str, path: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(root)
+        .args(["--no-optional-locks", "show", "--no-color", "--no-ext-diff", "--diff-merges=first-parent", "--format=", "--unified=1000000"])
+        .args([hash, "--"])
+        .arg(path);
+    cmd
+}
+
+/// The whole file with its changes inline: deleted lines in red where they
+/// were, added lines in green, both syntax highlighted.
+fn load_diff(mut cmd: Command, path: &Path) -> Content {
     let text = match cmd.output() {
         Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
         Err(e) => return Content::note(&format!("git diff failed: {e}")),
@@ -519,6 +540,41 @@ fn load_diff(root: &Path, path: &Path, untracked: bool) -> Content {
         content.pairs.push((left, right));
     }
     content
+}
+
+/// A commit's message and the files it touched, with git's +/- bars.
+fn load_commit(root: &Path, hash: &str) -> Content {
+    let out = Command::new("git")
+        .current_dir(root)
+        .args(["--no-optional-locks", "show", "--no-color", "--diff-merges=first-parent", "--stat", hash])
+        .output();
+    let text = match out {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Err(e) => return Content::note(&format!("git show failed: {e}")),
+    };
+    let lines = text
+        .lines()
+        .map(|line| {
+            let line = clean(line);
+            if line.starts_with("commit ") {
+                return Line::from(line).fg(YELLOW);
+            }
+            // " src/a.rs | 12 +++---"
+            if let Some((file, bar)) = line.split_once(" | ")
+                && let Some((count, marks)) = bar.split_once(' ')
+                && marks.chars().all(|c| c == '+' || c == '-')
+            {
+                let plus = marks.chars().filter(|&c| c == '+').count();
+                return Line::from(vec![
+                    Span::from(format!("{file} | {count} ")),
+                    Span::from("+".repeat(plus)).fg(GREEN),
+                    Span::from("-".repeat(marks.len() - plus)).fg(RED),
+                ]);
+            }
+            Line::from(line)
+        })
+        .collect();
+    Content { lines, ..Content::default() }
 }
 
 /// Side-by-side rows as indices into `kinds`: unchanged rows on both sides, a

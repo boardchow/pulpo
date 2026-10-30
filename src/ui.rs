@@ -8,7 +8,9 @@ use ratatui::widgets::{Block, Clear, List, ListItem, Paragraph};
 
 use crate::agents::State;
 use crate::app::{App, Focus};
+use crate::git::Change;
 use crate::search::Mode;
+use crate::workspace::GraphItem;
 use crate::theme::{ACCENT, BG, BLUE, BORDER, DIM, EDITOR_BG, FG, GREEN, HOVER, MAGENTA, MUTED, RED, SELECTION, SKY, WHITE, YELLOW};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -41,7 +43,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 
     let states: Vec<State> = app.terms.iter().map(|term| app.term_state(term).0).collect();
     let count = |state: State| states.iter().filter(|&&s| s == state).count();
-    let busy: Vec<String> = [(count(State::Waiting), "waiting for you"), (count(State::Running), "working")]
+    let busy: Vec<String> = [(count(State::Waiting), "to read"), (count(State::Running), "working")]
         .into_iter()
         .filter(|&(n, _)| n > 0)
         .map(|(n, label)| format!("{n} {label}"))
@@ -66,7 +68,12 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 
     let lines = vec![
         Line::from(vec![Span::from("Pulpo").fg(FG).bold(), Span::from(concat!(" v", env!("CARGO_PKG_VERSION"))).fg(MUTED)]),
-        Line::from(activity).fg(MUTED),
+        // Colored only when a terminal waits for you or works.
+        Line::from(activity).fg(match (count(State::Waiting), count(State::Running)) {
+            (0, 0) => MUTED,
+            (0, _) => YELLOW,
+            _ => MAGENTA,
+        }),
         Line::from(path).fg(MUTED),
     ];
     frame.render_widget(Paragraph::new(lines), text);
@@ -76,18 +83,24 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let workspaces_height = app.workspaces.len().clamp(1, 8) as u16 + 2;
     let sessions_height = app.terms.len().clamp(1, 6) as u16 + 2;
     let changes_height = app.ws().status.changes.len().clamp(1, 8) as u16 + 2;
-    let [mascot, workspaces, sessions, changes, files] = Layout::vertical([
+    // Taller while you browse it, to see a commit's files.
+    let graph_max = if app.focus == Focus::Graph { 20 } else { 10 };
+    let graph_height = app.ws().graph_len().clamp(1, graph_max) as u16 + 2;
+    // Files last: it is the one panel that takes whatever height is left.
+    let [mascot, workspaces, sessions, changes, graph, files] = Layout::vertical([
         // A blank line above and below the pulpo.
         Constraint::Length(PULPO.len() as u16 + 2),
         Constraint::Length(workspaces_height),
         Constraint::Length(sessions_height),
         Constraint::Length(changes_height),
+        Constraint::Length(graph_height),
         Constraint::Min(3),
     ])
     .areas(area);
     app.areas.workspaces = workspaces;
     app.areas.sessions = sessions;
     app.areas.changes = changes;
+    app.areas.graph = graph;
     app.areas.files = files;
 
     draw_header(frame, app, mascot.inner(Margin::new(1, 1)));
@@ -137,22 +150,25 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             .enumerate()
             .map(|(i, term)| {
                 let (state, detail) = app.term_state(term);
-                let (icon, color) = match state {
-                    State::Running => ("●", YELLOW),
-                    State::Waiting => ("?", MAGENTA),
-                    State::Done => ("✓", GREEN),
-                    State::Idle => ("○", DIM),
+                let (icon, color) = state_icon(state);
+                // Only a terminal that waits for you stands out; quiet ones fade.
+                let label = Span::from(term.label().to_string());
+                let label = match state {
+                    State::Waiting => label.fg(color).bold(),
+                    State::Idle => label.fg(MUTED),
+                    _ => label,
+                };
+                let detail = match state {
+                    State::Waiting if detail.is_empty() => "to read".to_string(),
+                    _ => detail,
                 };
                 let mut spans = vec![
                     Span::from(format!(" {} ", i + 1)).fg(MUTED),
                     Span::from(format!("{icon} ")).fg(color).bold(),
-                    Span::from(term.label().to_string()),
+                    label,
                 ];
                 if let Some(ws) = app.workspace_name(&term.cwd) {
                     spans.push(Span::from(format!(" {ws}")).fg(MUTED));
-                }
-                if term.bell {
-                    spans.push(Span::from(" !").fg(MAGENTA).bold());
                 }
                 if !detail.is_empty() {
                     spans.push(Span::from(format!("  {detail}")).fg(color));
@@ -173,21 +189,9 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .changes
         .iter()
         .map(|c| {
-            let path = Path::new(&c.path);
-            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            let dir = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
             let code: String = c.code.iter().map(|&ch| if ch == '.' { ' ' } else { ch }).collect();
-            let mut spans = vec![
-                Span::from(format!(" {code} ")).fg(kind_color(c.kind())).bold(),
-                Span::from(name).fg(kind_color(c.kind())),
-            ];
-            if c.added > 0 {
-                spans.push(Span::from(format!(" +{}", c.added)).fg(GREEN));
-            }
-            if c.removed > 0 {
-                spans.push(Span::from(format!(" −{}", c.removed)).fg(RED));
-            }
-            spans.push(Span::from(format!(" {dir}")).fg(MUTED));
+            let mut spans = vec![Span::from(format!(" {code} ")).fg(kind_color(c.kind())).bold()];
+            spans.extend(change_spans(c));
             ListItem::new(Line::from(spans))
         })
         .collect();
@@ -195,6 +199,49 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = format!("Changes {}", ws.status.changes.len());
     let list = List::new(items).block(block(&title, focused)).highlight_style(highlight(focused));
     frame.render_stateful_widget(list, changes, &mut ws.changes_state);
+
+    // History of the local branches, each lane of the graph in its own color,
+    // and the files of the commit unfolded.
+    let lanes = |graph: &str, file: bool| -> Vec<Span<'static>> {
+        let mut spans = vec![Span::from(" ")];
+        spans.extend(graph.chars().enumerate().map(|(i, ch)| {
+            // Under a commit, its lane goes on down past the files.
+            let ch = match ch {
+                '*' if file => '|',
+                '*' => '●',
+                _ if file => ' ',
+                ch => ch,
+            };
+            Span::from(ch.to_string()).fg(LANES[i / 2 % LANES.len()])
+        }));
+        spans
+    };
+    let items: Vec<ListItem> = (0..ws.graph_len())
+        .filter_map(|i| ws.graph_item(i))
+        .map(|item| match item {
+            GraphItem::Row(row) => {
+                let mut spans = lanes(&row.graph, false);
+                if let Some(commit) = &row.commit {
+                    let fold = if ws.is_commit_open(&commit.hash) { " ▾" } else { "" };
+                    spans.push(Span::from(fold).fg(DIM));
+                    if !commit.refs.is_empty() {
+                        spans.push(Span::from(format!(" {}", commit.refs)).fg(SKY).bold());
+                    }
+                    spans.push(Span::from(format!(" {}", commit.subject)));
+                }
+                ListItem::new(Line::from(spans))
+            }
+            GraphItem::File(row, change) => {
+                let mut spans = lanes(&row.graph, true);
+                spans.push(Span::from(format!(" {} ", change.kind())).fg(kind_color(change.kind())).bold());
+                spans.extend(change_spans(change));
+                ListItem::new(Line::from(spans))
+            }
+        })
+        .collect();
+    let focused = app.focus == Focus::Graph;
+    let list = List::new(items).block(block("Graph", focused)).highlight_style(highlight(focused));
+    frame.render_stateful_widget(list, graph, &mut ws.graph_state);
 
     // Files, colored by git status like VS Code.
     let changed: Vec<(PathBuf, char)> = ws.status.changes.iter().map(|c| (ws.root.join(&c.path), c.kind())).collect();
@@ -224,6 +271,38 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let list = List::new(items).block(block(&title, focused)).highlight_style(highlight(focused));
     frame.render_stateful_widget(list, files, &mut ws.files_state);
 }
+
+/// A changed file: its name in the color of the change, lines added and
+/// removed, then its folder.
+fn change_spans(c: &Change) -> Vec<Span<'static>> {
+    let path = Path::new(&c.path);
+    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let dir = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
+    let mut spans = vec![Span::from(name).fg(kind_color(c.kind()))];
+    if c.added > 0 {
+        spans.push(Span::from(format!(" +{}", c.added)).fg(GREEN));
+    }
+    if c.removed > 0 {
+        spans.push(Span::from(format!(" −{}", c.removed)).fg(RED));
+    }
+    spans.push(Span::from(format!(" {dir}")).fg(MUTED));
+    spans
+}
+
+/// How a terminal shows its state: a spinner while it works, a steady
+/// colored mark until you read what it finished or asks, a dim one after.
+fn state_icon(state: State) -> (&'static str, Color) {
+    const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    match state {
+        State::Running => (SPINNER[(now.as_millis() / 100) as usize % SPINNER.len()], YELLOW),
+        State::Waiting | State::Done => ("◆", MAGENTA),
+        State::Idle => ("○", DIM),
+    }
+}
+
+/// Colors of the graph's lanes, left to right, like `git log --graph --color`.
+const LANES: [Color; 5] = [BLUE, MAGENTA, GREEN, YELLOW, SKY];
 
 /// Terminal tabs on top, the file viewer below when something is open.
 fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -258,11 +337,18 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut x = area.x + 2;
     app.tab_hits.clear();
     for (i, term) in app.terms.iter().enumerate() {
-        let label = Span::from(format!(" {} {} ", i + 1, term.label()));
+        let state = app.term_state(term).0;
+        let (icon, color) = state_icon(state);
+        let label = Span::from(format!(" {} {icon} {} ", i + 1, term.label()));
         let width = label.width() as u16;
         app.tab_hits.push((x, x + width.saturating_sub(1), i));
         x += width + 1;
-        tabs.push(if i == app.active { label.fg(WHITE).bg(SELECTION).bold() } else { label.fg(MUTED) });
+        tabs.push(match state {
+            _ if i == app.active => label.fg(WHITE).bg(SELECTION).bold(),
+            State::Idle => label.fg(MUTED),
+            State::Waiting => label.fg(color).bold(),
+            _ => label.fg(color),
+        });
         tabs.push(Span::from(" "));
     }
     if app.terms.is_empty() {
@@ -350,6 +436,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("n", "new workspace"), ("x", "remove")]),
         Focus::Sessions => ("TERMINALS", &[("j/k", "pick"), ("⏎", "enter"), ("n", "new shell"), ("x", "close")]),
         Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff"), ("n", "new shell")]),
+        Focus::Graph => ("GRAPH", &[("j/k", "move"), ("⏎", "a commit's files / read a diff"), ("h/l", "fold"), ("n", "new shell")]),
         Focus::Files => ("FILES", &[("j/k", "move"), ("⏎", "open"), ("h/l", "fold"), ("n", "new shell")]),
         Focus::Viewer => match (app.viewer.is_diff(), app.viewer.expanded) {
             (true, true) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "split view"), ("esc", "back")]),
@@ -362,7 +449,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Focus::Terminal => &[],
         // In the viewer, / finds in the file instead.
         Focus::Viewer => &[("w t c f s", "go to panel"), ("?", "all keys"), ("q", "quit")],
-        _ => &[("w t c f s", "go to panel"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
+        _ => &[("w t c g f s", "go to panel"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
     };
     let color = if app.focus == Focus::Terminal { YELLOW } else { ACCENT };
     frame.render_widget(Line::from(footer_spans(badge, color, keys, global)), area);
@@ -388,7 +475,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Go to a panel",
         &[
-            ("w t c f v", "Workspaces, Terminals, Changes, Files, Viewer"),
+            ("w t c g f v", "Workspaces, Terminals, Changes, Graph, Files, Viewer (g: not from the viewer)"),
             ("s", "into the current shell (opens one if there is none)"),
             ("z / ctrl-f", "into the current shell, full height (hides the viewer)"),
             ("tab / shift-tab", "next / previous panel"),
@@ -399,8 +486,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("n", "new: a workspace in Workspaces, a shell anywhere else"),
             ("x x", "remove a workspace from the list (files kept) / close the terminal"),
-            ("j k  ↑ ↓  ⏎", "move, open (a terminal, a file, a diff)"),
-            ("h l", "fold / unfold a folder"),
+            ("j k  ↑ ↓  ⏎", "move, open (a terminal, a file, a diff, a commit's files)"),
+            ("h l", "fold / unfold a folder, or a commit's files in Graph"),
             ("1-9  [ ]", "enter terminal N / previous, next terminal"),
             ("/  tab", "search files by name / tab: search inside files"),
             ("r", "refresh"),

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ratatui::widgets::ListState;
 
-use crate::git::{self, Status};
+use crate::git::{self, Change, GraphRow, Status};
 use crate::tree::{Row, Tree};
 
 pub struct Workspace {
@@ -17,7 +17,11 @@ pub struct Workspace {
     pub repo: PathBuf,
     pub status: Status,
     pub tree: Tree,
+    pub graph: Vec<GraphRow>,
+    /// The commit unfolded in the Graph panel, and its files.
+    pub open_commit: Option<(String, Vec<Change>)>,
     pub changes_state: ListState,
+    pub graph_state: ListState,
     pub files_state: ListState,
     ignore: Gitignore,
 }
@@ -30,7 +34,10 @@ impl Workspace {
             name: root.file_name().unwrap_or_default().to_string_lossy().into_owned(),
             status: git::status(&root),
             tree: Tree::new(root.clone()),
+            graph: git::graph(&root),
+            open_commit: None,
             changes_state: ListState::default().with_selected(Some(0)),
+            graph_state: ListState::default().with_selected(Some(0)),
             files_state: ListState::default().with_selected(Some(0)),
             ignore: ignore.build().unwrap_or_else(|_| Gitignore::empty()),
             root,
@@ -45,9 +52,17 @@ impl Workspace {
     pub fn refresh(&mut self) {
         let selected = self.selected_row().map(|r| r.path.clone());
         self.status = git::status(&self.root);
+        // New commits push the others down: stay on the same commit.
+        let hash = self.selected_commit().map(|c| c.hash.clone());
+        self.graph = git::graph(&self.root);
+        if let Some(i) = hash.and_then(|h| self.commit_index(&h)) {
+            self.graph_state.select(Some(i));
+        }
         self.tree.rebuild();
         self.reselect(selected);
         clamp(&mut self.changes_state, self.status.changes.len());
+        let len = self.graph_len();
+        clamp(&mut self.graph_state, len);
     }
 
     /// Whether a file system event concerns this workspace. Skips ignored
@@ -76,6 +91,66 @@ impl Workspace {
         let change = self.status.changes.get(self.changes_state.selected()?)?;
         Some((self.root.join(&change.path), change.kind() == '?'))
     }
+
+    /// Where the open commit is in the graph, and its files.
+    fn open_at(&self) -> Option<(usize, &[Change])> {
+        let (hash, files) = self.open_commit.as_ref()?;
+        let at = self.graph.iter().position(|r| r.commit.as_ref().is_some_and(|c| &c.hash == hash))?;
+        Some((at, files))
+    }
+
+    /// Lines in the Graph panel: the graph, with the open commit's files under it.
+    pub fn graph_len(&self) -> usize {
+        self.graph.len() + self.open_at().map_or(0, |(_, files)| files.len())
+    }
+
+    pub fn graph_item(&self, i: usize) -> Option<GraphItem<'_>> {
+        match self.open_at() {
+            Some((at, files)) if i > at && i <= at + files.len() => Some(GraphItem::File(&self.graph[at], &files[i - at - 1])),
+            Some((at, files)) if i > at => self.graph.get(i - files.len()).map(GraphItem::Row),
+            _ => self.graph.get(i).map(GraphItem::Row),
+        }
+    }
+
+    pub fn selected_graph_item(&self) -> Option<GraphItem<'_>> {
+        self.graph_item(self.graph_state.selected()?)
+    }
+
+    /// The commit selected, or the one whose file is selected.
+    pub fn selected_commit(&self) -> Option<&git::Commit> {
+        match self.selected_graph_item()? {
+            GraphItem::Row(row) | GraphItem::File(row, _) => row.commit.as_ref(),
+        }
+    }
+
+    fn commit_index(&self, hash: &str) -> Option<usize> {
+        (0..self.graph_len()).find(|&i| {
+            matches!(self.graph_item(i), Some(GraphItem::Row(row)) if row.commit.as_ref().is_some_and(|c| c.hash == hash))
+        })
+    }
+
+    /// Unfold a commit to list its files (folding the one open before), or fold it.
+    pub fn set_commit_open(&mut self, hash: &str, open: bool) {
+        if open && !self.is_commit_open(hash) {
+            self.open_commit = Some((hash.to_string(), git::commit_files(&self.root, hash)));
+        } else if !open {
+            self.open_commit = None;
+        }
+        if let Some(i) = self.commit_index(hash) {
+            self.graph_state.select(Some(i));
+        }
+    }
+
+    pub fn is_commit_open(&self, hash: &str) -> bool {
+        self.open_commit.as_ref().is_some_and(|(h, _)| h == hash)
+    }
+}
+
+/// A line of the Graph panel: a row of the graph, or a file of the open
+/// commit (with the commit's row, to continue its lanes).
+pub enum GraphItem<'a> {
+    Row(&'a GraphRow),
+    File(&'a GraphRow, &'a Change),
 }
 
 pub fn clamp(state: &mut ListState, len: usize) {
