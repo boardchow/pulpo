@@ -1,110 +1,51 @@
-# Pulpo
+<p align="center">
+  <img src="assets/pulpo.svg" width="128" alt="Pulpo">
+</p>
 
-A VS Code replacement that runs in one Ghostty window. You open it, work,
-and quit. Claude Code and your shells run inside it; files and diffs open
-inside it. Nothing opens in another program, and nothing keeps running after
-you quit: quitting Pulpo stops the agents too.
+<h1 align="center">Pulpo</h1>
 
-## What it does
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-macOS-black?style=flat-square" alt="Platform">
+  <img src="https://img.shields.io/badge/built%20with-Rust-black?style=flat-square" alt="Rust">
+</p>
 
-| Feature        | What it means                                                       |
-|----------------|---------------------------------------------------------------------|
-| **Workspaces** | Your git repositories. Open Pulpo inside one and it remembers it. Each workspace is the normal folder you already work in. |
-| **Terminals**  | Shells running inside Pulpo, in tabs. Type `claude` in one to start an agent; each tab is named after what runs in it, and the sidebar shows which ones are busy. |
-| **Changes**    | What changed in the current workspace since the last commit. Open one to see the diff, side by side when the window is wide. |
-| **Graph**      | The history of your local branches, drawn like `git log --graph`. ⏎ on a commit lists the files it changed, under it; open one to read its diff, the same way as in Changes. |
-| **Files**      | The workspace's file tree. Open a file to read it, highlighted. Read only: agents do the editing. |
-| **Search**     | `/` finds a file by name; tab switches to searching inside files. In the viewer, `/` searches only the file you are reading. |
-
-Two Claude tabs in the same workspace are fine for asking questions or
-reviewing; just don't let both edit code at the same time, since they share
-the same folder and branch. Pulpo doesn't create git worktrees.
-
-```
-┌ Workspaces ─────────┐┌ [1 claude] [2 zsh] ─────────────────────────┐
-│ ● api  main ±2      ││                                             │
-│   web  feat/x       ││   the selected agent or shell,              │
-│ Terminals           ││   running inside Pulpo                      │
-│  1 ● claude api     ││                                             │
-│  2 ○ zsh api        │├ src/auth.rs  +3 −1 ─────────────────────────┤
-│ Changes 2           ││  11   fn login(user: &User) {                │
-│  M auth.rs +3 −1    ││  12 -     check(user)?;                      │
-│ Graph               ││  12 +     check(user).await?;                │
-│ ● main Fix login    ││  13   }                                      │
-│ Files               ││                                             │
-└─────────────────────┘└─────────────────────────────────────────────┘
-```
+<p align="center"><b>Many arms. One brain.</b><br>You orchestrate. Your agents execute. One terminal to coordinate work, review diffs, and manage every shell.</p>
 
 ## Install
 
+Requires [Rust](https://rustup.rs) 1.88+. Built and tested in [Ghostty](https://ghostty.org); other modern terminals (kitty, WezTerm, iTerm2) and Linux should work but are untested.
+
 ```sh
-cargo build --release
-ln -sf "$PWD/target/release/pulpo" ~/.local/bin/pulpo
+git clone https://github.com/boardchow/pulpo.git
+cd pulpo
+make install
 ```
 
-Run `pulpo` in a full Ghostty window. Opening it inside a git repository adds it
-to the workspace list; from anywhere else it opens the same list. To add
-another workspace, press `n` in Workspaces and pick one of the git
-repositories found in your home folder.
+`make install` builds Pulpo and puts `pulpo` in `~/.cargo/bin`, which rustup already adds to your `PATH`. Run it again after pulling to update.
 
-## Keys
+## Usage
 
-Letters are mnemonic: a panel by its initial; `n` (new) and `x` (remove) act
-on the panel you are in. `?` in the app shows the full list, and the bottom
-line always shows the keys that work where you are.
+```sh
+pulpo
+```
 
-| Sidebar   | Does                                                       |
-|-----------|------------------------------------------------------------|
-| w t c g f v | go to Workspaces, Terminals, Changes, Graph, Files, Viewer |
-| s         | into the current shell                                     |
-| z         | into the current shell, full height (hides the viewer)     |
-| n         | new: a workspace in Workspaces, a shell anywhere else      |
-| x x       | remove the workspace from the list (files kept) / close the terminal |
-| /  tab    | search files by name / tab: search inside files            |
-| 1-9  [ ]  | enter terminal N / previous, next terminal                 |
-| q q       | quit                                                       |
+Run it from anywhere: it opens your workspaces. Started inside a git repository, it adds that one and opens it; `n` in Workspaces adds others. The bottom line shows the keys that work where you are, and `?` lists them all.
 
-| In a terminal  | Does                                                    |
-|----------------|---------------------------------------------------------|
-| ctrl-s         | back to the sidebar                                     |
-| ctrl-n         | new shell                                               |
-| ctrl-q         | close this shell; asks again if something is running in it |
-| ctrl-1-9       | switch terminal                                         |
-| ctrl-f         | hide / show the viewer                                  |
-| shift-⏎        | new line in a Claude prompt                             |
+| Key | Does |
+| --- | --- |
+| `w` `t` `c` `g` `f` | go to Workspaces, Terminals, Changes, Graph, Files |
+| `n` | new shell (type `claude` in it for an agent) |
+| `ctrl-s` | switch between the sidebar and the terminal |
+| `/` | find a file; `tab` searches inside files |
+| `q` | quit (stops everything running inside) |
 
-| In the viewer | Does                                                   |
-|---------------|--------------------------------------------------------|
-| ⏎ / esc       | full height or split view / back to where you were     |
-| /             | find in this file                                      |
-| h l  ← →  0   | scroll sideways / back to the start (also shift + wheel, trackpad swipe) |
-| n / p         | next / previous match, or change when showing a diff   |
+To see what Claude is running and asking, add its hooks: run `pulpo hooks` and merge the output into `~/.claude/settings.json`.
 
-Not ctrl-space: macOS uses it to switch keyboard layouts. The mouse works
-too: click to focus and select, wheel to scroll, shift-drag to select text.
-In a terminal the wheel goes to the program when it wants it (Claude, vim),
-moves through full-screen programs like `less`, and otherwise scrolls back
-through the shell's output.
+## Development
 
-## Reading changes
+```sh
+make run    # build and run from the checkout
+make test   # unit tests
+```
 
-The Changes panel lists modified files with their added and removed line
-counts. Opening one shows the whole file, syntax highlighted; `n` and `p`
-jump between changes. Deleted lines show in red where they were and added
-lines in green below them. A strip on the right edge maps the whole file,
-like VS Code's: green where lines were added, red where they were removed,
-blue where both, yellow for find matches, and a lighter band for the part
-on screen. Click or drag on it to go there. On a large screen (each side at least 85 columns
-wide, e.g. a 16" laptop or an external monitor), the old version is on the
-left and the new one on the right, lined up instead.
-
-## Agent status
-
-A terminal shows a turning spinner while the program in it works on its own
-(Claude answering, a build running); typing, scrolling or resizing doesn't
-count. When it stops after a task, or rings the bell, it turns magenta: there
-is something to read, a result or a question. It stays that way, in the
-sidebar and on its tab, until you go into that terminal; then it is dim again.
-To also see which tool Claude is running and what it asks you, add the
-Claude Code hooks: run `pulpo hooks` and merge its output into
-`~/.claude/settings.json`.
+[PLAN.md](PLAN.md) explains how it is built.
