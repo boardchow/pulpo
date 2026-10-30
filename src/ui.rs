@@ -474,9 +474,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("x", "remove")]),
         Focus::Sessions => ("TERMINALS", &[("j/k", "pick"), ("⏎", "enter"), ("x", "close")]),
-        Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff"), ("e", "edit")]),
+        Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff"), ("e", "edit"), ("y", "copy path")]),
         Focus::Graph => ("GRAPH", &[("j/k", "move"), ("⏎", "a commit's files / read a diff"), ("h/l", "fold")]),
-        Focus::Files => ("FILES", &[("j/k", "move"), ("⏎", "open"), ("h/l", "fold"), ("e", "edit"), ("x", "delete")]),
+        Focus::Files => ("FILES", &[("j/k", "move"), ("⏎", "open"), ("h/l", "fold"), ("e", "edit"), ("y", "copy path"), ("x", "delete")]),
         Focus::Viewer => match (app.viewer.is_diff(), app.viewer.expanded) {
             (true, true) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "split view"), ("esc", "back")]),
             (true, false) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "full height"), ("esc", "back")]),
@@ -525,6 +525,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("n w  n s  n f", "new workspace / shell / file or folder (end the name with /)"),
             ("e", "edit the file in micro (offers to install it), or $PULPO_EDITOR"),
+            ("y", "copy the file's path, relative to the workspace"),
             ("x x", "remove a workspace from the list (files kept) / delete a file / close the terminal"),
             ("j k  ↑ ↓  ⏎", "move, open (a terminal, a file, a diff, a commit's files)"),
             ("h l", "fold / unfold a folder, or a commit's files in Graph"),

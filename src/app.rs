@@ -526,6 +526,7 @@ impl App {
                 }
             }
             KeyCode::Char('e') => self.edit(),
+            KeyCode::Char('y') => self.copy_path(),
             KeyCode::Char(d @ '1'..='9') => self.enter_term(d as usize - '1' as usize),
             KeyCode::Char('[') => self.cycle_term(-1),
             KeyCode::Char(']') => self.cycle_term(1),
@@ -1132,27 +1133,53 @@ impl App {
 
     /// Edit the file in the viewer, or the one selected in Files or Changes.
     fn edit(&mut self) {
+        match self.selected_path() {
+            Some((path, line)) if path.is_file() => self.open_editor(path, line),
+            Some((path, _)) if path.is_dir() => self.message = Some("select a file to edit".into()),
+            Some(_) => self.message = Some("that file is not in the working tree".into()),
+            None => self.message = Some("select a file to edit".into()),
+        }
+    }
+
+    /// The file (or folder, in Files) the panel is on, and in the viewer the
+    /// line on screen.
+    fn selected_path(&self) -> Option<(PathBuf, Option<usize>)> {
         let ws = self.ws();
-        let target = match self.focus {
+        match self.focus {
             Focus::Viewer => match &self.viewer.source {
-                // At the line the viewer is on.
                 Some(Source::File(path)) => Some((path.clone(), Some(self.viewer.mark.unwrap_or(self.viewer.scroll) + 1))),
                 Some(Source::Diff { path, .. } | Source::CommitFile { path, .. }) => Some((path.clone(), None)),
                 _ => None,
             },
-            Focus::Files => ws.selected_row().filter(|r| !r.is_dir).map(|r| (r.path.clone(), None)),
+            Focus::Files => ws.selected_row().map(|r| (r.path.clone(), None)),
             Focus::Changes => ws.selected_change().map(|(path, _)| (path, None)),
             Focus::Graph => match ws.selected_graph_item() {
                 Some(GraphItem::File(_, change)) => Some((ws.root.join(&change.path), None)),
                 _ => None,
             },
             _ => None,
-        };
-        match target {
-            Some((path, line)) if path.is_file() => self.open_editor(path, line),
-            Some(_) => self.message = Some("that file is not in the working tree".into()),
-            None => self.message = Some("select a file to edit".into()),
         }
+    }
+
+    /// Copy the selected path, relative to the workspace, to the clipboard.
+    fn copy_path(&mut self) {
+        let Some((path, _)) = self.selected_path() else {
+            self.message = Some("select a file to copy its path".into());
+            return;
+        };
+        let rel = path.strip_prefix(&self.ws().root).unwrap_or(&path).display().to_string();
+        let copied = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child.stdin.take().map_or(Ok(()), |mut stdin| stdin.write_all(rel.as_bytes()))?;
+                child.wait()
+            });
+        self.message = Some(match copied {
+            Ok(status) if status.success() => format!("copied {rel}"),
+            _ => "could not copy to the clipboard".into(),
+        });
     }
 
     /// Open `path` in a terminal editor, full height. Without micro, offer
