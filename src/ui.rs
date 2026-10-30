@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, Paragraph};
@@ -23,11 +23,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_help(frame, app);
 }
 
+/// The pulpo itself, drawn with block octants (Unicode 16): 2×4 pixels per
+/// cell, so the pixels come out square and small.
+const PULPO: [&str; 3] = [
+    "𜺠𜷡𜷥██𜷤𜷞𜺣",
+    "𜴡𜷤▆██▆𜷥𜴍",
+    "𜴁𜴄🮂𜴁𜴄🮂𜴁𜴄",
+];
+
 fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let workspaces_height = app.workspaces.len().clamp(1, 8) as u16 + 2;
     let sessions_height = app.terms.len().clamp(1, 6) as u16 + 2;
     let changes_height = app.ws().status.changes.len().clamp(1, 8) as u16 + 2;
-    let [workspaces, sessions, changes, files] = Layout::vertical([
+    let [mascot, workspaces, sessions, changes, files] = Layout::vertical([
+        // A blank line above and below the pulpo.
+        Constraint::Length(PULPO.len() as u16 + 2),
         Constraint::Length(workspaces_height),
         Constraint::Length(sessions_height),
         Constraint::Length(changes_height),
@@ -38,6 +48,9 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     app.areas.sessions = sessions;
     app.areas.changes = changes;
     app.areas.files = files;
+
+    let art: Vec<Line> = PULPO.iter().map(|row| Line::from(*row)).collect();
+    frame.render_widget(Paragraph::new(art).fg(BLUE), mascot.inner(Margin::new(1, 1)));
 
     // Workspaces: each repository followed by its worktrees.
     let items: Vec<ListItem> = app
