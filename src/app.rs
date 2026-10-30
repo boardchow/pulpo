@@ -67,8 +67,6 @@ pub struct App {
     /// The terminal takes the whole right side; the viewer comes back when
     /// something is previewed.
     pub zoomed: bool,
-    /// Terminal tab labels in the tab bar: (first column, last column, tab).
-    pub tab_hits: Vec<(u16, u16, usize)>,
     /// A key that must be pressed again to confirm (quit, close, delete).
     pending: Option<char>,
     /// Workspaces with file changes not yet refreshed, and whether the
@@ -112,7 +110,6 @@ impl App {
             help: false,
             new_menu: false,
             zoomed: false,
-            tab_hits: Vec::new(),
             pending: None,
             fs_dirty: HashSet::new(),
             reload_list: false,
@@ -450,11 +447,8 @@ impl App {
             }
             KeyCode::Char('x') => self.close_terminal('x', "x", pending),
             KeyCode::Char(d @ '1'..='9') => self.enter_term(d as usize - '1' as usize),
-            KeyCode::Char(c @ ('[' | ']')) if !self.terms.is_empty() => {
-                let n = self.terms.len();
-                self.select_term(if c == ']' { (self.active + 1) % n } else { (self.active + n - 1) % n });
-                self.follow_term();
-            }
+            KeyCode::Char('[') => self.cycle_term(-1),
+            KeyCode::Char(']') => self.cycle_term(1),
             KeyCode::Esc if self.focus == Focus::Viewer && self.viewer.find.is_some() => self.viewer.clear_find(),
             KeyCode::Esc if self.focus == Focus::Viewer => self.set_focus(self.sidebar_focus),
             KeyCode::Esc => self.viewer.close(),
@@ -480,6 +474,8 @@ impl App {
             }
             KeyCode::Char('q') if ctrl => self.close_terminal('Q', "ctrl-q", pending),
             KeyCode::Char(d @ '1'..='9') if ctrl => self.enter_term(d as usize - '1' as usize),
+            KeyCode::Char('[') if ctrl => self.cycle_term(-1),
+            KeyCode::Char(']') if ctrl => self.cycle_term(1),
             _ => {
                 if let Some(term) = self.terms.get_mut(self.active) {
                     term.key(key);
@@ -517,7 +513,7 @@ impl App {
         }
     }
 
-    /// Tab names follow what runs in each terminal.
+    /// Terminal names follow what runs in each one.
     pub fn refresh_foreground(&mut self) {
         for term in &mut self.terms {
             term.refresh_foreground();
@@ -529,6 +525,15 @@ impl App {
             self.select_term(i);
             self.follow_term();
             self.set_focus(Focus::Terminal);
+        }
+    }
+
+    /// The next or previous terminal, wrapping around.
+    fn cycle_term(&mut self, dir: isize) {
+        let n = self.terms.len() as isize;
+        if n > 0 {
+            self.select_term((self.active as isize + dir).rem_euclid(n) as usize);
+            self.follow_term();
         }
     }
 
@@ -562,7 +567,7 @@ impl App {
         .find(|(_, area)| area.contains(pos))
         .unwrap_or((self.focus, Rect::default()));
 
-        // Inside the terminal's text (not its border or tab bar), a program
+        // Inside the terminal's text (not its border or title), a program
         // that asked for the mouse gets the event itself.
         let inner = Block::bordered().inner(area);
         if target == Focus::Terminal
@@ -582,14 +587,6 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 if area.is_empty() || (target == Focus::Terminal && self.terms.is_empty()) {
                     return;
-                }
-                // A click on a tab label switches terminal.
-                if target == Focus::Terminal
-                    && pos.y == area.y
-                    && let Some(&(_, _, i)) = self.tab_hits.iter().find(|(a, b, _)| (*a..=*b).contains(&pos.x))
-                {
-                    self.select_term(i);
-                    self.follow_term();
                 }
                 self.set_focus(target);
                 if self.areas.ruler.contains(pos) {
@@ -829,7 +826,7 @@ impl App {
         self.on_select();
     }
 
-    /// Follow the selection: switch workspace or tab, show the diff, or
+    /// Follow the selection: switch workspace or terminal, show the diff, or
     /// preview the file.
     fn on_select(&mut self) {
         match self.focus {

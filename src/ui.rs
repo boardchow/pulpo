@@ -158,10 +158,6 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                     State::Idle => label.fg(MUTED),
                     _ => label,
                 };
-                let detail = match state {
-                    State::Waiting if detail.is_empty() => "to read".to_string(),
-                    _ => detail,
-                };
                 let mut spans = vec![
                     Span::from(format!(" {} ", i + 1)).fg(MUTED),
                     Span::from(format!("{icon} ")).fg(color).bold(),
@@ -303,7 +299,7 @@ fn state_icon(state: State) -> (&'static str, Color) {
 /// Colors of the graph's lanes, left to right, like `git log --graph --color`.
 const LANES: [Color; 5] = [BLUE, MAGENTA, GREEN, YELLOW, SKY];
 
-/// Terminal tabs on top, the file viewer below when something is open.
+/// The current terminal on top, the file viewer below when something is open.
 fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.viewer.expanded && app.viewer.is_open() {
         // Terminals keep running, unseen and at their current size.
@@ -333,28 +329,24 @@ fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Terminal;
-    let mut tabs = vec![Span::from(" ")];
-    let mut x = area.x + 2;
-    app.tab_hits.clear();
-    for (i, term) in app.terms.iter().enumerate() {
-        let state = app.term_state(term).0;
-        let (icon, color) = state_icon(state);
-        let label = Span::from(format!(" {} {icon} {} ", i + 1, term.label()));
-        let width = label.width() as u16;
-        app.tab_hits.push((x, x + width.saturating_sub(1), i));
-        x += width + 1;
-        tabs.push(match state {
-            _ if i == app.active => label.fg(WHITE).bg(SELECTION).bold(),
-            State::Idle => label.fg(MUTED),
-            State::Waiting => label.fg(color).bold(),
-            _ => label.fg(color),
-        });
-        tabs.push(Span::from(" "));
-    }
-    if app.terms.is_empty() {
-        tabs.push(Span::from("Terminal "));
-    }
-    let block = Block::bordered().title(Line::from(tabs)).border_style(border(focused)).style(Style::new().bg(BG));
+    // The terminal on screen; the others are in the sidebar list.
+    let title = match app.terms.get(app.active) {
+        Some(term) => {
+            let (icon, color) = state_icon(app.term_state(term).0);
+            let mut spans = vec![
+                Span::from(format!(" {} ", app.active + 1)).fg(MUTED),
+                Span::from(format!("{icon} ")).fg(color).bold(),
+                Span::from(term.label().to_string()).fg(FG).bold(),
+            ];
+            if let Some(ws) = app.workspace_name(&term.cwd) {
+                spans.push(Span::from(format!(" · {ws}")).fg(MUTED));
+            }
+            spans.push(Span::from(" "));
+            Line::from(spans)
+        }
+        None => Line::from(" Terminal ").fg(MUTED),
+    };
+    let block = Block::bordered().title(title).border_style(border(focused)).style(Style::new().bg(BG));
     let inner = block.inner(area);
     app.areas.terminal = area;
     frame.render_widget(block, area);
@@ -442,9 +434,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             "TERMINAL",
             // ctrl-f only matters when there is a viewer to hide or show.
             match (app.viewer.is_open(), app.zoomed) {
-                (true, true) => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-1-9", "switch"), ("ctrl-f", "show viewer"), ("shift-⏎", "new line")],
-                (true, false) => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-1-9", "switch"), ("ctrl-f", "hide viewer"), ("shift-⏎", "new line")],
-                _ => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-1-9", "switch"), ("shift-⏎", "new line")],
+                (true, true) => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-[ ]", "switch"), ("ctrl-f", "show viewer"), ("shift-⏎", "new line")],
+                (true, false) => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-[ ]", "switch"), ("ctrl-f", "hide viewer"), ("shift-⏎", "new line")],
+                _ => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-[ ]", "switch"), ("shift-⏎", "new line")],
             },
         ),
         Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("x", "remove")]),
@@ -514,10 +506,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("ctrl-s", "back to the sidebar (ctrl-s or s to come back)"),
             ("ctrl-n", "new shell in this terminal's workspace"),
             ("ctrl-q", "close this shell (asks again if something is running in it)"),
-            ("ctrl-1-9", "switch to terminal 1-9"),
+            ("ctrl-[ ]  ctrl-1-9", "previous, next terminal / terminal 1-9"),
             ("ctrl-f", "hide / show the viewer under the terminal"),
             ("shift-⏎", "new line in a Claude prompt"),
-            ("claude", "type it in a shell to start an agent; the tab is named after it"),
+            ("claude", "type it in a shell to start an agent; the terminal is named after it"),
         ],
     ),
     (
@@ -527,7 +519,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("/  n p", "find in this file / next, previous match (or change, in a diff)"),
             ("d u  g G", "page down, up / top, bottom"),
             ("h l  ← →  0", "scroll sideways / back to the start (also shift + wheel, trackpad)"),
-            ("click", "focus a panel, pick an item, switch tab; shift-drag selects text"),
+            ("click", "focus a panel, pick an item; shift-drag selects text"),
         ],
     ),
 ];
