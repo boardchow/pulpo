@@ -376,7 +376,7 @@ impl App {
             KeyCode::BackTab => self.cycle_focus(-1),
 
             KeyCode::Char('/') if self.focus == Focus::Viewer => self.viewer.start_find(),
-            // n / p: next, previous search match or change. ctrl-p still goes to a file.
+            // n / p: next, previous search match or change.
             KeyCode::Char('n') if self.focus == Focus::Viewer && (self.viewer.find.is_some() || self.viewer.is_diff()) => {
                 self.viewer.next(1)
             }
@@ -388,8 +388,8 @@ impl App {
             // n and x act on the panel: workspaces there, terminals elsewhere.
             KeyCode::Char('n') if self.focus == Focus::Workspaces => self.open_repo_picker(),
             KeyCode::Char('n') => self.spawn(&shell(), true),
-            KeyCode::Char('p') => self.open_search(Mode::Files),
-            KeyCode::Char('/') => self.open_search(Mode::Text),
+            // File names first; tab in the popup searches inside files.
+            KeyCode::Char('/') => self.open_search(Mode::Files),
             // ctrl-f, or z for zoom: the current terminal, full height.
             KeyCode::Char('f' | 'z') => self.zoom_terminal(),
             KeyCode::Char('?') => self.help = true,

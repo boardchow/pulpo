@@ -13,7 +13,7 @@ you quit: quitting pulpo stops the agents too.
 | **Terminals**  | Shells running inside pulpo, in tabs. Type `claude` in one to start an agent; each tab is named after what runs in it, and the sidebar shows which ones are busy. |
 | **Changes**    | What changed in the current workspace since the last commit. Open one to see the diff, side by side when the window is wide. |
 | **Files**      | The workspace's file tree. Open a file to read it, highlighted. Read only: agents do the editing. |
-| **Search**     | `p` finds a file by name, `/` searches text across the workspace (or inside the file you are reading). |
+| **Search**     | `/` finds a file by name; tab switches to searching inside files. In the viewer, `/` searches only the file you are reading. |
 
 Two Claude tabs in the same workspace are fine for asking questions or
 reviewing; just don't let both edit code at the same time, since they share
@@ -58,7 +58,7 @@ line always shows the keys that work where you are.
 | z         | into the current shell, full height (hides the viewer)     |
 | n         | new: a workspace in Workspaces, a shell anywhere else      |
 | x x       | remove the workspace from the list (files kept) / close the terminal |
-| p  /      | go to file / search in files                               |
+| /  tab    | search files by name / tab: search inside files            |
 | 1-9  [ ]  | enter terminal N / previous, next terminal                 |
 | q q       | quit                                                       |
 

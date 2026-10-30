@@ -270,17 +270,16 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             0 => "no match".to_string(),
             n => format!("{}/{n}", find.current + 1),
         };
-        let mut spans = vec![
-            Span::styled(" FIND ", Style::default().fg(BG).bg(YELLOW).bold()),
-            Span::from(format!(" {}", find.query)),
-        ];
-        if find.typing {
-            spans.push(Span::from("█").fg(YELLOW));
-        }
-        spans.push(Span::from(format!("  {count}   ")).fg(MUTED));
         let keys: &[(&str, &str)] =
             if find.typing { &[("⏎", "done"), ("esc", "cancel")] } else { &[("n/p", "next/previous"), ("/", "new search"), ("esc", "clear")] };
-        spans.extend(footer_spans("", YELLOW, keys, &[]).into_iter().skip(2));
+        // The same input line as the search popup, after the badge.
+        let mut input = vec![Span::from("› ").fg(BLUE).bold(), Span::from(find.query.clone())];
+        if find.typing {
+            input.push(Span::from("█").fg(BLUE));
+        }
+        input.push(Span::from(format!("   {count}   ")).fg(MUTED));
+        let mut spans = footer_spans("FIND IN FILE", ACCENT, keys, &[]);
+        spans.splice(2..2, input);
         frame.render_widget(Line::from(spans), area);
         return;
     }
@@ -309,8 +308,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let global: &[(&str, &str)] = match app.focus {
         Focus::Terminal => &[],
         // In the viewer, / finds in the file instead.
-        Focus::Viewer => &[("w t c f s", "go to panel"), ("p", "file"), ("?", "all keys"), ("q", "quit")],
-        _ => &[("w t c f s", "go to panel"), ("p", "file"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
+        Focus::Viewer => &[("w t c f s", "go to panel"), ("?", "all keys"), ("q", "quit")],
+        _ => &[("w t c f s", "go to panel"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
     };
     let color = if app.focus == Focus::Terminal { YELLOW } else { ACCENT };
     frame.render_widget(Line::from(footer_spans(badge, color, keys, global)), area);
@@ -350,7 +349,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("j k  ↑ ↓  ⏎", "move, open (a terminal, a file, a diff)"),
             ("h l", "fold / unfold a folder"),
             ("1-9  [ ]", "enter terminal N / previous, next terminal"),
-            ("p   /", "go to file / search in files"),
+            ("/  tab", "search files by name / tab: search inside files"),
             ("r", "refresh"),
             ("q q", "quit pulpo (closes all terminals)"),
         ],
@@ -411,8 +410,8 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Clear, popup);
     frame.render_widget(Block::new().style(Style::new().fg(FG).bg(BG)), popup);
     let (title, hint) = match search.mode {
-        Mode::Files => (" Go to file ", " tab: search text instead · ↑↓ move · ⏎ open · esc close "),
-        Mode::Text => (" Search in files ", " tab: find files instead · ↑↓ move · ⏎ open · esc close "),
+        Mode::Files => (" Search files ", " tab: search inside files · ↑↓ move · ⏎ open · esc close "),
+        Mode::Text => (" Search inside files ", " tab: search file names · ↑↓ move · ⏎ open · esc close "),
         Mode::Repos => (" Add a workspace ", " git repositories in your home folder · type to filter, or a path (~/…) · ⏎ add · esc close "),
     };
     let block = block(title.trim(), true).title_bottom(Line::from(hint).fg(DIM));

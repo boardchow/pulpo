@@ -17,7 +17,7 @@ pulpo (one binary)
 ├── main.rs     terminal setup + event loop (one mpsc channel for everything)
 ├── app.rs      state: focus, selection, keys, mouse, terminal tabs
 ├── workspace.rs  repo registry + per-repository state (status, tree)
-├── search.rs   go to file (nucleo fuzzy matcher), search in files, workspace picker
+├── search.rs   search files (nucleo fuzzy matcher), search inside files, workspace picker
 ├── ui.rs       ratatui rendering
 ├── term.rs     embedded terminals: PTY (portable-pty) + emulator (vt100)
 ├── viewer.rs   read-only file view (syntect), inline diffs, find in file
