@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use ratatui::style::{Color, Modifier, Style, Stylize};
 
-use crate::theme::{ADDED_BG, BORDER, DIM, FIND_BG, GREEN, HOVER, MARK_BG, RED, REMOVED_BG, YELLOW};
+use crate::theme::{ADDED_BG, BLUE, BORDER, DIM, FIND_BG, GREEN, HOVER, MARK_BG, RED, REMOVED_BG, YELLOW};
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Theme};
@@ -54,6 +54,9 @@ pub struct Viewer {
     pair_changes: Vec<usize>,
     to_pair: Vec<usize>,
     to_inline: Vec<usize>,
+    /// What each row of the single-column layout of a diff is, for the
+    /// overview ruler.
+    kinds: Vec<Kind>,
     /// Showing the side-by-side layout; rows, scroll and marks are then pair rows.
     split: bool,
     /// Columns of code scrolled off to the left (line numbers stay), and the
@@ -145,6 +148,7 @@ impl Viewer {
         self.pair_changes = content.pair_changes;
         self.to_pair = content.to_pair;
         self.to_inline = content.to_inline;
+        self.kinds = content.kinds;
         self.split &= !self.pairs.is_empty();
         let gutter = self.gutter;
         self.widest = self.lines.iter().map(|l| plain(l, gutter).trim_end().chars().count()).max().unwrap_or(0);
@@ -326,6 +330,62 @@ impl Viewer {
         self.hscroll = if columns == 0 { 0 } else { self.hscroll.saturating_add_signed(columns).min(self.widest) };
     }
 
+    /// The rows one of `height` cells of the overview ruler stands for.
+    fn ruler_rows(&self, cell: usize, height: usize) -> (usize, usize) {
+        let rows = self.row_count();
+        let start = cell * rows / height.max(1);
+        (start, ((cell + 1) * rows / height.max(1)).max(start + 1).min(rows))
+    }
+
+    /// The overview ruler, like VS Code's: for each of `height` cells, the
+    /// color of what its rows hold (a find match, or added, removed or both)
+    /// and whether they are in view.
+    pub fn ruler(&self, height: usize) -> Vec<(Option<Color>, bool)> {
+        let matches = self.find.as_ref().filter(|f| !f.query.is_empty()).map_or(&[][..], |f| &f.matches[..]);
+        // Side by side, a range of pairs covers a range of single-column rows.
+        let inline = |row: usize| match self.split {
+            true => self.to_inline.get(row).copied().unwrap_or(self.kinds.len()),
+            false => row,
+        };
+        (0..height)
+            .map(|cell| {
+                let (start, end) = self.ruler_rows(cell, height);
+                let in_view = start < self.scroll + self.height && end > self.scroll;
+                if start >= end {
+                    return (None, in_view);
+                }
+                let first_match = matches.partition_point(|&m| m < start);
+                if matches.get(first_match).is_some_and(|&m| m < end) {
+                    return (Some(YELLOW), in_view);
+                }
+                let kinds = self.kinds.get(inline(start)..inline(end).min(self.kinds.len())).unwrap_or_default();
+                let color = match (kinds.contains(&Kind::Added), kinds.contains(&Kind::Removed)) {
+                    (true, true) => Some(BLUE),
+                    (true, false) => Some(GREEN),
+                    (false, true) => Some(RED),
+                    _ => None,
+                };
+                (color, in_view)
+            })
+            .collect()
+    }
+
+    /// A click on the overview ruler: bring that part of the file into view,
+    /// at its first change if it has one (n / p go on from there).
+    pub fn jump_to_ruler(&mut self, cell: usize, height: usize) {
+        let (start, end) = self.ruler_rows(cell, height);
+        let changes = if self.split { &self.pair_changes } else { &self.changes };
+        let first = changes.partition_point(|&row| row < start);
+        let row = match changes.get(first) {
+            Some(&row) if row < end => {
+                self.change_at = Some(first);
+                row
+            }
+            _ => start,
+        };
+        self.goto = Some(row);
+    }
+
     pub fn scroll_by(&mut self, rows: isize) {
         let max = self.row_count().saturating_sub(self.height.max(1));
         self.scroll = self.scroll.saturating_add_signed(rows).min(max);
@@ -347,6 +407,8 @@ struct Content {
     pair_changes: Vec<usize>,
     to_pair: Vec<usize>,
     to_inline: Vec<usize>,
+    /// What each line is (diffs only).
+    kinds: Vec<Kind>,
 }
 
 impl Content {
@@ -382,8 +444,9 @@ fn load_file(path: &Path) -> Content {
     Content { lines, gutter: width + 2, ..Content::default() }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Default)]
 enum Kind {
+    #[default]
     Same,
     Added,
     Removed,
@@ -539,6 +602,7 @@ fn load_diff(mut cmd: Command, path: &Path) -> Content {
         let right = new.map(|i| content.lines[i].clone());
         content.pairs.push((left, right));
     }
+    content.kinds = kinds;
     content
 }
 
@@ -772,6 +836,19 @@ fn color(c: syntect::highlighting::Color) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rules_changes_and_jumps_to_them() {
+        let mut kinds = vec![Kind::Same; 10];
+        (kinds[2], kinds[7]) = (Kind::Added, Kind::Removed);
+        let mut viewer =
+            Viewer { lines: vec![Line::default(); 10], kinds, changes: vec![2, 7], height: 3, ..Viewer::default() };
+        // Five cells of two rows each; the first three rows are in view.
+        let ruler = viewer.ruler(5);
+        assert_eq!(ruler, [(None, true), (Some(GREEN), true), (None, false), (Some(RED), false), (None, false)]);
+        viewer.jump_to_ruler(3, 5);
+        assert_eq!((viewer.goto, viewer.change_at), (Some(7), Some(1)));
+    }
 
     #[test]
     fn pairs_removed_rows_with_their_replacements() {

@@ -321,6 +321,7 @@ fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
 
     app.areas.terminal = Rect::default();
     app.areas.viewer = Rect::default();
+    app.areas.ruler = Rect::default();
     match (app.terms.is_empty(), viewer_shown) {
         (true, true) => draw_viewer(frame, app, area),
         (_, true) => {
@@ -384,16 +385,27 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
 fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = block(&app.viewer.heading(), app.focus == Focus::Viewer).style(Style::new().bg(EDITOR_BG));
     let inner = block.inner(area);
+    // The overview ruler takes the last column.
+    let [text, ruler] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
     app.viewer.height = inner.height as usize;
-    app.viewer.set_width(inner.width);
+    app.viewer.set_width(text.width);
     if let Some(line) = app.viewer.goto.take() {
         app.viewer.scroll = line.saturating_sub(inner.height as usize / 3);
     }
     app.viewer.scroll_by(0);
     app.areas.viewer = area;
     let (scroll, end) = (app.viewer.scroll, (app.viewer.scroll + inner.height as usize).min(app.viewer.row_count()));
-    let lines: Vec<Line> = (scroll..end).map(|i| app.viewer.decorated(i, inner.width)).collect();
+    let lines: Vec<Line> = (scroll..end).map(|i| app.viewer.decorated(i, text.width)).collect();
     frame.render_widget(Paragraph::new(lines).block(block), area);
+
+    // Changes and matches as colored marks, over a lighter band for the part in view.
+    app.areas.ruler = ruler;
+    for (i, (color, in_view)) in app.viewer.ruler(ruler.height as usize).into_iter().enumerate() {
+        if let Some(cell) = frame.buffer_mut().cell_mut((ruler.x, ruler.y + i as u16)) {
+            cell.set_symbol(if color.is_some() { "▐" } else { " " });
+            cell.set_style(Style::new().fg(color.unwrap_or(EDITOR_BG)).bg(if in_view { BORDER } else { EDITOR_BG }));
+        }
+    }
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {

@@ -91,7 +91,10 @@ through the shell's output.
 The Changes panel lists modified files with their added and removed line
 counts. Opening one shows the whole file, syntax highlighted; `n` and `p`
 jump between changes. Deleted lines show in red where they were and added
-lines in green below them. On a large screen (each side at least 85 columns
+lines in green below them. A strip on the right edge maps the whole file,
+like VS Code's: green where lines were added, red where they were removed,
+blue where both, yellow for find matches, and a lighter band for the part
+on screen. Click or drag on it to go there. On a large screen (each side at least 85 columns
 wide, e.g. a 16" laptop or an external monitor), the old version is on the
 left and the new one on the right, lined up instead.
 

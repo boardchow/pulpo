@@ -36,6 +36,8 @@ pub struct Areas {
     pub files: Rect,
     pub terminal: Rect,
     pub viewer: Rect,
+    /// The viewer's overview ruler.
+    pub ruler: Rect,
 }
 
 pub struct App {
@@ -574,6 +576,10 @@ impl App {
                     self.follow_term();
                 }
                 self.set_focus(target);
+                if self.areas.ruler.contains(pos) {
+                    self.jump_to_ruler(pos);
+                    return;
+                }
                 let Some((state, len)) = self.list(target) else { return };
                 let row = (pos.y.saturating_sub(area.y + 1)) as usize + state.offset();
                 if pos.y == area.y || row >= len {
@@ -621,12 +627,18 @@ impl App {
                     _ => {}
                 }
             }
+            MouseEventKind::Drag(MouseButton::Left) if self.areas.ruler.contains(pos) => self.jump_to_ruler(pos),
             // Horizontal swipes on a trackpad.
             MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight if target == Focus::Viewer => {
                 self.viewer.scroll_sideways(if mouse.kind == MouseEventKind::ScrollLeft { -4 } else { 4 });
             }
             _ => {}
         }
+    }
+
+    fn jump_to_ruler(&mut self, pos: Position) {
+        let ruler = self.areas.ruler;
+        self.viewer.jump_to_ruler((pos.y - ruler.y) as usize, ruler.height as usize);
     }
 
     // Search
