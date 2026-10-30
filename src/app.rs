@@ -26,6 +26,12 @@ pub enum Focus {
     Terminal,
 }
 
+/// A file or folder about to be made in `dir`; a name ending in / is a folder.
+pub struct Create {
+    pub dir: PathBuf,
+    pub name: String,
+}
+
 /// Where each panel was drawn, for mouse hit-testing.
 #[derive(Default, Clone, Copy)]
 pub struct Areas {
@@ -62,8 +68,21 @@ pub struct App {
     pub search: Option<Search>,
     /// The full list of shortcuts is shown.
     pub help: bool,
-    /// n was pressed: w or s next says what to make.
+    /// n was pressed: w, s or f next says what to make.
     pub new_menu: bool,
+    /// Typing the name of a new file or folder.
+    pub creating: Option<Create>,
+    /// The terminal editing a file: its id, the file, and the panel to go
+    /// back to when the editor quits.
+    editing: Option<(usize, PathBuf, Focus)>,
+    /// The file to edit once micro is installed (or declined), and the
+    /// terminal installing it.
+    editor_offer: Option<(PathBuf, Option<usize>)>,
+    installing: Option<(usize, PathBuf, Option<usize>)>,
+    /// Declined micro for this session: use the editor that is there.
+    skip_micro: bool,
+    /// What the pending x deletes, so the selection can't change under it.
+    deleting: Option<PathBuf>,
     /// The terminal takes the whole right side; the viewer comes back when
     /// something is previewed.
     pub zoomed: bool,
@@ -109,6 +128,12 @@ impl App {
             search: None,
             help: false,
             new_menu: false,
+            creating: None,
+            editing: None,
+            editor_offer: None,
+            installing: None,
+            skip_micro: false,
+            deleting: None,
             zoomed: false,
             pending: None,
             fs_dirty: HashSet::new(),
@@ -255,8 +280,13 @@ impl App {
     // Terminals
 
     pub fn spawn(&mut self, program: &str, focus: bool) {
+        self.run(program, &[], focus);
+    }
+
+    /// Start `program` in a new terminal; its id, if it started.
+    fn run(&mut self, program: &str, args: &[String], focus: bool) -> Option<usize> {
         let cwd = self.ws().root.clone();
-        match Term::spawn(self.next_id, program, &cwd, self.term_size, self.tx.clone()) {
+        match Term::spawn(self.next_id, program, args, &cwd, self.term_size, self.tx.clone()) {
             Ok(term) => {
                 self.next_id += 1;
                 self.terms.push(term);
@@ -264,8 +294,12 @@ impl App {
                 if focus {
                     self.set_focus(Focus::Terminal);
                 }
+                Some(self.next_id - 1)
             }
-            Err(e) => self.message = Some(format!("could not start {program}: {e}")),
+            Err(e) => {
+                self.message = Some(format!("could not start {program}: {e}"));
+                None
+            }
         }
     }
 
@@ -280,10 +314,34 @@ impl App {
             self.terms.remove(i);
             self.after_close();
         }
+        // The editor quit: show the file where you were.
+        if self.editing.as_ref().is_some_and(|(e, ..)| *e == id)
+            && let Some((_, path, back)) = self.editing.take()
+        {
+            let root = self.ws().root.clone();
+            if path.is_file() {
+                self.viewer.open(Source::File(path), &root);
+                self.viewer.reload(&root);
+            }
+            self.zoomed = false;
+            self.set_focus(back);
+        }
+        // Homebrew is done: open the file that was waiting for micro.
+        if self.installing.as_ref().is_some_and(|(i, ..)| *i == id)
+            && let Some((_, path, line)) = self.installing.take()
+        {
+            if on_path("micro") {
+                self.open_editor(path, line);
+            } else {
+                self.message = Some("micro was not installed".into());
+            }
+        }
     }
 
     pub fn on_paste(&mut self, text: &str) {
-        if let Some(search) = &mut self.search {
+        if let Some(create) = &mut self.creating {
+            create.name.push_str(text.trim());
+        } else if let Some(search) = &mut self.search {
             search.query.push_str(text.trim());
             search.update(&self.tx);
         } else if self.viewer.find.as_ref().is_some_and(|f| f.typing) {
@@ -368,6 +426,19 @@ impl App {
             match key.code {
                 KeyCode::Char('w') => self.open_repo_picker(),
                 KeyCode::Char('s') => self.spawn(&shell(), true),
+                KeyCode::Char('f') => self.start_create(),
+                _ => {}
+            }
+            return false;
+        }
+        if let Some(create) = &mut self.creating {
+            match key.code {
+                KeyCode::Esc => self.creating = None,
+                KeyCode::Enter => self.create(),
+                KeyCode::Backspace => {
+                    create.name.pop();
+                }
+                KeyCode::Char(c) if !ctrl => create.name.push(c),
                 _ => {}
             }
             return false;
@@ -421,7 +492,7 @@ impl App {
                 self.viewer.next(-1)
             }
             KeyCode::Char('n') => self.new_menu = true,
-            // x acts on the panel: workspaces there, terminals elsewhere.
+            // x acts on the panel: workspaces or files there, terminals elsewhere.
             // File names first; tab in the popup searches inside files.
             KeyCode::Char('/') => self.open_search(Mode::Files),
             // ctrl-f, or z for zoom: the current terminal, full height.
@@ -445,7 +516,16 @@ impl App {
                     self.confirm('x', format!("press x again to remove {name} from the list (files are kept)"));
                 }
             }
+            KeyCode::Char('x') if self.focus == Focus::Files => self.delete(pending),
             KeyCode::Char('x') => self.close_terminal('x', "x", pending),
+            KeyCode::Char('i') if pending == Some('i') => self.install_micro(),
+            KeyCode::Char('e') if pending == Some('i') => {
+                self.skip_micro = true;
+                if let Some((path, line)) = self.editor_offer.take() {
+                    self.open_editor(path, line);
+                }
+            }
+            KeyCode::Char('e') => self.edit(),
             KeyCode::Char(d @ '1'..='9') => self.enter_term(d as usize - '1' as usize),
             KeyCode::Char('[') => self.cycle_term(-1),
             KeyCode::Char(']') => self.cycle_term(1),
@@ -460,6 +540,18 @@ impl App {
 
     /// In a terminal every key goes to the program, except a few ctrl keys.
     fn terminal_key(&mut self, key: KeyEvent, pending: Option<char>) {
+        // The editor gets every key; you come back by quitting it.
+        if self.in_editor() {
+            let save = key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL);
+            if let Some(term) = self.terms.get_mut(self.active) {
+                term.key(key);
+                // In micro, saving also closes it: back to the file in the viewer.
+                if save && term.name == "micro" {
+                    term.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+                }
+            }
+            return;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if pending.is_some() {
             self.message = None;
@@ -549,7 +641,7 @@ impl App {
             self.help = false;
             self.new_menu = false;
         }
-        if self.search.is_some() || self.help || self.new_menu {
+        if self.search.is_some() || self.creating.is_some() || self.help || self.new_menu {
             return;
         }
         let pos = Position::new(mouse.column, mouse.row);
@@ -945,6 +1037,217 @@ impl App {
             w.reselect(path.parent().map(Path::to_path_buf));
         }
     }
+}
+
+impl App {
+    // Files
+
+    /// Ask for a name, in the selected folder (or the selected file's).
+    fn start_create(&mut self) {
+        let ws = self.ws();
+        let dir = match ws.selected_row().filter(|_| self.focus == Focus::Files) {
+            Some(row) if row.is_dir => row.path.clone(),
+            Some(row) => row.path.parent().unwrap_or(&ws.root).to_path_buf(),
+            None => ws.root.clone(),
+        };
+        self.creating = Some(Create { dir, name: String::new() });
+    }
+
+    fn create(&mut self) {
+        let Some(Create { dir, name }) = self.creating.take() else { return };
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let path = dir.join(name.trim_end_matches('/'));
+        let root = self.ws().root.clone();
+        if !path.starts_with(&root) || path.components().any(|c| c == std::path::Component::ParentDir) {
+            self.message = Some("new files go inside the workspace".into());
+            return;
+        }
+        let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
+        if path.exists() {
+            self.message = Some(format!("{rel} already exists"));
+            return;
+        }
+        let folder = name.ends_with('/');
+        let made = if folder {
+            std::fs::create_dir_all(&path)
+        } else {
+            path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::File::create_new(&path).map(drop))
+        };
+        if let Err(e) = made {
+            self.message = Some(format!("could not create {rel}: {e}"));
+            return;
+        }
+        // Unfold the folders down to it and select it.
+        let w = self.ws_mut();
+        for dir in path.ancestors().skip(1).take_while(|d| d.starts_with(&root) && *d != root) {
+            w.tree.set_expanded(dir, true);
+        }
+        w.tree.rebuild();
+        w.reselect(Some(path.clone()));
+        self.set_focus(Focus::Files);
+        if folder {
+            self.message = Some(format!("created {rel}/"));
+        } else {
+            self.open_editor(path, None);
+        }
+    }
+
+    /// Delete the selected file or folder, after a second x.
+    fn delete(&mut self, pending: Option<char>) {
+        let ws = self.ws();
+        let Some(row) = ws.selected_row() else { return };
+        let (path, is_dir) = (row.path.clone(), row.is_dir);
+        let rel = path.strip_prefix(&ws.root).unwrap_or(&path).display().to_string();
+        if pending != Some('x') || self.deleting.as_ref() != Some(&path) {
+            let what = if is_dir { format!("{rel}/ and everything in it") } else { rel };
+            let undo = if git::is_tracked(&ws.root, &path) {
+                "git can restore the last commit"
+            } else {
+                "not in git, it can't be recovered"
+            };
+            self.deleting = Some(path);
+            self.confirm('x', format!("press x again to delete {what} ({undo})"));
+            return;
+        }
+        self.deleting = None;
+        let deleted = if is_dir { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+        match deleted {
+            Ok(()) => {
+                if let Some(Source::File(open) | Source::Diff { path: open, .. }) = &self.viewer.source
+                    && open.starts_with(&path)
+                {
+                    self.viewer.close();
+                }
+                let w = self.ws_mut();
+                w.tree.rebuild();
+                w.reselect(None);
+                self.message = Some(format!("deleted {rel}"));
+            }
+            Err(e) => self.message = Some(format!("could not delete {rel}: {e}")),
+        }
+    }
+
+    /// Edit the file in the viewer, or the one selected in Files or Changes.
+    fn edit(&mut self) {
+        let ws = self.ws();
+        let target = match self.focus {
+            Focus::Viewer => match &self.viewer.source {
+                // At the line the viewer is on.
+                Some(Source::File(path)) => Some((path.clone(), Some(self.viewer.mark.unwrap_or(self.viewer.scroll) + 1))),
+                Some(Source::Diff { path, .. } | Source::CommitFile { path, .. }) => Some((path.clone(), None)),
+                _ => None,
+            },
+            Focus::Files => ws.selected_row().filter(|r| !r.is_dir).map(|r| (r.path.clone(), None)),
+            Focus::Changes => ws.selected_change().map(|(path, _)| (path, None)),
+            Focus::Graph => match ws.selected_graph_item() {
+                Some(GraphItem::File(_, change)) => Some((ws.root.join(&change.path), None)),
+                _ => None,
+            },
+            _ => None,
+        };
+        match target {
+            Some((path, line)) if path.is_file() => self.open_editor(path, line),
+            Some(_) => self.message = Some("that file is not in the working tree".into()),
+            None => self.message = Some("select a file to edit".into()),
+        }
+    }
+
+    /// Open `path` in a terminal editor, full height. Without micro, offer
+    /// to install it first.
+    fn open_editor(&mut self, path: PathBuf, line: Option<usize>) {
+        let mut args = editor();
+        let program = args.remove(0);
+        if program != "micro" && !self.skip_micro && std::env::var_os("PULPO_EDITOR").is_none() && on_path("brew") {
+            self.editor_offer = Some((path, line));
+            self.confirm('i', format!("micro isn't installed: i installs it with Homebrew, e opens {program} instead"));
+            return;
+        }
+        let back = if self.focus == Focus::Terminal { self.sidebar_focus } else { self.focus };
+        args.extend(editor_look(&program));
+        let file = path.display().to_string();
+        match line {
+            Some(n) if program.ends_with("hx") => args.push(format!("{file}:{n}")),
+            Some(n) => args.extend([format!("+{n}"), file]),
+            None => args.push(file),
+        }
+        if let Some(id) = self.run(&program, &args, true) {
+            self.editing = Some((id, path, back));
+            self.zoomed = true;
+        }
+    }
+
+    /// The terminal on screen is a file editor.
+    pub fn in_editor(&self) -> bool {
+        self.editing.as_ref().is_some_and(|(id, ..)| self.terms.get(self.active).is_some_and(|t| t.id == *id))
+    }
+
+    /// Install micro in a terminal, so its progress shows; a failure stays
+    /// on screen until enter.
+    fn install_micro(&mut self) {
+        let Some((path, line)) = self.editor_offer.take() else { return };
+        let script = "brew install micro || { echo; echo 'Homebrew could not install micro. Press enter to close.'; read _; }";
+        if let Some(id) = self.run("sh", &["-c".into(), script.into()], true) {
+            self.installing = Some((id, path, line));
+        }
+    }
+}
+
+/// The editor to use inside Pulpo: $PULPO_EDITOR, or micro, or the first
+/// other terminal editor found. $EDITOR is skipped, as it is often a GUI
+/// app (code -w).
+fn editor() -> Vec<String> {
+    if let Ok(cmd) = std::env::var("PULPO_EDITOR")
+        && !cmd.trim().is_empty()
+    {
+        return cmd.split_whitespace().map(String::from).collect();
+    }
+    let found = ["micro", "nvim", "hx", "vim", "nano"].into_iter().find(|name| on_path(name));
+    vec![found.unwrap_or("vi").to_string()]
+}
+
+fn on_path(program: &str) -> bool {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+}
+
+/// Arguments giving the editor Pulpo's colors, unless you configured it
+/// yourself. vim and nvim also get a few defaults (macOS vim otherwise
+/// starts without syntax highlighting).
+fn editor_look(program: &str) -> Vec<String> {
+    let look = || -> Option<Vec<String>> {
+        let home = PathBuf::from(std::env::var_os("HOME")?);
+        let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| home.join(".config"), PathBuf::from);
+        match Path::new(program).file_name()?.to_str()? {
+            "micro" => {
+                let dir = std::env::var_os("MICRO_CONFIG_HOME").map_or_else(|| config.join("micro"), PathBuf::from);
+                let settings = std::fs::read_to_string(dir.join("settings.json")).unwrap_or_default();
+                if settings.contains("\"colorscheme\"") {
+                    return None;
+                }
+                // Only for this session: micro doesn't save options given as flags.
+                std::fs::create_dir_all(dir.join("colorschemes")).ok()?;
+                std::fs::write(dir.join("colorschemes/pulpo.micro"), include_str!("editor.micro")).ok()?;
+                Some(vec!["-colorscheme".into(), "pulpo".into()])
+            }
+            name @ ("vim" | "vi" | "nvim") => {
+                let own = match name {
+                    "nvim" => vec![config.join("nvim/init.lua"), config.join("nvim/init.vim")],
+                    _ => vec![home.join(".vimrc"), home.join(".vim/vimrc"), config.join("vim/vimrc")],
+                };
+                if own.iter().any(|f| f.exists()) {
+                    return None;
+                }
+                let script = std::env::temp_dir().join("pulpo-editor.vim");
+                std::fs::write(&script, include_str!("editor.vim")).ok()?;
+                Some(vec!["-S".into(), script.display().to_string()])
+            }
+            _ => None,
+        }
+    };
+    look().unwrap_or_default()
 }
 
 pub fn shell() -> String {

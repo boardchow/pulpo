@@ -92,13 +92,16 @@ pub struct Term {
 }
 
 impl Term {
-    pub fn spawn(id: usize, program: &str, cwd: &Path, (rows, cols): (u16, u16), tx: Sender<Msg>) -> Result<Term> {
+    pub fn spawn(id: usize, program: &str, args: &[String], cwd: &Path, (rows, cols): (u16, u16), tx: Sender<Msg>) -> Result<Term> {
         let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
         let tag = format!("{}-{id}", std::process::id());
         let mut cmd = CommandBuilder::new(program);
+        cmd.args(args);
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // micro only uses 24-bit color when told.
+        cmd.env("MICRO_TRUECOLOR", "1");
         cmd.env("PULPO_TAB", &tag);
         // Don't let programs assume Ghostty features this emulator lacks.
         cmd.env_remove("TERM_PROGRAM");

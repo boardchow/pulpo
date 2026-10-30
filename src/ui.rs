@@ -400,7 +400,24 @@ fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     if app.new_menu {
-        frame.render_widget(Line::from(footer_spans("NEW", ACCENT, &[("w", "workspace"), ("s", "shell"), ("esc", "cancel")], &[])), area);
+        frame.render_widget(Line::from(footer_spans("NEW", ACCENT, &[("w", "workspace"), ("s", "shell"), ("f", "file or folder"), ("esc", "cancel")], &[])), area);
+        return;
+    }
+    if let Some(create) = &app.creating {
+        // Where it goes, then the name being typed, like the find line.
+        let root = &app.ws().root;
+        let dir = create.dir.strip_prefix(root).unwrap_or(&create.dir).display().to_string();
+        let dir = if dir.is_empty() { String::new() } else { format!("{dir}/") };
+        let mut spans = footer_spans("NEW FILE", ACCENT, &[("⏎", "create"), ("esc", "cancel")], &[]);
+        let input = vec![
+            Span::from("› ").fg(BLUE).bold(),
+            Span::from(dir).fg(MUTED),
+            Span::from(create.name.clone()),
+            Span::from("█").fg(BLUE),
+            Span::from("   end with / for a folder   ").fg(MUTED),
+        ];
+        spans.splice(2..2, input);
+        frame.render_widget(Line::from(spans), area);
         return;
     }
     if let Some(message) = &app.message {
@@ -430,6 +447,22 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     }
     // Where you are, then the keys that work there, then the global ones.
     let (badge, keys): (&str, &[(&str, &str)]) = match app.focus {
+        // Every key goes to the editor; micro's, or how to come back.
+        Focus::Terminal if app.in_editor() => (
+            "EDITOR",
+            match app.terms.get(app.active).map(|t| t.name.as_str()) {
+                Some("micro") => &[
+                    ("ctrl-s", "save and close"),
+                    ("ctrl-q", "close (asks to save)"),
+                    ("ctrl-z", "undo"),
+                    ("ctrl-y", "redo"),
+                    ("ctrl-f", "find"),
+                    ("ctrl-c ctrl-x ctrl-v", "copy, cut, paste"),
+                    ("shift-arrows", "select"),
+                ],
+                _ => &[("quit the editor", "to come back to Pulpo")],
+            },
+        ),
         Focus::Terminal => (
             "TERMINAL",
             // ctrl-f only matters when there is a viewer to hide or show.
@@ -441,14 +474,14 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("x", "remove")]),
         Focus::Sessions => ("TERMINALS", &[("j/k", "pick"), ("⏎", "enter"), ("x", "close")]),
-        Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff")]),
+        Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff"), ("e", "edit")]),
         Focus::Graph => ("GRAPH", &[("j/k", "move"), ("⏎", "a commit's files / read a diff"), ("h/l", "fold")]),
-        Focus::Files => ("FILES", &[("j/k", "move"), ("⏎", "open"), ("h/l", "fold")]),
+        Focus::Files => ("FILES", &[("j/k", "move"), ("⏎", "open"), ("h/l", "fold"), ("e", "edit"), ("x", "delete")]),
         Focus::Viewer => match (app.viewer.is_diff(), app.viewer.expanded) {
             (true, true) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "split view"), ("esc", "back")]),
             (true, false) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "full height"), ("esc", "back")]),
-            (false, true) => ("VIEWER", &[("j/k h/l", "scroll"), ("/", "find in file"), ("⏎", "split view"), ("esc", "back")]),
-            (false, false) => ("VIEWER", &[("j/k h/l", "scroll"), ("/", "find in file"), ("⏎", "full height"), ("esc", "back")]),
+            (false, true) => ("VIEWER", &[("j/k h/l", "scroll"), ("/", "find in file"), ("e", "edit"), ("⏎", "split view"), ("esc", "back")]),
+            (false, false) => ("VIEWER", &[("j/k h/l", "scroll"), ("/", "find in file"), ("e", "edit"), ("⏎", "full height"), ("esc", "back")]),
         },
     };
     let global: &[(&str, &str)] = match app.focus {
@@ -490,8 +523,9 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "In a panel",
         &[
-            ("n w  n s", "new workspace / new shell in this workspace"),
-            ("x x", "remove a workspace from the list (files kept) / close the terminal"),
+            ("n w  n s  n f", "new workspace / shell / file or folder (end the name with /)"),
+            ("e", "edit the file in micro (offers to install it), or $PULPO_EDITOR"),
+            ("x x", "remove a workspace from the list (files kept) / delete a file / close the terminal"),
             ("j k  ↑ ↓  ⏎", "move, open (a terminal, a file, a diff, a commit's files)"),
             ("h l", "fold / unfold a folder, or a commit's files in Graph"),
             ("1-9  [ ]", "enter terminal N / previous, next terminal"),

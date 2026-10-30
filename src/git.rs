@@ -68,6 +68,11 @@ pub fn main_repo(dir: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Whether git has a committed version of `path` (or of a file inside it).
+pub fn is_tracked(root: &Path, path: &Path) -> bool {
+    git(root, &["ls-files", "--", &path.to_string_lossy()]).is_ok_and(|out| !out.trim().is_empty())
+}
+
 /// All checkouts of a repository, main checkout first.
 pub fn worktrees(repo: &Path) -> Vec<PathBuf> {
     git(repo, &["worktree", "list", "--porcelain"])
