@@ -1,29 +1,29 @@
-# pulpo
+# Pulpo
 
 A VS Code replacement that runs in one Ghostty window. You open it, work,
 and quit. Claude Code and your shells run inside it; files and diffs open
 inside it. Nothing opens in another program, and nothing keeps running after
-you quit: quitting pulpo stops the agents too.
+you quit: quitting Pulpo stops the agents too.
 
 ## What it does
 
 | Feature        | What it means                                                       |
 |----------------|---------------------------------------------------------------------|
-| **Workspaces** | Your git repositories. Open pulpo inside one and it remembers it. Each workspace is the normal folder you already work in. |
-| **Terminals**  | Shells running inside pulpo, in tabs. Type `claude` in one to start an agent; each tab is named after what runs in it, and the sidebar shows which ones are busy. |
+| **Workspaces** | Your git repositories. Open Pulpo inside one and it remembers it. Each workspace is the normal folder you already work in. |
+| **Terminals**  | Shells running inside Pulpo, in tabs. Type `claude` in one to start an agent; each tab is named after what runs in it, and the sidebar shows which ones are busy. |
 | **Changes**    | What changed in the current workspace since the last commit. Open one to see the diff, side by side when the window is wide. |
 | **Files**      | The workspace's file tree. Open a file to read it, highlighted. Read only: agents do the editing. |
 | **Search**     | `/` finds a file by name; tab switches to searching inside files. In the viewer, `/` searches only the file you are reading. |
 
 Two Claude tabs in the same workspace are fine for asking questions or
 reviewing; just don't let both edit code at the same time, since they share
-the same folder and branch. pulpo doesn't create git worktrees.
+the same folder and branch. Pulpo doesn't create git worktrees.
 
 ```
 ┌ Workspaces ─────────┐┌ [1 claude] [2 zsh] ─────────────────────────┐
 │ ● api  main ±2      ││                                             │
 │   web  feat/x       ││   the selected agent or shell,              │
-│ Terminals           ││   running inside pulpo                      │
+│ Terminals           ││   running inside Pulpo                      │
 │  1 ● claude api     ││                                             │
 │  2 ○ zsh api        │├ src/auth.rs  +3 −1 ─────────────────────────┤
 │ Changes 2           ││  11   fn login(user: &User) {                │

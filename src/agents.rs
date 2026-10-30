@@ -88,7 +88,7 @@ pub enum State {
 }
 
 pub struct Agent {
-    /// The pulpo terminal running this session (`PULPO_TAB`), if any.
+    /// The Pulpo terminal running this session (`PULPO_TAB`), if any.
     pub tab: String,
     pub state: State,
     pub detail: String,
@@ -161,7 +161,7 @@ impl Agents {
         agent.detail = detail;
     }
 
-    /// The latest session reported from a pulpo terminal.
+    /// The latest session reported from a Pulpo terminal.
     pub fn for_tab(&self, tab: &str) -> Option<&Agent> {
         self.sessions.values().filter(|a| a.tab == tab).max_by_key(|a| a.ts)
     }

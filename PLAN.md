@@ -1,12 +1,12 @@
-# pulpo — plan
+# Pulpo — plan
 
-How pulpo is built and what comes next. For using it, see the README.
+How Pulpo is built and what comes next. For using it, see the README.
 
 ## Scope
 
-pulpo is a VS Code replacement in one Ghostty window: workspaces (your
+Pulpo is a VS Code replacement in one Ghostty window: workspaces (your
 repositories), terminals (shells and Claude Code), changes, files, search.
-It is deliberately not a background multiplexer: quitting pulpo stops
+It is deliberately not a background multiplexer: quitting Pulpo stops
 everything in it, and it doesn't create or manage git worktrees (a repository
 that already has some lists them under it, read only).
 
@@ -41,7 +41,7 @@ Event sources feeding the loop:
 
 Works with no setup: a terminal that printed output in the last ~1.5 s shows
 as busy. For precise states (running a tool, waiting for permission, done),
-install the Claude Code hooks (`pulpo hooks`). Each terminal pulpo starts gets a
+install the Claude Code hooks (`pulpo hooks`). Each terminal Pulpo starts gets a
 `PULPO_TAB` env var; `pulpo emit` records it, so hook events map to the right tab.
 
 ### Diffs
@@ -61,7 +61,7 @@ own version of the file.
 - [x] **v1** — agent status via `pulpo emit` + Claude Code hooks.
 - [x] **v2** — everything in the app: embedded terminal tabs (Claude, shells),
       read-only file viewer, mouse support.
-- [x] **v3** — workspaces from anywhere: every repo pulpo was opened in is kept in
+- [x] **v3** — workspaces from anywhere: every repo Pulpo was opened in is kept in
       `~/.config/pulpo/workspaces`.
 - [x] **v4** — navigation: go to file, search in files, find in file.
 - [x] **v5** — mnemonic keys, full-height viewer, inline and side-by-side

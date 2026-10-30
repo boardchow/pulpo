@@ -404,7 +404,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("1-9  [ ]", "enter terminal N / previous, next terminal"),
             ("/  tab", "search files by name / tab: search inside files"),
             ("r", "refresh"),
-            ("q q", "quit pulpo (closes all terminals)"),
+            ("q q", "quit Pulpo (closes all terminals)"),
         ],
     ),
     (

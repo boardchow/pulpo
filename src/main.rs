@@ -26,7 +26,7 @@ use ratatui::crossterm::execute;
 use app::App;
 
 const USAGE: &str = "usage:
-  pulpo [path]   open pulpo; a repository at path (default: .) joins the workspace list
+  pulpo [path]   open Pulpo; a repository at path (default: .) joins the workspace list
   pulpo hooks    print the Claude Code hooks config for detailed agent status
   pulpo emit     record a hook event from stdin (called by the hooks)";
 
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
         Some("-h" | "--help") => println!("{USAGE}"),
         arg => {
             let start = arg.map(PathBuf::from).unwrap_or(std::env::current_dir()?).canonicalize()?;
-            // Opening pulpo inside a repository adds it to the workspace list.
+            // Opening Pulpo inside a repository adds it to the workspace list.
             let launch = git::toplevel(&start);
             if let Some(repo) = launch.as_deref().and_then(git::main_repo) {
                 workspace::register(&repo);
