@@ -5,7 +5,7 @@ use std::sync::mpsc::Sender;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
-use ratatui::widgets::ListState;
+use ratatui::widgets::{Block, ListState};
 
 use crate::Msg;
 use crate::agents::{Agents, State};
@@ -582,6 +582,22 @@ impl App {
         .find(|(_, area)| area.contains(pos))
         .unwrap_or((self.focus, Rect::default()));
 
+        // Inside the terminal's text (not its border or tab bar), a program
+        // that asked for the mouse gets the event itself.
+        let inner = Block::bordered().inner(area);
+        if target == Focus::Terminal
+            && inner.contains(pos)
+            && let Some(term) = self.terms.get_mut(self.active)
+            && term.wants_mouse()
+        {
+            let (col, row) = (pos.x - inner.x + 1, pos.y - inner.y + 1);
+            term.mouse(mouse.kind, col, row, mouse.modifiers);
+            if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                self.set_focus(Focus::Terminal);
+            }
+            return;
+        }
+
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if area.is_empty() || (target == Focus::Terminal && self.terms.is_empty()) {
@@ -616,11 +632,20 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                let rows = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
+                let rows: isize = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                 match target {
                     Focus::Terminal => {
                         if let Some(term) = self.terms.get_mut(self.active) {
-                            term.scroll(-rows);
+                            if term.alternate_screen() {
+                                // Like Ghostty: the wheel becomes arrow keys
+                                // for full-screen programs (less, man…).
+                                let arrow = if rows < 0 { KeyCode::Up } else { KeyCode::Down };
+                                for _ in 0..rows.abs() {
+                                    term.key(KeyEvent::new(arrow, KeyModifiers::NONE));
+                                }
+                            } else {
+                                term.scroll(-rows);
+                            }
                         }
                     }
                     Focus::Viewer => self.viewer.scroll_by(rows),

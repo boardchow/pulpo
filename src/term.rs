@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
@@ -158,6 +158,31 @@ impl Term {
         let _ = self.writer.flush();
     }
 
+    /// The program asked to receive mouse events (Claude, vim with mouse on…).
+    pub fn wants_mouse(&self) -> bool {
+        self.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+    }
+
+    /// The program draws on its own screen (Claude's full-screen views,
+    /// less, vim): there is no history to scroll.
+    pub fn alternate_screen(&self) -> bool {
+        self.parser.screen().alternate_screen()
+    }
+
+    /// Send a mouse event at a 1-based cell, in the encoding the program asked
+    /// for. Returns false if it doesn't take this kind of event.
+    pub fn mouse(&mut self, kind: MouseEventKind, col: u16, row: u16, modifiers: KeyModifiers) -> bool {
+        let screen = self.parser.screen();
+        match encode_mouse(screen.mouse_protocol_mode(), screen.mouse_protocol_encoding(), kind, col, row, modifiers) {
+            Some(bytes) => {
+                let _ = self.writer.write_all(&bytes);
+                let _ = self.writer.flush();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Scroll through history; positive goes back in time.
     pub fn scroll(&mut self, rows: isize) {
         let screen = self.parser.screen_mut();
@@ -223,6 +248,62 @@ fn color(c: vt100::Color, default: Color) -> Color {
         vt100::Color::Idx(i) if i < 16 => theme::ANSI[i as usize],
         vt100::Color::Idx(i) => Color::Indexed(i),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+/// Translate a mouse event into the bytes an xterm would send.
+fn encode_mouse(
+    mode: vt100::MouseProtocolMode,
+    encoding: vt100::MouseProtocolEncoding,
+    kind: MouseEventKind,
+    col: u16,
+    row: u16,
+    modifiers: KeyModifiers,
+) -> Option<Vec<u8>> {
+    use vt100::{MouseProtocolEncoding as Encoding, MouseProtocolMode as Mode};
+    let button = |b: MouseButton| match b {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+    };
+    let (code, release, motion) = match kind {
+        MouseEventKind::Down(b) => (button(b), false, false),
+        MouseEventKind::Up(b) => (button(b), true, false),
+        MouseEventKind::Drag(b) => (button(b) + 32, false, true),
+        MouseEventKind::ScrollUp => (64, false, false),
+        MouseEventKind::ScrollDown => (65, false, false),
+        _ => return None,
+    };
+    let wanted = match mode {
+        Mode::None => false,
+        Mode::Press => !release && !motion,
+        Mode::PressRelease => !motion,
+        Mode::ButtonMotion | Mode::AnyMotion => true,
+    };
+    if !wanted {
+        return None;
+    }
+    let mut code = code;
+    for (modifier, bit) in [(KeyModifiers::SHIFT, 4), (KeyModifiers::ALT, 8), (KeyModifiers::CONTROL, 16)] {
+        if modifiers.contains(modifier) {
+            code += bit;
+        }
+    }
+    match encoding {
+        Encoding::Sgr => Some(format!("\x1b[<{code};{col};{row}{}", if release { 'm' } else { 'M' }).into_bytes()),
+        // The older encodings send a release as button 3 and each value + 32.
+        Encoding::Default | Encoding::Utf8 => {
+            let code = if release { 3 + (code & !3) } else { code };
+            let mut out = b"\x1b[M".to_vec();
+            for value in [code, col, row] {
+                let value = u32::from(value) + 32;
+                match encoding {
+                    Encoding::Utf8 => out.extend(char::from_u32(value)?.to_string().bytes()),
+                    _ => out.push(u8::try_from(value).ok()?),
+                }
+            }
+            Some(out)
+        }
     }
 }
 
@@ -305,6 +386,20 @@ mod tests {
         assert_eq!(key(KeyCode::Left, KeyModifiers::ALT), b"\x1b[1;3D");
         assert_eq!(key(KeyCode::Delete, KeyModifiers::NONE), b"\x1b[3~");
         assert_eq!(key(KeyCode::F(5), KeyModifiers::NONE), b"\x1b[15~");
+    }
+
+    #[test]
+    fn encodes_mouse_events_as_requested() {
+        use vt100::{MouseProtocolEncoding as E, MouseProtocolMode as M};
+        let none = KeyModifiers::NONE;
+        let wheel = encode_mouse(M::PressRelease, E::Sgr, MouseEventKind::ScrollUp, 10, 5, none);
+        assert_eq!(wheel.unwrap(), b"\x1b[<64;10;5M");
+        let release = encode_mouse(M::PressRelease, E::Sgr, MouseEventKind::Up(MouseButton::Left), 1, 2, none);
+        assert_eq!(release.unwrap(), b"\x1b[<0;1;2m");
+        let legacy = encode_mouse(M::Press, E::Default, MouseEventKind::Down(MouseButton::Left), 1, 1, none);
+        assert_eq!(legacy.unwrap(), b"\x1b[M !!");
+        assert!(encode_mouse(M::None, E::Sgr, MouseEventKind::ScrollUp, 1, 1, none).is_none());
+        assert!(encode_mouse(M::PressRelease, E::Sgr, MouseEventKind::Drag(MouseButton::Left), 1, 1, none).is_none());
     }
 
     #[test]
