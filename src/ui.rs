@@ -16,7 +16,7 @@ use crate::theme::{ACCENT, BG, BLUE, BORDER, DIM, EDITOR_BG, FG, GREEN, HOVER, M
 pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Block::new().style(Style::new().fg(FG).bg(BG)), frame.area());
     let [main, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
-    let width = (main.width * 24 / 100).clamp(26, 38).min(main.width);
+    let width = (main.width * 27 / 100).clamp(28, 42).min(main.width);
     let [sidebar, right] = Layout::horizontal([Constraint::Length(width), Constraint::Fill(1)]).areas(main);
     draw_sidebar(frame, app, sidebar);
     draw_right(frame, app, right);
