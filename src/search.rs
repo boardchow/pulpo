@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn greps_with_smart_case() {
-        let dir = std::env::temp_dir().join(format!("ws-grep-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pulpo-grep-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "Hello world\nnothing\nhello again\n").unwrap();
         let files = vec!["a.txt".to_string()];

@@ -1,19 +1,19 @@
-# ws — plan
+# pulpo — plan
 
-How ws is built and what comes next. For using it, see the README.
+How pulpo is built and what comes next. For using it, see the README.
 
 ## Scope
 
-ws is a VS Code replacement in one Ghostty window: workspaces (your
+pulpo is a VS Code replacement in one Ghostty window: workspaces (your
 repositories), terminals (shells and Claude Code), changes, files, search.
-It is deliberately not a background multiplexer: quitting ws stops
+It is deliberately not a background multiplexer: quitting pulpo stops
 everything in it, and it doesn't create or manage git worktrees (a repository
 that already has some lists them under it, read only).
 
 ## Architecture
 
 ```
-ws (one binary)
+pulpo (one binary)
 ├── main.rs     terminal setup + event loop (one mpsc channel for everything)
 ├── app.rs      state: focus, selection, keys, mouse, terminal tabs
 ├── workspace.rs  repo registry + per-repository state (status, tree)
@@ -24,7 +24,7 @@ ws (one binary)
 ├── theme.rs    Linear Dark colors (UI, syntax, terminal palette)
 ├── tree.rs     lazy file tree, gitignore-aware (ignore crate)
 ├── git.rs      `git status --porcelain=v2` and `--numstat` parsers
-└── agents.rs   optional hook-based agent status (`ws emit`)
+└── agents.rs   optional hook-based agent status (`pulpo emit`)
 ```
 
 Event sources feeding the loop:
@@ -41,8 +41,8 @@ Event sources feeding the loop:
 
 Works with no setup: a terminal that printed output in the last ~1.5 s shows
 as busy. For precise states (running a tool, waiting for permission, done),
-install the Claude Code hooks (`ws hooks`). Each terminal ws starts gets a
-`WS_TAB` env var; `ws emit` records it, so hook events map to the right tab.
+install the Claude Code hooks (`pulpo hooks`). Each terminal pulpo starts gets a
+`PULPO_TAB` env var; `pulpo emit` records it, so hook events map to the right tab.
 
 ### Diffs
 
@@ -58,16 +58,16 @@ own version of the file.
 ## Milestones
 
 - [x] **v0** — single repo: Files, Changes.
-- [x] **v1** — agent status via `ws emit` + Claude Code hooks.
+- [x] **v1** — agent status via `pulpo emit` + Claude Code hooks.
 - [x] **v2** — everything in the app: embedded terminal tabs (Claude, shells),
       read-only file viewer, mouse support.
-- [x] **v3** — workspaces from anywhere: every repo ws was opened in is kept in
-      `~/.config/ws/workspaces`.
+- [x] **v3** — workspaces from anywhere: every repo pulpo was opened in is kept in
+      `~/.config/pulpo/workspaces`.
 - [x] **v4** — navigation: go to file, search in files, find in file.
 - [x] **v5** — mnemonic keys, full-height viewer, inline and side-by-side
       diffs with added and removed counts, full-height terminal, Linear Dark
       theme.
-- [ ] `ws hooks --install` instead of pasting the hooks config.
+- [ ] `pulpo hooks --install` instead of pasting the hooks config.
 - [ ] Terminal: clipboard (OSC 52), links, scrollback search.
 - [ ] Notification when an agent waits for input; Codex support.
 - [ ] Read the theme from the VS Code extension instead of copying it.

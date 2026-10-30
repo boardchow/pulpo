@@ -58,7 +58,7 @@ impl vt100::Callbacks for Events {
 
 pub struct Term {
     pub id: usize,
-    /// Exported as `WS_TAB` so hook events can be matched to this terminal.
+    /// Exported as `PULPO_TAB` so hook events can be matched to this terminal.
     pub tag: String,
     pub name: String,
     /// The program running in the foreground, when it isn't the shell itself
@@ -84,7 +84,7 @@ impl Term {
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        cmd.env("WS_TAB", &tag);
+        cmd.env("PULPO_TAB", &tag);
         // Don't let programs assume Ghostty features this emulator lacks.
         cmd.env_remove("TERM_PROGRAM");
         cmd.env_remove("TERM_PROGRAM_VERSION");

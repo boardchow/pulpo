@@ -75,7 +75,7 @@ pub struct App {
 }
 
 impl App {
-    /// `launch` is the checkout ws was started in, if any; `scratch` the
+    /// `launch` is the checkout pulpo was started in, if any; `scratch` the
     /// directory to show when no repository is registered.
     pub fn new(launch: Option<PathBuf>, scratch: PathBuf, tx: Sender<Msg>) -> anyhow::Result<Self> {
         let fs_tx = tx.clone();
@@ -398,10 +398,10 @@ impl App {
                 if self.terms.is_empty() || pending == Some('q') {
                     return true;
                 }
-                self.confirm('q', format!("{} terminal(s) open: press q again to quit ws", self.terms.len()));
+                self.confirm('q', format!("{} terminal(s) open: press q again to quit pulpo", self.terms.len()));
             }
             KeyCode::Char('x') if self.focus == Focus::Workspaces && self.ws().is_worktree() => {
-                self.message = Some("this is a git worktree of the workspace above; ws leaves worktrees to git".into());
+                self.message = Some("this is a git worktree of the workspace above; pulpo leaves worktrees to git".into());
             }
             KeyCode::Char('x') if self.focus == Focus::Workspaces => {
                 if pending == Some('x') {

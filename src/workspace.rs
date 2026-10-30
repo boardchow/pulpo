@@ -1,5 +1,5 @@
 //! Workspaces: every checkout (main or linked worktree) of the repositories
-//! in the registry, a plain list of paths in `~/.config/ws/workspaces`.
+//! in the registry, a plain list of paths in `~/.config/pulpo/workspaces`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -87,7 +87,7 @@ fn registry_path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
-    base.join("ws").join("workspaces")
+    base.join("pulpo").join("workspaces")
 }
 
 /// Registered repositories, most recently opened first.

@@ -1,6 +1,6 @@
 //! Agent status from Claude Code hooks.
 //!
-//! Hooks run `ws emit`, which appends one JSON line per event to
+//! Hooks run `pulpo emit`, which appends one JSON line per event to
 //! `events.jsonl`. The TUI replays the file on start and tails it afterwards.
 
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ pub fn state_dir() -> PathBuf {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
-    base.join("ws")
+    base.join("pulpo")
 }
 
 fn log_path() -> PathBuf {
@@ -29,7 +29,7 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// `ws emit`: read a hook payload from stdin and append it to the log.
+/// `pulpo emit`: read a hook payload from stdin and append it to the log.
 /// Never fails loudly, since a failing hook would get in the agent's way.
 pub fn emit() {
     let mut input = String::new();
@@ -43,7 +43,7 @@ pub fn emit() {
         "event": field("hook_event_name"),
         "tool": field("tool_name"),
         "message": field("message"),
-        "tab": std::env::var("WS_TAB").unwrap_or_default(),
+        "tab": std::env::var("PULPO_TAB").unwrap_or_default(),
     });
 
     let path = log_path();
@@ -56,7 +56,7 @@ pub fn emit() {
     }
 }
 
-/// `ws hooks`: the Claude Code settings snippet that wires up `ws emit`.
+/// `pulpo hooks`: the Claude Code settings snippet that wires up `pulpo emit`.
 pub fn print_hooks() -> anyhow::Result<()> {
     let command = format!("{} emit", std::env::current_exe()?.display());
     let hook = |matcher: Option<&str>| {
@@ -88,7 +88,7 @@ pub enum State {
 }
 
 pub struct Agent {
-    /// The ws terminal running this session (`WS_TAB`), if any.
+    /// The pulpo terminal running this session (`PULPO_TAB`), if any.
     pub tab: String,
     pub state: State,
     pub detail: String,
@@ -161,7 +161,7 @@ impl Agents {
         agent.detail = detail;
     }
 
-    /// The latest session reported from a ws terminal.
+    /// The latest session reported from a pulpo terminal.
     pub fn for_tab(&self, tab: &str) -> Option<&Agent> {
         self.sessions.values().filter(|a| a.tab == tab).max_by_key(|a| a.ts)
     }

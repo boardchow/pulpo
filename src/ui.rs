@@ -352,7 +352,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("1-9  [ ]", "enter terminal N / previous, next terminal"),
             ("p   /", "go to file / search in files"),
             ("r", "refresh"),
-            ("q q", "quit ws (closes all terminals)"),
+            ("q q", "quit pulpo (closes all terminals)"),
         ],
     ),
     (
