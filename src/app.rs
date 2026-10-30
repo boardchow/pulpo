@@ -1,0 +1,872 @@
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
+
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
+use ratatui::widgets::ListState;
+
+use crate::Msg;
+use crate::agents::{Agents, State};
+use crate::git;
+use crate::search::{Mode, Search};
+use crate::term::Term;
+use crate::viewer::{Source, Viewer};
+use crate::workspace::{self, Workspace};
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Focus {
+    Workspaces,
+    Sessions,
+    Changes,
+    Files,
+    Viewer,
+    Terminal,
+}
+
+/// Where each panel was drawn, for mouse hit-testing.
+#[derive(Default, Clone, Copy)]
+pub struct Areas {
+    pub workspaces: Rect,
+    pub sessions: Rect,
+    pub changes: Rect,
+    pub files: Rect,
+    pub terminal: Rect,
+    pub viewer: Rect,
+}
+
+#[derive(Clone, Copy)]
+pub enum PromptKind {
+    Worktree,
+}
+
+/// A one-line text input shown in the footer.
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub label: &'static str,
+    pub input: String,
+}
+
+pub struct App {
+    pub workspaces: Vec<Workspace>,
+    pub current: usize,
+    pub workspaces_state: ListState,
+    /// Shown when no repository is registered yet.
+    scratch: PathBuf,
+    pub focus: Focus,
+    /// The sidebar list to return to when leaving the terminal or viewer.
+    sidebar_focus: Focus,
+    pub agents: Agents,
+    pub terms: Vec<Term>,
+    pub active: usize,
+    next_id: usize,
+    /// Rows and columns available to terminals, set when drawing.
+    term_size: (u16, u16),
+    pub viewer: Viewer,
+    pub sessions_state: ListState,
+    pub areas: Areas,
+    pub message: Option<String>,
+    pub prompt: Option<Prompt>,
+    pub search: Option<Search>,
+    /// The "new…" menu is open, waiting for c, s, w or r.
+    pub menu: bool,
+    /// The full list of shortcuts is shown.
+    pub help: bool,
+    /// Terminal tab labels in the tab bar: (first column, last column, tab).
+    pub tab_hits: Vec<(u16, u16, usize)>,
+    /// A key that must be pressed again to confirm (quit, close, delete).
+    pending: Option<char>,
+    /// Workspaces with file changes not yet refreshed, and whether the
+    /// worktree list itself may have changed.
+    fs_dirty: HashSet<PathBuf>,
+    reload_list: bool,
+    watcher: RecommendedWatcher,
+    watched: HashSet<PathBuf>,
+    tx: Sender<Msg>,
+}
+
+impl App {
+    /// `launch` is the checkout ws was started in, if any; `scratch` the
+    /// directory to show when no repository is registered.
+    pub fn new(launch: Option<PathBuf>, scratch: PathBuf, tx: Sender<Msg>) -> anyhow::Result<Self> {
+        let fs_tx = tx.clone();
+        let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                let _ = fs_tx.send(Msg::Fs(event.paths));
+            }
+        })?;
+        let mut agents = Agents::default();
+        agents.load();
+        let mut app = App {
+            workspaces: Vec::new(),
+            current: 0,
+            workspaces_state: ListState::default().with_selected(Some(0)),
+            scratch,
+            focus: Focus::Files,
+            sidebar_focus: Focus::Files,
+            agents,
+            terms: Vec::new(),
+            active: 0,
+            next_id: 0,
+            term_size: (24, 80),
+            viewer: Viewer::default(),
+            sessions_state: ListState::default().with_selected(Some(0)),
+            areas: Areas::default(),
+            message: None,
+            prompt: None,
+            search: None,
+            menu: false,
+            help: false,
+            tab_hits: Vec::new(),
+            pending: None,
+            fs_dirty: HashSet::new(),
+            reload_list: false,
+            watcher,
+            watched: HashSet::new(),
+            tx,
+        };
+        app.load_workspaces();
+        if let Some(i) = launch.and_then(|l| app.workspaces.iter().position(|w| w.root == l)) {
+            app.set_current(i);
+        }
+        Ok(app)
+    }
+
+    pub fn ws(&self) -> &Workspace {
+        &self.workspaces[self.current]
+    }
+
+    fn ws_mut(&mut self) -> &mut Workspace {
+        &mut self.workspaces[self.current]
+    }
+
+    // Workspaces
+
+    /// Rebuild the list from the registry and git, keeping existing state.
+    fn load_workspaces(&mut self) {
+        let current = self.workspaces.get(self.current).map(|w| w.root.clone());
+        let mut old = std::mem::take(&mut self.workspaces);
+        let mut reuse = |root: PathBuf, repo: &Path| match old.iter().position(|w| w.root == root) {
+            Some(i) => old.swap_remove(i),
+            None => Workspace::new(root, repo.to_path_buf()),
+        };
+        for repo in workspace::registered().into_iter().filter(|r| r.is_dir()) {
+            let mut roots = git::worktrees(&repo);
+            if roots.is_empty() {
+                roots.push(repo.clone());
+            }
+            for root in roots {
+                self.workspaces.push(reuse(root, &repo));
+            }
+        }
+        if self.workspaces.is_empty() {
+            let scratch = self.scratch.clone();
+            self.workspaces.push(reuse(scratch.clone(), &scratch));
+        }
+        self.current = current.and_then(|c| self.workspaces.iter().position(|w| w.root == c)).unwrap_or(0);
+        self.workspaces_state.select(Some(self.current));
+        self.sync_watches();
+    }
+
+    fn sync_watches(&mut self) {
+        let wanted: HashSet<PathBuf> = self.workspaces.iter().map(|w| w.root.clone()).collect();
+        for path in self.watched.difference(&wanted) {
+            let _ = self.watcher.unwatch(path);
+        }
+        for path in wanted.difference(&self.watched) {
+            let _ = self.watcher.watch(path, RecursiveMode::Recursive);
+        }
+        self.watched = wanted;
+    }
+
+    fn set_current(&mut self, i: usize) {
+        if i >= self.workspaces.len() {
+            return;
+        }
+        self.workspaces_state.select(Some(i));
+        if i != self.current {
+            self.current = i;
+            self.viewer.close();
+            self.workspaces[i].refresh();
+        }
+    }
+
+    pub fn on_fs(&mut self, paths: &[PathBuf]) {
+        for path in paths {
+            for w in &self.workspaces {
+                if w.is_affected(path) {
+                    self.fs_dirty.insert(w.root.clone());
+                }
+            }
+            // A worktree was added or removed (by us, an agent, or the CLI).
+            let added_or_removed = self.workspaces.iter().any(|w| {
+                path.strip_prefix(w.repo.join(".git/worktrees")).is_ok_and(|rel| rel.components().count() == 1)
+            });
+            self.reload_list |= added_or_removed;
+        }
+    }
+
+    pub fn fs_pending(&self) -> bool {
+        !self.fs_dirty.is_empty() || self.reload_list
+    }
+
+    pub fn flush_fs(&mut self) {
+        if std::mem::take(&mut self.reload_list) {
+            self.load_workspaces();
+        }
+        let dirty = std::mem::take(&mut self.fs_dirty);
+        for w in &mut self.workspaces {
+            if dirty.contains(&w.root) {
+                w.refresh();
+            }
+        }
+        if dirty.contains(&self.ws().root) {
+            let root = self.ws().root.clone();
+            self.viewer.reload(&root);
+        }
+    }
+
+    pub fn refresh(&mut self) {
+        self.load_workspaces();
+        for w in &mut self.workspaces {
+            w.refresh();
+        }
+        let root = self.ws().root.clone();
+        self.viewer.reload(&root);
+    }
+
+    fn create_worktree(&mut self, branch: &str) {
+        if branch.is_empty() {
+            return;
+        }
+        let repo = self.ws().repo.clone();
+        let name = repo.file_name().unwrap_or_default().to_string_lossy();
+        let parent = repo.parent().unwrap_or(&repo);
+        let path = parent.join(format!("{name}.worktrees")).join(branch.replace('/', "-"));
+        match git::add_worktree(&repo, &path, branch) {
+            Ok(()) => {
+                self.load_workspaces();
+                if let Some(i) = self.workspaces.iter().position(|w| w.root == path) {
+                    self.set_current(i);
+                }
+                self.spawn("claude", true);
+                self.message = Some(format!("created worktree {} on branch {branch}", path.display()));
+            }
+            Err(e) => self.message = Some(e),
+        }
+    }
+
+    fn add_repo(&mut self, input: &str) {
+        let path = match input.strip_prefix("~/") {
+            Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
+            None => PathBuf::from(input),
+        };
+        match git::toplevel(&path).and_then(|top| git::main_repo(&top)) {
+            Some(repo) => {
+                workspace::register(&repo);
+                self.load_workspaces();
+                if let Some(i) = self.workspaces.iter().position(|w| w.root == repo) {
+                    self.set_current(i);
+                }
+            }
+            None => self.message = Some(format!("not a git repository: {}", path.display())),
+        }
+    }
+
+    fn remove_workspace(&mut self) {
+        let (root, repo, name) = (self.ws().root.clone(), self.ws().repo.clone(), self.ws().name.clone());
+        if root == repo {
+            workspace::unregister(&repo);
+            self.message = Some(format!("removed {name} from the list (files kept)"));
+        } else {
+            self.terms.retain(|t| t.cwd != root);
+            self.after_close();
+            match git::remove_worktree(&repo, &root) {
+                Ok(()) => self.message = Some(format!("deleted worktree {name}")),
+                Err(e) => self.message = Some(e),
+            }
+        }
+        self.load_workspaces();
+        // A deleted worktree hands over to its repository.
+        if let Some(i) = self.workspaces.iter().position(|w| w.root == repo) {
+            self.set_current(i);
+        }
+    }
+
+    // Terminals
+
+    pub fn spawn(&mut self, program: &str, focus: bool) {
+        let cwd = self.ws().root.clone();
+        match Term::spawn(self.next_id, program, &cwd, self.term_size, self.tx.clone()) {
+            Ok(term) => {
+                self.next_id += 1;
+                self.terms.push(term);
+                self.select_term(self.terms.len() - 1);
+                if focus {
+                    self.set_focus(Focus::Terminal);
+                }
+            }
+            Err(e) => self.message = Some(format!("could not start {program}: {e}")),
+        }
+    }
+
+    pub fn on_pty(&mut self, id: usize, bytes: &[u8]) {
+        let visible = self.focus == Focus::Terminal;
+        if let Some((i, term)) = self.terms.iter_mut().enumerate().find(|(_, t)| t.id == id) {
+            term.feed(bytes);
+            if visible && i == self.active {
+                term.bell = false;
+            }
+        }
+    }
+
+    pub fn on_exit(&mut self, id: usize) {
+        if let Some(i) = self.terms.iter().position(|t| t.id == id) {
+            self.terms.remove(i);
+            self.after_close();
+        }
+    }
+
+    pub fn on_paste(&mut self, text: &str) {
+        if let Some(search) = &mut self.search {
+            search.query.push_str(text.trim());
+            search.update(&self.tx);
+        } else if self.viewer.find.as_ref().is_some_and(|f| f.typing) {
+            self.viewer.edit_find(|q| q.push_str(text.trim()));
+        } else if let Some(prompt) = &mut self.prompt {
+            prompt.input.push_str(text.trim());
+        } else if self.focus == Focus::Terminal
+            && let Some(term) = self.terms.get_mut(self.active)
+        {
+            term.paste(text);
+        }
+    }
+
+    pub fn resize_terms(&mut self, rows: u16, cols: u16) {
+        self.term_size = (rows.max(1), cols.max(1));
+        for term in &mut self.terms {
+            term.resize(rows.max(1), cols.max(1));
+        }
+    }
+
+    /// Hook-reported state if the agent has hooks, otherwise output activity.
+    pub fn term_state(&self, term: &Term) -> (State, String) {
+        match self.agents.for_tab(&term.tag) {
+            Some(agent) => (agent.state, agent.detail.clone()),
+            None if term.busy() => (State::Running, String::new()),
+            None => (State::Idle, String::new()),
+        }
+    }
+
+    pub fn workspace_name(&self, dir: &Path) -> Option<&str> {
+        self.workspaces.iter().find(|w| w.root == dir).map(|w| w.name.as_str())
+    }
+
+    fn select_term(&mut self, i: usize) {
+        self.active = i;
+        self.sessions_state.select(Some(i));
+        if let Some(term) = self.terms.get_mut(i) {
+            term.bell = false;
+        }
+    }
+
+    fn after_close(&mut self) {
+        self.select_term(self.active.min(self.terms.len().saturating_sub(1)));
+        if self.terms.is_empty() && self.focus == Focus::Terminal {
+            self.set_focus(self.sidebar_focus);
+        }
+    }
+
+    // Input
+
+    /// Returns true when the app should quit.
+    pub fn on_key(&mut self, key: KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.help {
+            self.help = false;
+            return false;
+        }
+        if let Some(prompt) = &mut self.prompt {
+            match key.code {
+                KeyCode::Esc => self.prompt = None,
+                KeyCode::Enter => {
+                    if let Some(prompt) = self.prompt.take() {
+                        match prompt.kind {
+                            PromptKind::Worktree => self.create_worktree(prompt.input.trim()),
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    prompt.input.pop();
+                }
+                KeyCode::Char(c) if !ctrl => prompt.input.push(c),
+                _ => {}
+            }
+            return false;
+        }
+        if self.search.is_some() {
+            self.search_key(key);
+            return false;
+        }
+        if self.focus == Focus::Viewer && self.viewer.find.as_ref().is_some_and(|f| f.typing) {
+            match key.code {
+                KeyCode::Esc => self.viewer.clear_find(),
+                KeyCode::Enter => self.viewer.finish_find(),
+                KeyCode::Backspace => self.viewer.edit_find(|q| {
+                    q.pop();
+                }),
+                KeyCode::Char(c) if !ctrl => self.viewer.edit_find(|q| q.push(c)),
+                _ => {}
+            }
+            return false;
+        }
+        if std::mem::take(&mut self.menu) {
+            self.message = None;
+            match key.code {
+                KeyCode::Char('c') => self.spawn("claude", true),
+                KeyCode::Char('s') => self.spawn(&shell(), true),
+                KeyCode::Char('w') => self.ask(PromptKind::Worktree, "new worktree, branch name:"),
+                KeyCode::Char('r') => self.open_repo_picker(),
+                _ => {}
+            }
+            return false;
+        }
+        let pending = self.pending.take();
+        if self.focus == Focus::Terminal {
+            self.terminal_key(key, pending);
+            return false;
+        }
+
+        self.message = None;
+        match key.code {
+            // Panels, by their initial.
+            KeyCode::Char('w') => self.set_focus(Focus::Workspaces),
+            KeyCode::Char('a') => self.set_focus(Focus::Sessions),
+            KeyCode::Char('c') => self.set_focus(Focus::Changes),
+            KeyCode::Char('f') if !ctrl => self.set_focus(Focus::Files),
+            KeyCode::Char('v') if self.viewer.is_open() => self.set_focus(Focus::Viewer),
+            KeyCode::Char('s') if ctrl || !self.terms.is_empty() => self.toggle_terminal(),
+            KeyCode::Char('s') => self.spawn(&shell(), true),
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.cycle_focus(-1),
+            KeyCode::Tab => self.cycle_focus(1),
+            KeyCode::BackTab => self.cycle_focus(-1),
+
+            KeyCode::Char('/') if self.focus == Focus::Viewer => self.viewer.start_find(),
+            // n / p: next, previous search match or change. ctrl-p still goes to a file.
+            KeyCode::Char('n') if self.focus == Focus::Viewer && (self.viewer.find.is_some() || self.viewer.is_diff()) => {
+                self.viewer.next(1)
+            }
+            KeyCode::Char('p' | 'N')
+                if !ctrl && self.focus == Focus::Viewer && (self.viewer.find.is_some() || self.viewer.is_diff()) =>
+            {
+                self.viewer.next(-1)
+            }
+            KeyCode::Char('n') => self.open_menu(),
+            KeyCode::Char('p') => self.open_search(Mode::Files),
+            KeyCode::Char('/') => self.open_search(Mode::Text),
+            KeyCode::Char('f') => self.open_search(Mode::Text),
+            KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('r') => self.refresh(),
+            KeyCode::Char('q') => {
+                if self.terms.is_empty() || pending == Some('q') {
+                    return true;
+                }
+                self.confirm('q', format!("{} terminal(s) open: press q again to quit ws", self.terms.len()));
+            }
+            KeyCode::Char('x') if !self.terms.is_empty() => {
+                if pending == Some('x') {
+                    self.close_active();
+                } else {
+                    self.confirm('x', format!("press x again to close terminal {}", self.active_label()));
+                }
+            }
+            KeyCode::Char('D') if self.focus == Focus::Workspaces => {
+                if pending == Some('D') {
+                    self.remove_workspace();
+                } else if self.ws().is_worktree() {
+                    let name = self.ws().name.clone();
+                    self.confirm('D', format!("press D again to delete worktree {name} (refused if it has uncommitted changes)"));
+                } else {
+                    let name = self.ws().name.clone();
+                    self.confirm('D', format!("press D again to remove {name} from the list (files are kept)"));
+                }
+            }
+            KeyCode::Char(d @ '1'..='9') => self.enter_term(d as usize - '1' as usize),
+            KeyCode::Char(c @ ('[' | ']')) if !self.terms.is_empty() => {
+                let n = self.terms.len();
+                self.select_term(if c == ']' { (self.active + 1) % n } else { (self.active + n - 1) % n });
+                self.follow_term();
+            }
+            KeyCode::Esc if self.focus == Focus::Viewer && self.viewer.find.is_some() => self.viewer.clear_find(),
+            KeyCode::Esc if self.focus == Focus::Viewer => self.set_focus(self.sidebar_focus),
+            KeyCode::Esc => self.viewer.close(),
+            _ if self.focus == Focus::Viewer => self.viewer_key(key),
+            _ => self.list_key(key),
+        }
+        false
+    }
+
+    /// In a terminal every key goes to the program, except a few ctrl keys.
+    fn terminal_key(&mut self, key: KeyEvent, pending: Option<char>) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if pending.is_some() {
+            self.message = None;
+        }
+        match key.code {
+            KeyCode::Char('s') if ctrl => self.toggle_terminal(),
+            KeyCode::Char('n') if ctrl => self.open_menu(),
+            KeyCode::Char('q') if ctrl => {
+                if pending == Some('Q') {
+                    self.close_active();
+                } else {
+                    self.confirm('Q', format!("press ctrl-q again to close terminal {}", self.active_label()));
+                }
+            }
+            KeyCode::Char(d @ '1'..='9') if ctrl => self.enter_term(d as usize - '1' as usize),
+            _ => {
+                if let Some(term) = self.terms.get_mut(self.active) {
+                    term.key(key);
+                }
+            }
+        }
+    }
+
+    /// Focus the viewer at full height; Esc goes back to the split layout.
+    fn read_in_viewer(&mut self) {
+        self.set_focus(Focus::Viewer);
+        self.viewer.expanded = true;
+    }
+
+    fn open_menu(&mut self) {
+        self.menu = true;
+    }
+
+    fn enter_term(&mut self, i: usize) {
+        if i < self.terms.len() {
+            self.select_term(i);
+            self.follow_term();
+            self.set_focus(Focus::Terminal);
+        }
+    }
+
+    fn close_active(&mut self) {
+        if self.active < self.terms.len() {
+            self.terms.remove(self.active);
+            self.after_close();
+        }
+    }
+
+    fn active_label(&self) -> String {
+        self.terms.get(self.active).map(|t| format!("{} {}", self.active + 1, t.name)).unwrap_or_default()
+    }
+
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        if self.help && matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.help = false;
+        }
+        if self.prompt.is_some() || self.search.is_some() || self.help {
+            return;
+        }
+        let pos = Position::new(mouse.column, mouse.row);
+        let areas = self.areas;
+        let (target, area) = [
+            (Focus::Terminal, areas.terminal),
+            (Focus::Viewer, areas.viewer),
+            (Focus::Workspaces, areas.workspaces),
+            (Focus::Sessions, areas.sessions),
+            (Focus::Changes, areas.changes),
+            (Focus::Files, areas.files),
+        ]
+        .into_iter()
+        .find(|(_, area)| area.contains(pos))
+        .unwrap_or((self.focus, Rect::default()));
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if area.is_empty() || (target == Focus::Terminal && self.terms.is_empty()) {
+                    return;
+                }
+                // A click on a tab label switches terminal.
+                if target == Focus::Terminal
+                    && pos.y == area.y
+                    && let Some(&(_, _, i)) = self.tab_hits.iter().find(|(a, b, _)| (*a..=*b).contains(&pos.x))
+                {
+                    self.select_term(i);
+                    self.follow_term();
+                }
+                self.set_focus(target);
+                let Some((state, len)) = self.list(target) else { return };
+                let row = (pos.y.saturating_sub(area.y + 1)) as usize + state.offset();
+                if pos.y == area.y || row >= len {
+                    return;
+                }
+                state.select(Some(row));
+                self.on_select();
+                match target {
+                    Focus::Sessions => self.set_focus(Focus::Terminal),
+                    Focus::Files => {
+                        if let Some(row) = self.ws().selected_row().filter(|r| r.is_dir) {
+                            let (path, open) = (row.path.clone(), !row.expanded);
+                            self.ws_mut().tree.set_expanded(&path, open);
+                            self.ws_mut().reselect(Some(path));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let rows = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
+                match target {
+                    Focus::Terminal => {
+                        if let Some(term) = self.terms.get_mut(self.active) {
+                            term.scroll(-rows);
+                        }
+                    }
+                    Focus::Viewer => self.viewer.scroll_by(rows),
+                    _ if !area.is_empty() => {
+                        self.set_focus(target);
+                        self.step(rows.signum() as i32);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Search
+
+    fn open_search(&mut self, mode: Mode) {
+        self.search = Some(Search::new(mode, self.ws().root.clone(), &self.tx));
+    }
+
+    pub fn on_search(&mut self, generation: usize, hits: Vec<crate::search::Hit>) {
+        if let Some(search) = &mut self.search {
+            search.on_results(generation, hits);
+        }
+    }
+
+    fn search_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(search) = &mut self.search else { return };
+        match key.code {
+            KeyCode::Esc => self.search = None,
+            KeyCode::Enter => self.open_hit(),
+            KeyCode::Up => search.step(-1),
+            KeyCode::Down => search.step(1),
+            KeyCode::Char('k' | 'p') if ctrl => search.step(-1),
+            KeyCode::Char('j' | 'n') if ctrl => search.step(1),
+            KeyCode::PageUp => search.step(-10),
+            KeyCode::PageDown => search.step(10),
+            KeyCode::Tab | KeyCode::BackTab if search.mode != Mode::Repos => {
+                search.mode = if search.mode == Mode::Files { Mode::Text } else { Mode::Files };
+                search.update(&self.tx);
+            }
+            KeyCode::Backspace => {
+                search.query.pop();
+                search.update(&self.tx);
+            }
+            KeyCode::Char(c) if !ctrl => {
+                search.query.push(c);
+                search.update(&self.tx);
+            }
+            _ => {}
+        }
+    }
+
+    fn open_hit(&mut self) {
+        let Some(search) = self.search.take() else { return };
+        let Some(hit) = search.selected() else { return };
+        if search.mode == Mode::Repos {
+            self.add_repo(&hit.rel);
+            self.set_focus(Focus::Workspaces);
+        } else {
+            self.viewer.open_at(search.root.join(&hit.rel), hit.line, &search.root);
+            self.read_in_viewer();
+        }
+    }
+
+    pub fn open_repo_picker(&mut self) {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        self.search = Some(Search::new(Mode::Repos, home, &self.tx));
+    }
+
+    pub fn on_repos(&mut self, repos: Vec<String>) {
+        if let Some(search) = &mut self.search {
+            search.set_repos(repos, &self.tx);
+        }
+    }
+
+    fn ask(&mut self, kind: PromptKind, label: &'static str) {
+        self.prompt = Some(Prompt { kind, label, input: String::new() });
+    }
+
+    fn toggle_terminal(&mut self) {
+        if self.focus == Focus::Terminal {
+            self.set_focus(self.sidebar_focus);
+        } else if !self.terms.is_empty() {
+            self.select_term(self.active);
+            self.set_focus(Focus::Terminal);
+        }
+    }
+
+    fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+        if focus != Focus::Viewer {
+            self.viewer.expanded = false;
+        }
+        if matches!(focus, Focus::Workspaces | Focus::Sessions | Focus::Changes | Focus::Files) {
+            self.sidebar_focus = focus;
+        }
+    }
+
+    fn cycle_focus(&mut self, dir: isize) {
+        let mut order = vec![Focus::Workspaces, Focus::Sessions, Focus::Changes, Focus::Files];
+        if self.viewer.is_open() {
+            order.push(Focus::Viewer);
+        }
+        let i = order.iter().position(|f| *f == self.focus).unwrap_or(0) as isize;
+        let next = (i + dir).rem_euclid(order.len() as isize) as usize;
+        self.set_focus(order[next]);
+    }
+
+    fn confirm(&mut self, key: char, message: String) {
+        self.pending = Some(key);
+        self.message = Some(message);
+    }
+
+    fn viewer_key(&mut self, key: KeyEvent) {
+        let half = (self.viewer.height / 2).max(1) as isize;
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => self.viewer.scroll_by(1),
+            KeyCode::Up | KeyCode::Char('k') => self.viewer.scroll_by(-1),
+            KeyCode::PageDown | KeyCode::Char('d' | ' ') => self.viewer.scroll_by(half),
+            KeyCode::PageUp | KeyCode::Char('u') => self.viewer.scroll_by(-half),
+            KeyCode::Home | KeyCode::Char('g') => self.viewer.scroll_by(isize::MIN),
+            KeyCode::End | KeyCode::Char('G') => self.viewer.scroll_by(isize::MAX),
+            KeyCode::Left | KeyCode::Char('h') => self.set_focus(self.sidebar_focus),
+            KeyCode::Enter => self.viewer.expanded = !self.viewer.expanded,
+            _ => {}
+        }
+    }
+
+    fn list_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => self.step(1),
+            KeyCode::Up | KeyCode::Char('k') => self.step(-1),
+            KeyCode::Home | KeyCode::Char('g') => self.step(i32::MIN),
+            KeyCode::End | KeyCode::Char('G') => self.step(i32::MAX),
+            KeyCode::Enter => self.activate(),
+            KeyCode::Right | KeyCode::Char('l') => self.expand(true),
+            KeyCode::Left | KeyCode::Char('h') => self.expand(false),
+            _ => {}
+        }
+    }
+
+    fn list(&mut self, focus: Focus) -> Option<(&mut ListState, usize)> {
+        let count = self.workspaces.len();
+        let w = &mut self.workspaces[self.current];
+        match focus {
+            Focus::Workspaces => Some((&mut self.workspaces_state, count)),
+            Focus::Sessions => Some((&mut self.sessions_state, self.terms.len())),
+            Focus::Changes => Some((&mut w.changes_state, w.status.changes.len())),
+            Focus::Files => Some((&mut w.files_state, w.tree.rows.len())),
+            _ => None,
+        }
+    }
+
+    fn step(&mut self, delta: i32) {
+        let Some((state, len)) = self.list(self.focus) else { return };
+        if len == 0 {
+            return;
+        }
+        let next = (state.selected().unwrap_or(0) as i64 + delta as i64).clamp(0, len as i64 - 1);
+        state.select(Some(next as usize));
+        self.on_select();
+    }
+
+    /// Follow the selection: switch workspace or tab, show the diff, or
+    /// preview the file.
+    fn on_select(&mut self) {
+        match self.focus {
+            Focus::Workspaces => {
+                if let Some(i) = self.workspaces_state.selected() {
+                    self.set_current(i);
+                    // Bring up a terminal working in this workspace, if any.
+                    let root = &self.ws().root;
+                    if self.terms.get(self.active).is_some_and(|t| &t.cwd != root)
+                        && let Some(t) = self.terms.iter().position(|t| &t.cwd == root)
+                    {
+                        self.select_term(t);
+                    }
+                }
+            }
+            Focus::Sessions => {
+                if let Some(i) = self.sessions_state.selected().filter(|&i| i < self.terms.len()) {
+                    self.select_term(i);
+                    self.follow_term();
+                }
+            }
+            Focus::Changes => {
+                if let Some((path, untracked)) = self.ws().selected_change() {
+                    let root = self.ws().root.clone();
+                    self.viewer.open(Source::Diff { path, untracked }, &root);
+                }
+            }
+            Focus::Files => {
+                if let Some(path) = self.ws().selected_row().filter(|r| !r.is_dir).map(|r| r.path.clone()) {
+                    let root = self.ws().root.clone();
+                    self.viewer.open(Source::File(path), &root);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Show the workspace the active terminal works in.
+    fn follow_term(&mut self) {
+        let cwd = self.terms.get(self.active).map(|t| t.cwd.clone());
+        if let Some(i) = cwd.and_then(|cwd| self.workspaces.iter().position(|w| w.root == cwd)) {
+            self.set_current(i);
+        }
+    }
+
+    fn activate(&mut self) {
+        match self.focus {
+            Focus::Workspaces => self.set_focus(Focus::Files),
+            Focus::Sessions if !self.terms.is_empty() => self.set_focus(Focus::Terminal),
+            Focus::Files if self.ws().selected_row().is_some_and(|r| r.is_dir) => {
+                let expanded = self.ws().selected_row().is_some_and(|r| r.expanded);
+                self.expand(!expanded);
+            }
+            Focus::Changes | Focus::Files => {
+                self.on_select();
+                if self.viewer.is_open() {
+                    self.read_in_viewer();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn expand(&mut self, open: bool) {
+        if self.focus != Focus::Files {
+            return;
+        }
+        let w = self.ws_mut();
+        let Some(row) = w.selected_row() else { return };
+        let path = row.path.clone();
+        if row.is_dir && row.expanded != open {
+            w.tree.set_expanded(&path, open);
+            w.reselect(Some(path));
+        } else if !open && path.parent() != Some(&w.root) {
+            // Already collapsed (or a file): jump to the parent directory.
+            w.reselect(path.parent().map(Path::to_path_buf));
+        }
+    }
+}
+
+pub fn shell() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())
+}
