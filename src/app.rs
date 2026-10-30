@@ -36,18 +36,6 @@ pub struct Areas {
     pub viewer: Rect,
 }
 
-#[derive(Clone, Copy)]
-pub enum PromptKind {
-    Worktree,
-}
-
-/// A one-line text input shown in the footer.
-pub struct Prompt {
-    pub kind: PromptKind,
-    pub label: &'static str,
-    pub input: String,
-}
-
 pub struct App {
     pub workspaces: Vec<Workspace>,
     pub current: usize,
@@ -67,12 +55,12 @@ pub struct App {
     pub sessions_state: ListState,
     pub areas: Areas,
     pub message: Option<String>,
-    pub prompt: Option<Prompt>,
     pub search: Option<Search>,
-    /// The "new…" menu is open, waiting for c, s, w or r.
-    pub menu: bool,
     /// The full list of shortcuts is shown.
     pub help: bool,
+    /// The terminal takes the whole right side; the viewer comes back when
+    /// something is previewed.
+    pub zoomed: bool,
     /// Terminal tab labels in the tab bar: (first column, last column, tab).
     pub tab_hits: Vec<(u16, u16, usize)>,
     /// A key that must be pressed again to confirm (quit, close, delete).
@@ -114,10 +102,9 @@ impl App {
             sessions_state: ListState::default().with_selected(Some(0)),
             areas: Areas::default(),
             message: None,
-            prompt: None,
             search: None,
-            menu: false,
             help: false,
+            zoomed: false,
             tab_hits: Vec::new(),
             pending: None,
             fs_dirty: HashSet::new(),
@@ -199,7 +186,7 @@ impl App {
                     self.fs_dirty.insert(w.root.clone());
                 }
             }
-            // A worktree was added or removed (by us, an agent, or the CLI).
+            // A worktree was added or removed (by an agent or with git).
             let added_or_removed = self.workspaces.iter().any(|w| {
                 path.strip_prefix(w.repo.join(".git/worktrees")).is_ok_and(|rel| rel.components().count() == 1)
             });
@@ -236,27 +223,6 @@ impl App {
         self.viewer.reload(&root);
     }
 
-    fn create_worktree(&mut self, branch: &str) {
-        if branch.is_empty() {
-            return;
-        }
-        let repo = self.ws().repo.clone();
-        let name = repo.file_name().unwrap_or_default().to_string_lossy();
-        let parent = repo.parent().unwrap_or(&repo);
-        let path = parent.join(format!("{name}.worktrees")).join(branch.replace('/', "-"));
-        match git::add_worktree(&repo, &path, branch) {
-            Ok(()) => {
-                self.load_workspaces();
-                if let Some(i) = self.workspaces.iter().position(|w| w.root == path) {
-                    self.set_current(i);
-                }
-                self.spawn("claude", true);
-                self.message = Some(format!("created worktree {} on branch {branch}", path.display()));
-            }
-            Err(e) => self.message = Some(e),
-        }
-    }
-
     fn add_repo(&mut self, input: &str) {
         let path = match input.strip_prefix("~/") {
             Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
@@ -274,24 +240,12 @@ impl App {
         }
     }
 
+    /// Take the current repository off the list; its files are untouched.
     fn remove_workspace(&mut self) {
-        let (root, repo, name) = (self.ws().root.clone(), self.ws().repo.clone(), self.ws().name.clone());
-        if root == repo {
-            workspace::unregister(&repo);
-            self.message = Some(format!("removed {name} from the list (files kept)"));
-        } else {
-            self.terms.retain(|t| t.cwd != root);
-            self.after_close();
-            match git::remove_worktree(&repo, &root) {
-                Ok(()) => self.message = Some(format!("deleted worktree {name}")),
-                Err(e) => self.message = Some(e),
-            }
-        }
+        let (repo, name) = (self.ws().repo.clone(), self.ws().name.clone());
+        workspace::unregister(&repo);
+        self.message = Some(format!("removed {name} from the list (files kept)"));
         self.load_workspaces();
-        // A deleted worktree hands over to its repository.
-        if let Some(i) = self.workspaces.iter().position(|w| w.root == repo) {
-            self.set_current(i);
-        }
     }
 
     // Terminals
@@ -334,8 +288,6 @@ impl App {
             search.update(&self.tx);
         } else if self.viewer.find.as_ref().is_some_and(|f| f.typing) {
             self.viewer.edit_find(|q| q.push_str(text.trim()));
-        } else if let Some(prompt) = &mut self.prompt {
-            prompt.input.push_str(text.trim());
         } else if self.focus == Focus::Terminal
             && let Some(term) = self.terms.get_mut(self.active)
         {
@@ -387,24 +339,6 @@ impl App {
             self.help = false;
             return false;
         }
-        if let Some(prompt) = &mut self.prompt {
-            match key.code {
-                KeyCode::Esc => self.prompt = None,
-                KeyCode::Enter => {
-                    if let Some(prompt) = self.prompt.take() {
-                        match prompt.kind {
-                            PromptKind::Worktree => self.create_worktree(prompt.input.trim()),
-                        }
-                    }
-                }
-                KeyCode::Backspace => {
-                    prompt.input.pop();
-                }
-                KeyCode::Char(c) if !ctrl => prompt.input.push(c),
-                _ => {}
-            }
-            return false;
-        }
         if self.search.is_some() {
             self.search_key(key);
             return false;
@@ -421,17 +355,6 @@ impl App {
             }
             return false;
         }
-        if std::mem::take(&mut self.menu) {
-            self.message = None;
-            match key.code {
-                KeyCode::Char('c') => self.spawn("claude", true),
-                KeyCode::Char('s') => self.spawn(&shell(), true),
-                KeyCode::Char('w') => self.ask(PromptKind::Worktree, "new worktree, branch name:"),
-                KeyCode::Char('r') => self.open_repo_picker(),
-                _ => {}
-            }
-            return false;
-        }
         let pending = self.pending.take();
         if self.focus == Focus::Terminal {
             self.terminal_key(key, pending);
@@ -442,7 +365,7 @@ impl App {
         match key.code {
             // Panels, by their initial.
             KeyCode::Char('w') => self.set_focus(Focus::Workspaces),
-            KeyCode::Char('a') => self.set_focus(Focus::Sessions),
+            KeyCode::Char('t') => self.set_focus(Focus::Sessions),
             KeyCode::Char('c') => self.set_focus(Focus::Changes),
             KeyCode::Char('f') if !ctrl => self.set_focus(Focus::Files),
             KeyCode::Char('v') if self.viewer.is_open() => self.set_focus(Focus::Viewer),
@@ -462,10 +385,13 @@ impl App {
             {
                 self.viewer.next(-1)
             }
-            KeyCode::Char('n') => self.open_menu(),
+            // n and x act on the panel: workspaces there, terminals elsewhere.
+            KeyCode::Char('n') if self.focus == Focus::Workspaces => self.open_repo_picker(),
+            KeyCode::Char('n') => self.spawn(&shell(), true),
             KeyCode::Char('p') => self.open_search(Mode::Files),
             KeyCode::Char('/') => self.open_search(Mode::Text),
-            KeyCode::Char('f') => self.open_search(Mode::Text),
+            // ctrl-f, or z for zoom: the current terminal, full height.
+            KeyCode::Char('f' | 'z') => self.zoom_terminal(),
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('r') => self.refresh(),
             KeyCode::Char('q') => {
@@ -474,24 +400,18 @@ impl App {
                 }
                 self.confirm('q', format!("{} terminal(s) open: press q again to quit ws", self.terms.len()));
             }
-            KeyCode::Char('x') if !self.terms.is_empty() => {
+            KeyCode::Char('x') if self.focus == Focus::Workspaces && self.ws().is_worktree() => {
+                self.message = Some("this is a git worktree of the workspace above; ws leaves worktrees to git".into());
+            }
+            KeyCode::Char('x') if self.focus == Focus::Workspaces => {
                 if pending == Some('x') {
-                    self.close_active();
-                } else {
-                    self.confirm('x', format!("press x again to close terminal {}", self.active_label()));
-                }
-            }
-            KeyCode::Char('D') if self.focus == Focus::Workspaces => {
-                if pending == Some('D') {
                     self.remove_workspace();
-                } else if self.ws().is_worktree() {
-                    let name = self.ws().name.clone();
-                    self.confirm('D', format!("press D again to delete worktree {name} (refused if it has uncommitted changes)"));
                 } else {
                     let name = self.ws().name.clone();
-                    self.confirm('D', format!("press D again to remove {name} from the list (files are kept)"));
+                    self.confirm('x', format!("press x again to remove {name} from the list (files are kept)"));
                 }
             }
+            KeyCode::Char('x') => self.close_terminal('x', "x", pending),
             KeyCode::Char(d @ '1'..='9') => self.enter_term(d as usize - '1' as usize),
             KeyCode::Char(c @ ('[' | ']')) if !self.terms.is_empty() => {
                 let n = self.terms.len();
@@ -515,14 +435,9 @@ impl App {
         }
         match key.code {
             KeyCode::Char('s') if ctrl => self.toggle_terminal(),
-            KeyCode::Char('n') if ctrl => self.open_menu(),
-            KeyCode::Char('q') if ctrl => {
-                if pending == Some('Q') {
-                    self.close_active();
-                } else {
-                    self.confirm('Q', format!("press ctrl-q again to close terminal {}", self.active_label()));
-                }
-            }
+            KeyCode::Char('f') if ctrl => self.zoomed = !self.zoomed,
+            KeyCode::Char('n') if ctrl => self.spawn(&shell(), true),
+            KeyCode::Char('q') if ctrl => self.close_terminal('Q', "ctrl-q", pending),
             KeyCode::Char(d @ '1'..='9') if ctrl => self.enter_term(d as usize - '1' as usize),
             _ => {
                 if let Some(term) = self.terms.get_mut(self.active) {
@@ -538,8 +453,27 @@ impl App {
         self.viewer.expanded = true;
     }
 
-    fn open_menu(&mut self) {
-        self.menu = true;
+    fn zoom_terminal(&mut self) {
+        if self.terms.is_empty() {
+            self.spawn(&shell(), true);
+        } else {
+            self.enter_term(self.active);
+        }
+        self.zoomed = self.focus == Focus::Terminal;
+    }
+
+    /// Close the active terminal right away if its shell is idle; if a
+    /// program runs in it (Claude, a server…), ask for the key again first.
+    fn close_terminal(&mut self, confirm_key: char, key_name: &str, pending: Option<char>) {
+        let Some(term) = self.terms.get_mut(self.active) else { return };
+        term.refresh_foreground();
+        match term.running.clone() {
+            Some(program) if pending != Some(confirm_key) => {
+                let n = self.active + 1;
+                self.confirm(confirm_key, format!("{program} is running in terminal {n}: press {key_name} again to close it"));
+            }
+            _ => self.close_active(),
+        }
     }
 
     /// Tab names follow what runs in each terminal.
@@ -564,15 +498,11 @@ impl App {
         }
     }
 
-    fn active_label(&self) -> String {
-        self.terms.get(self.active).map(|t| format!("{} {}", self.active + 1, t.name)).unwrap_or_default()
-    }
-
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
         if self.help && matches!(mouse.kind, MouseEventKind::Down(_)) {
             self.help = false;
         }
-        if self.prompt.is_some() || self.search.is_some() || self.help {
+        if self.search.is_some() || self.help {
             return;
         }
         let pos = Position::new(mouse.column, mouse.row);
@@ -736,10 +666,6 @@ impl App {
         }
     }
 
-    fn ask(&mut self, kind: PromptKind, label: &'static str) {
-        self.prompt = Some(Prompt { kind, label, input: String::new() });
-    }
-
     fn toggle_terminal(&mut self) {
         if self.focus == Focus::Terminal {
             self.set_focus(self.sidebar_focus);
@@ -751,6 +677,9 @@ impl App {
 
     fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
+        if focus == Focus::Viewer {
+            self.zoomed = false;
+        }
         if focus != Focus::Viewer {
             self.viewer.expanded = false;
         }
@@ -852,12 +781,14 @@ impl App {
                 if let Some((path, untracked)) = self.ws().selected_change() {
                     let root = self.ws().root.clone();
                     self.viewer.open(Source::Diff { path, untracked }, &root);
+                    self.zoomed = false;
                 }
             }
             Focus::Files => {
                 if let Some(path) = self.ws().selected_row().filter(|r| !r.is_dir).map(|r| r.path.clone()) {
                     let root = self.ws().root.clone();
                     self.viewer.open(Source::File(path), &root);
+                    self.zoomed = false;
                 }
             }
             _ => {}

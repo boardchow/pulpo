@@ -14,7 +14,7 @@ use crate::theme::{ACCENT, BG, BLUE, BORDER, DIM, EDITOR_BG, FG, GREEN, HOVER, M
 pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Block::new().style(Style::new().fg(FG).bg(BG)), frame.area());
     let [main, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
-    let width = (main.width * 28 / 100).clamp(26, 44).min(main.width);
+    let width = (main.width * 24 / 100).clamp(26, 38).min(main.width);
     let [sidebar, right] = Layout::horizontal([Constraint::Length(width), Constraint::Fill(1)]).areas(main);
     draw_sidebar(frame, app, sidebar);
     draw_right(frame, app, right);
@@ -73,9 +73,9 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Agents and terminals, across all workspaces.
     let focused = app.focus == Focus::Sessions;
-    let sessions_block = block("Agents & terminals", focused);
+    let sessions_block = block("Terminals", focused);
     if app.terms.is_empty() {
-        let hint = Line::from(" n c: Claude · n s: shell").fg(MUTED);
+        let hint = Line::from(" n: new shell").fg(MUTED);
         frame.render_widget(Paragraph::new(hint).block(sessions_block), sessions);
     } else {
         let items: Vec<ListItem> = app
@@ -180,14 +180,16 @@ fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
         draw_viewer(frame, app, area);
         return;
     }
+    // Zoomed: the terminal alone, the viewer stays open but hidden.
+    let viewer_shown = app.viewer.is_open() && !(app.zoomed && !app.terms.is_empty());
     let [top, bottom] = Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
-    let term_area = if app.viewer.is_open() { top } else { area };
+    let term_area = if viewer_shown { top } else { area };
     let inner = Block::bordered().inner(term_area);
     app.resize_terms(inner.height, inner.width);
 
     app.areas.terminal = Rect::default();
     app.areas.viewer = Rect::default();
-    match (app.terms.is_empty(), app.viewer.is_open()) {
+    match (app.terms.is_empty(), viewer_shown) {
         (true, true) => draw_viewer(frame, app, area),
         (_, true) => {
             draw_terminal(frame, app, top);
@@ -232,8 +234,7 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
                 Line::default(),
                 Line::from("  No terminals open.").bold(),
                 Line::default(),
-                key("n c", "start Claude Code in this workspace"),
-                key("n s", "open a shell"),
+                key("n", "open a shell in this workspace (then type claude for an agent)"),
                 key("ctrl-s", "switch between the sidebar and the terminal"),
             ];
             frame.render_widget(Paragraph::new(hint), inner);
@@ -257,21 +258,6 @@ fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    if let Some(prompt) = &app.prompt {
-        let line = Line::from(vec![
-            Span::from(format!(" {} ", prompt.label)).fg(BLUE).bold(),
-            Span::from(prompt.input.clone()),
-            Span::from("█").fg(BLUE),
-            Span::from("   ⏎ ok · esc cancel").fg(MUTED),
-        ]);
-        frame.render_widget(line, area);
-        return;
-    }
-    if app.menu {
-        let keys = [("c", "Claude"), ("s", "shell"), ("w", "worktree + Claude"), ("r", "repository"), ("esc", "cancel")];
-        frame.render_widget(Line::from(footer_spans("NEW", GREEN, &keys, &[])), area);
-        return;
-    }
     if let Some(message) = &app.message {
         frame.render_widget(Line::from(format!(" {message}")).fg(YELLOW).bold(), area);
         return;
@@ -302,24 +288,29 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let (badge, keys): (&str, &[(&str, &str)]) = match app.focus {
         Focus::Terminal => (
             "TERMINAL",
-            &[("ctrl-s", "sidebar"), ("ctrl-n", "new"), ("ctrl-q", "close tab"), ("ctrl-1-9", "switch tab"), ("shift-⏎", "new line")],
+            // ctrl-f only matters when there is a viewer to hide or show.
+            match (app.viewer.is_open(), app.zoomed) {
+                (true, true) => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-1-9", "switch"), ("ctrl-f", "show viewer"), ("shift-⏎", "new line")],
+                (true, false) => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-1-9", "switch"), ("ctrl-f", "hide viewer"), ("shift-⏎", "new line")],
+                _ => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-1-9", "switch"), ("shift-⏎", "new line")],
+            },
         ),
-        Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("D", "remove")]),
-        Focus::Sessions => ("AGENTS", &[("j/k", "pick"), ("⏎", "enter"), ("x", "close")]),
-        Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff")]),
-        Focus::Files => ("FILES", &[("j/k", "move"), ("⏎", "open"), ("h/l", "fold")]),
+        Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("n", "new workspace"), ("x", "remove")]),
+        Focus::Sessions => ("TERMINALS", &[("j/k", "pick"), ("⏎", "enter"), ("n", "new shell"), ("x", "close")]),
+        Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff"), ("n", "new shell")]),
+        Focus::Files => ("FILES", &[("j/k", "move"), ("⏎", "open"), ("h/l", "fold"), ("n", "new shell")]),
         Focus::Viewer => match (app.viewer.is_diff(), app.viewer.expanded) {
-            (true, true) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k", "scroll"), ("/", "find"), ("⏎", "split view"), ("esc", "back")]),
-            (true, false) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k", "scroll"), ("/", "find"), ("⏎", "full height"), ("esc", "back")]),
-            (false, true) => ("VIEWER", &[("j/k", "scroll"), ("/", "find in file"), ("⏎", "split view"), ("esc", "back")]),
-            (false, false) => ("VIEWER", &[("j/k", "scroll"), ("/", "find in file"), ("⏎", "full height"), ("esc", "back")]),
+            (true, true) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "split view"), ("esc", "back")]),
+            (true, false) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "full height"), ("esc", "back")]),
+            (false, true) => ("VIEWER", &[("j/k h/l", "scroll"), ("/", "find in file"), ("⏎", "split view"), ("esc", "back")]),
+            (false, false) => ("VIEWER", &[("j/k h/l", "scroll"), ("/", "find in file"), ("⏎", "full height"), ("esc", "back")]),
         },
     };
     let global: &[(&str, &str)] = match app.focus {
         Focus::Terminal => &[],
         // In the viewer, / finds in the file instead.
-        Focus::Viewer => &[("w a c f s", "go to panel"), ("n", "new"), ("p", "file"), ("?", "all keys"), ("q", "quit")],
-        _ => &[("w a c f s", "go to panel"), ("n", "new"), ("p", "file"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
+        Focus::Viewer => &[("w t c f s", "go to panel"), ("p", "file"), ("?", "all keys"), ("q", "quit")],
+        _ => &[("w t c f s", "go to panel"), ("p", "file"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
     };
     let color = if app.focus == Focus::Terminal { YELLOW } else { ACCENT };
     frame.render_widget(Line::from(footer_spans(badge, color, keys, global)), area);
@@ -345,48 +336,44 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Go to a panel",
         &[
-            ("w", "Workspaces"),
-            ("a", "Agents & terminals"),
-            ("c", "Changes"),
-            ("f", "Files"),
-            ("v", "Viewer"),
-            ("s", "Shell: enter the current terminal (opens one if there is none)"),
+            ("w t c f v", "Workspaces, Terminals, Changes, Files, Viewer"),
+            ("s", "into the current shell (opens one if there is none)"),
+            ("z / ctrl-f", "into the current shell, full height (hides the viewer)"),
             ("tab / shift-tab", "next / previous panel"),
         ],
     ),
     (
-        "Create",
+        "In a panel",
         &[
-            ("n c", "new Claude in the current workspace"),
-            ("n s", "new shell in the current workspace"),
-            ("n w", "new worktree on a new branch, with Claude in it"),
-            ("n r", "add a repository"),
+            ("n", "new: a workspace in Workspaces, a shell anywhere else"),
+            ("x x", "remove a workspace from the list (files kept) / close the terminal"),
+            ("j k  ↑ ↓  ⏎", "move, open (a terminal, a file, a diff)"),
+            ("h l", "fold / unfold a folder"),
+            ("1-9  [ ]", "enter terminal N / previous, next terminal"),
+            ("p   /", "go to file / search in files"),
+            ("r", "refresh"),
+            ("q q", "quit ws (closes all terminals)"),
         ],
     ),
     (
         "Inside a terminal",
         &[
             ("ctrl-s", "back to the sidebar (ctrl-s or s to come back)"),
-            ("ctrl-n", "new… (then c, s, w or r)"),
-            ("ctrl-q ctrl-q", "close this terminal"),
+            ("ctrl-n", "new shell"),
+            ("ctrl-q", "close this shell (asks again if something is running in it)"),
             ("ctrl-1-9", "switch to terminal 1-9"),
+            ("ctrl-f", "hide / show the viewer under the terminal"),
             ("shift-⏎", "new line in a Claude prompt"),
+            ("claude", "type it in a shell to start an agent; the tab is named after it"),
         ],
     ),
     (
-        "Everywhere else",
+        "In the viewer",
         &[
-            ("j k  ↑ ↓  ⏎", "move, open (a terminal, a file, a diff)"),
-            ("h l", "fold / unfold a folder"),
-            ("p   /", "go to file / search in files (in the viewer: find in this file)"),
-            ("1-9  [ ]", "enter terminal N / previous, next terminal"),
-            ("x x", "close the current terminal"),
-            ("D D", "delete a worktree / remove a repository from the list"),
-            ("d u  g G", "viewer: page down, up / top, bottom"),
-            ("⏎ / esc", "viewer: full height or split view / back to the previous layout"),
-            ("/  n p", "viewer: find in this file / next, previous match (or change, in a diff)"),
-            ("r", "refresh"),
-            ("q q", "quit ws (closes all terminals)"),
+            ("⏎ / esc", "full height or split view / back to where you were"),
+            ("/  n p", "find in this file / next, previous match (or change, in a diff)"),
+            ("d u  g G", "page down, up / top, bottom"),
+            ("h l  ← →  0", "scroll sideways / back to the start (also shift + wheel, trackpad)"),
             ("click", "focus a panel, pick an item, switch tab; shift-drag selects text"),
         ],
     ),
@@ -426,7 +413,7 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
     let (title, hint) = match search.mode {
         Mode::Files => (" Go to file ", " tab: search text instead · ↑↓ move · ⏎ open · esc close "),
         Mode::Text => (" Search in files ", " tab: find files instead · ↑↓ move · ⏎ open · esc close "),
-        Mode::Repos => (" Add a repository ", " type to filter, or a path (~/…) · ↑↓ move · ⏎ add · esc close "),
+        Mode::Repos => (" Add a workspace ", " git repositories in your home folder · type to filter, or a path (~/…) · ⏎ add · esc close "),
     };
     let block = block(title.trim(), true).title_bottom(Line::from(hint).fg(DIM));
     let inner = block.inner(popup);
@@ -437,7 +424,7 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
     let status = match search.mode {
         Mode::Repos if search.busy => "looking for git repositories in your home folder…".to_string(),
         _ if search.busy => "searching…".to_string(),
-        Mode::Repos => format!("{} repositories", search.hits.len()),
+        Mode::Repos => format!("{} found", search.hits.len()),
         Mode::Text if search.query.chars().count() < 2 => "type at least 2 characters".to_string(),
         Mode::Files => format!("{} files", search.hits.len()),
         Mode::Text if search.hits.len() >= 500 => "500+ matches".to_string(),

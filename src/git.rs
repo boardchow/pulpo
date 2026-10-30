@@ -61,24 +61,6 @@ pub fn worktrees(repo: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Check out `branch` in a new worktree at `path`, creating the branch from
-/// the current HEAD if it doesn't exist yet.
-pub fn add_worktree(repo: &Path, path: &Path, branch: &str) -> Result<(), String> {
-    let path = path.to_string_lossy();
-    let exists = git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).is_ok();
-    let args: &[&str] = if exists {
-        &["worktree", "add", &path, branch]
-    } else {
-        &["worktree", "add", "-b", branch, &path]
-    };
-    git(repo, args).map(|_| ())
-}
-
-/// Remove a linked worktree. Git refuses if it has uncommitted changes.
-pub fn remove_worktree(repo: &Path, path: &Path) -> Result<(), String> {
-    git(repo, &["worktree", "remove", &path.to_string_lossy()]).map(|_| ())
-}
-
 pub fn status(root: &Path) -> Status {
     // --no-optional-locks keeps git from rewriting the index, which would
     // wake our own file watcher in a loop.
