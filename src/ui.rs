@@ -267,8 +267,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let focused = app.focus == Focus::Files;
-    let title = format!("Files · {}", ws.name);
-    let list = List::new(items).block(block(&title, focused)).highlight_style(highlight(focused));
+    let list = List::new(items).block(block("Files", focused)).highlight_style(highlight(focused));
     frame.render_stateful_widget(list, files, &mut ws.files_state);
 }
 
