@@ -407,6 +407,10 @@ fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+    if app.new_menu {
+        frame.render_widget(Line::from(footer_spans("NEW", ACCENT, &[("w", "workspace"), ("s", "shell"), ("esc", "cancel")], &[])), area);
+        return;
+    }
     if let Some(message) = &app.message {
         frame.render_widget(Line::from(format!(" {message}")).fg(YELLOW).bold(), area);
         return;
@@ -443,11 +447,11 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
                 _ => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-1-9", "switch"), ("shift-⏎", "new line")],
             },
         ),
-        Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("n", "new workspace"), ("x", "remove")]),
-        Focus::Sessions => ("TERMINALS", &[("j/k", "pick"), ("⏎", "enter"), ("n", "new shell"), ("x", "close")]),
-        Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff"), ("n", "new shell")]),
-        Focus::Graph => ("GRAPH", &[("j/k", "move"), ("⏎", "a commit's files / read a diff"), ("h/l", "fold"), ("n", "new shell")]),
-        Focus::Files => ("FILES", &[("j/k", "move"), ("⏎", "open"), ("h/l", "fold"), ("n", "new shell")]),
+        Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("x", "remove")]),
+        Focus::Sessions => ("TERMINALS", &[("j/k", "pick"), ("⏎", "enter"), ("x", "close")]),
+        Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff")]),
+        Focus::Graph => ("GRAPH", &[("j/k", "move"), ("⏎", "a commit's files / read a diff"), ("h/l", "fold")]),
+        Focus::Files => ("FILES", &[("j/k", "move"), ("⏎", "open"), ("h/l", "fold")]),
         Focus::Viewer => match (app.viewer.is_diff(), app.viewer.expanded) {
             (true, true) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "split view"), ("esc", "back")]),
             (true, false) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "full height"), ("esc", "back")]),
@@ -459,7 +463,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Focus::Terminal => &[],
         // In the viewer, / finds in the file instead.
         Focus::Viewer => &[("w t c f s", "go to panel"), ("?", "all keys"), ("q", "quit")],
-        _ => &[("w t c g f s", "go to panel"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
+        _ => &[("w t c g f s", "go to panel"), ("n", "new"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
     };
     let color = if app.focus == Focus::Terminal { YELLOW } else { ACCENT };
     frame.render_widget(Line::from(footer_spans(badge, color, keys, global)), area);
@@ -494,7 +498,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "In a panel",
         &[
-            ("n", "new: a workspace in Workspaces, a shell anywhere else"),
+            ("n w  n s", "new workspace / new shell in this workspace"),
             ("x x", "remove a workspace from the list (files kept) / close the terminal"),
             ("j k  ↑ ↓  ⏎", "move, open (a terminal, a file, a diff, a commit's files)"),
             ("h l", "fold / unfold a folder, or a commit's files in Graph"),
@@ -508,7 +512,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         "Inside a terminal",
         &[
             ("ctrl-s", "back to the sidebar (ctrl-s or s to come back)"),
-            ("ctrl-n", "new shell"),
+            ("ctrl-n", "new shell in this terminal's workspace"),
             ("ctrl-q", "close this shell (asks again if something is running in it)"),
             ("ctrl-1-9", "switch to terminal 1-9"),
             ("ctrl-f", "hide / show the viewer under the terminal"),

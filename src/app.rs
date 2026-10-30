@@ -62,6 +62,8 @@ pub struct App {
     pub search: Option<Search>,
     /// The full list of shortcuts is shown.
     pub help: bool,
+    /// n was pressed: w or s next says what to make.
+    pub new_menu: bool,
     /// The terminal takes the whole right side; the viewer comes back when
     /// something is previewed.
     pub zoomed: bool,
@@ -108,6 +110,7 @@ impl App {
             message: None,
             search: None,
             help: false,
+            new_menu: false,
             zoomed: false,
             tab_hits: Vec::new(),
             pending: None,
@@ -363,6 +366,15 @@ impl App {
             self.help = false;
             return false;
         }
+        if self.new_menu {
+            self.new_menu = false;
+            match key.code {
+                KeyCode::Char('w') => self.open_repo_picker(),
+                KeyCode::Char('s') => self.spawn(&shell(), true),
+                _ => {}
+            }
+            return false;
+        }
         if self.search.is_some() {
             self.search_key(key);
             return false;
@@ -411,9 +423,8 @@ impl App {
             {
                 self.viewer.next(-1)
             }
-            // n and x act on the panel: workspaces there, terminals elsewhere.
-            KeyCode::Char('n') if self.focus == Focus::Workspaces => self.open_repo_picker(),
-            KeyCode::Char('n') => self.spawn(&shell(), true),
+            KeyCode::Char('n') => self.new_menu = true,
+            // x acts on the panel: workspaces there, terminals elsewhere.
             // File names first; tab in the popup searches inside files.
             KeyCode::Char('/') => self.open_search(Mode::Files),
             // ctrl-f, or z for zoom: the current terminal, full height.
@@ -462,7 +473,11 @@ impl App {
         match key.code {
             KeyCode::Char('s') if ctrl => self.toggle_terminal(),
             KeyCode::Char('f') if ctrl => self.zoomed = !self.zoomed,
-            KeyCode::Char('n') if ctrl => self.spawn(&shell(), true),
+            // The new shell starts in the workspace of the one you are in.
+            KeyCode::Char('n') if ctrl => {
+                self.follow_term();
+                self.spawn(&shell(), true);
+            }
             KeyCode::Char('q') if ctrl => self.close_terminal('Q', "ctrl-q", pending),
             KeyCode::Char(d @ '1'..='9') if ctrl => self.enter_term(d as usize - '1' as usize),
             _ => {
@@ -525,10 +540,11 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
-        if self.help && matches!(mouse.kind, MouseEventKind::Down(_)) {
+        if (self.help || self.new_menu) && matches!(mouse.kind, MouseEventKind::Down(_)) {
             self.help = false;
+            self.new_menu = false;
         }
-        if self.search.is_some() || self.help {
+        if self.search.is_some() || self.help || self.new_menu {
             return;
         }
         let pos = Position::new(mouse.column, mouse.row);

@@ -29,12 +29,13 @@ make install
 pulpo
 ```
 
-Run it from anywhere: it opens your workspaces. Started inside a git repository, it adds that one and opens it; `n` in Workspaces adds others. The bottom line shows the keys that work where you are, and `?` lists them all.
+Run it from anywhere: it opens your workspaces. Started inside a git repository, it adds that one and opens it; `n` then `w` adds others. The bottom line shows the keys that work where you are, and `?` lists them all.
 
 | Key | Does |
 | --- | --- |
 | `w` `t` `c` `g` `f` | go to Workspaces, Terminals, Changes, Graph, Files |
-| `n` | new shell (type `claude` in it for an agent) |
+| `n w` / `n s` | new workspace / new shell in this workspace (type `claude` in it for an agent) |
+| `ctrl-n` | in a terminal: new shell in the same workspace |
 | `ctrl-s` | switch between the sidebar and the terminal |
 | `/` | find a file; `tab` searches inside files |
 | `q` | quit (stops everything running inside) |
