@@ -542,6 +542,13 @@ impl App {
         self.menu = true;
     }
 
+    /// Tab names follow what runs in each terminal.
+    pub fn refresh_foreground(&mut self) {
+        for term in &mut self.terms {
+            term.refresh_foreground();
+        }
+    }
+
     fn enter_term(&mut self, i: usize) {
         if i < self.terms.len() {
             self.select_term(i);

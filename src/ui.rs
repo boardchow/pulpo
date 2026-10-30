@@ -93,7 +93,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 let mut spans = vec![
                     Span::from(format!(" {} ", i + 1)).fg(MUTED),
                     Span::from(format!("{icon} ")).fg(color).bold(),
-                    Span::from(term.name.clone()),
+                    Span::from(term.label().to_string()),
                 ];
                 if let Some(ws) = app.workspace_name(&term.cwd) {
                     spans.push(Span::from(format!(" {ws}")).fg(MUTED));
@@ -203,7 +203,7 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut x = area.x + 2;
     app.tab_hits.clear();
     for (i, term) in app.terms.iter().enumerate() {
-        let label = Span::from(format!(" {} {} ", i + 1, term.name));
+        let label = Span::from(format!(" {} {} ", i + 1, term.label()));
         let width = label.width() as u16;
         app.tab_hits.push((x, x + width.saturating_sub(1), i));
         x += width + 1;

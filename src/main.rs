@@ -107,6 +107,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
     }
 
     let mut last_fs_refresh = Instant::now();
+    let mut last_foreground = Instant::now();
     loop {
         terminal.draw(|frame| ui::draw(frame, app))?;
 
@@ -133,6 +134,10 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
                 Msg::Search(generation, hits) => app.on_search(generation, hits),
                 Msg::Repos(repos) => app.on_repos(repos),
             }
+        }
+        if last_foreground.elapsed() >= Duration::from_secs(1) {
+            app.refresh_foreground();
+            last_foreground = Instant::now();
         }
         if app.fs_pending() && last_fs_refresh.elapsed() >= FS_THROTTLE {
             app.flush_fs();

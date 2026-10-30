@@ -61,6 +61,9 @@ pub struct Term {
     /// Exported as `WS_TAB` so hook events can be matched to this terminal.
     pub tag: String,
     pub name: String,
+    /// The program running in the foreground, when it isn't the shell itself
+    /// (None: the shell is idle at its prompt).
+    pub running: Option<String>,
     /// The workspace directory the program was started in.
     pub cwd: PathBuf,
     pub title: String,
@@ -105,6 +108,7 @@ impl Term {
             id,
             tag,
             name,
+            running: None,
             cwd: cwd.to_path_buf(),
             title: String::new(),
             bell: false,
@@ -189,6 +193,19 @@ impl Term {
         screen.set_scrollback(screen.scrollback().saturating_add_signed(rows));
     }
 
+    /// What to call this terminal: the program running in it, or the shell.
+    pub fn label(&self) -> &str {
+        self.running.as_deref().unwrap_or(&self.name)
+    }
+
+    pub fn refresh_foreground(&mut self) {
+        let leader = self.master.process_group_leader();
+        self.running = match (leader, self.child.process_id()) {
+            (Some(group), Some(shell)) if group as u32 != shell => process_name(group as u32),
+            _ => None,
+        };
+    }
+
     pub fn busy(&self) -> bool {
         self.last_output.elapsed() < BUSY_FOR
     }
@@ -234,6 +251,13 @@ impl Drop for Term {
     fn drop(&mut self) {
         let _ = self.child.kill();
     }
+}
+
+fn process_name(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("ps").args(["-o", "comm=", "-p", &pid.to_string()]).output().ok()?;
+    let comm = String::from_utf8_lossy(&out.stdout);
+    let name = comm.trim().rsplit('/').next()?.trim_start_matches('-');
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 fn nz(n: u16) -> NonZeroU16 {
