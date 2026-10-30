@@ -31,6 +31,47 @@ const PULPO: [&str; 3] = [
     "𜴁𜴄🮂𜴁𜴄🮂𜴁𜴄",
 ];
 
+/// The pulpo, and beside it the version, what the terminals are doing and
+/// where the current workspace lives.
+fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    let art_width = PULPO[0].chars().count() as u16;
+    let [art, text] = Layout::horizontal([Constraint::Length(art_width), Constraint::Fill(1)]).spacing(2).areas(area);
+    let lines: Vec<Line> = PULPO.iter().map(|row| Line::from(*row)).collect();
+    frame.render_widget(Paragraph::new(lines).fg(BLUE), art);
+
+    let states: Vec<State> = app.terms.iter().map(|term| app.term_state(term).0).collect();
+    let count = |state: State| states.iter().filter(|&&s| s == state).count();
+    let busy: Vec<String> = [(count(State::Waiting), "waiting for you"), (count(State::Running), "working")]
+        .into_iter()
+        .filter(|&(n, _)| n > 0)
+        .map(|(n, label)| format!("{n} {label}"))
+        .collect();
+    let activity = match states.len() {
+        _ if !busy.is_empty() => busy.join(" · "),
+        0 => "no terminals yet".to_string(),
+        1 => "1 terminal, all quiet".to_string(),
+        n => format!("{n} terminals, all quiet"),
+    };
+
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let root = &app.ws().root;
+    let path = match root.strip_prefix(&home) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => root.display().to_string(),
+    };
+    // Too long for the sidebar: keep the end, which names the workspace.
+    let width = text.width as usize;
+    let length = path.chars().count();
+    let path = if length > width && width > 0 { format!("…{}", path.chars().skip(length - width + 1).collect::<String>()) } else { path };
+
+    let lines = vec![
+        Line::from(vec![Span::from("Pulpo").fg(FG).bold(), Span::from(concat!(" v", env!("CARGO_PKG_VERSION"))).fg(MUTED)]),
+        Line::from(activity).fg(MUTED),
+        Line::from(path).fg(MUTED),
+    ];
+    frame.render_widget(Paragraph::new(lines), text);
+}
+
 fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let workspaces_height = app.workspaces.len().clamp(1, 8) as u16 + 2;
     let sessions_height = app.terms.len().clamp(1, 6) as u16 + 2;
@@ -49,8 +90,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     app.areas.changes = changes;
     app.areas.files = files;
 
-    let art: Vec<Line> = PULPO.iter().map(|row| Line::from(*row)).collect();
-    frame.render_widget(Paragraph::new(art).fg(BLUE), mascot.inner(Margin::new(1, 1)));
+    draw_header(frame, app, mascot.inner(Margin::new(1, 1)));
 
     // Workspaces: each repository followed by its worktrees.
     let items: Vec<ListItem> = app
