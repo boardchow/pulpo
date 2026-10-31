@@ -9,9 +9,10 @@
   <img src="https://img.shields.io/badge/built%20with-Rust-black?style=flat-square" alt="Rust">
   <img src="https://img.shields.io/badge/terminal-Ghostty-black?style=flat-square" alt="Ghostty">
   <img src="https://img.shields.io/badge/agent-Claude%20Code-black?style=flat-square" alt="Claude Code">
+  <img src="https://img.shields.io/badge/license-MIT-black?style=flat-square" alt="MIT license">
 </p>
 
-<p align="center"><b>Many agents. One terminal.</b><br>Spin up a few coding agents, give each its own copy of your repo, and see who needs you. One terminal. Have fun :)</p>
+<p align="center"><b>Many agents. One terminal.</b><br>Spin up a few coding agents, give each its own copy of your repo,<br>and see who needs you. One terminal. Have fun :)</p>
 
 <p align="center"><a href="https://pulpo.sh">pulpo.sh</a></p>
 
@@ -165,6 +166,6 @@ make test   # unit tests, and the server's end-to-end test
 
 [PLAN.md](PLAN.md) explains how it's built and what's next. [web/](web) is [pulpo.sh](https://pulpo.sh) and the installer.
 
----
+## License
 
-<p align="center">Pulpo means octopus in Spanish.<br>Many arms, one brain.<br>You're the brain. :)</p>
+[MIT](LICENSE). Use it, fork it, ship it. Just keep the notice.

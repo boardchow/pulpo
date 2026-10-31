@@ -3,6 +3,9 @@ name = "pulpo"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
+description = "A multiplexer for coding agents"
+license = "MIT"
+repository = "https://github.com/boardchow/pulpo"
 
 [dependencies]
 anyhow = "1.0.104"
