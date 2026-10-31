@@ -544,7 +544,7 @@ impl Server {
                     self.send(client, &ToClient::Ready);
                 }
             }
-            ToServer::Spawn { token, program, args, cwd, rows, cols } => match self.spawn(&program, &args, &cwd, (rows, cols)) {
+            ToServer::Spawn { token, program, args, cwd, rows, cols, env } => match self.spawn(&program, &args, &cwd, &env, (rows, cols)) {
                 Ok(()) => {
                     let i = self.terminals.len() - 1;
                     let others: Vec<u64> = self.clients.iter().map(|c| c.id).filter(|&c| c != client).collect();
@@ -587,16 +587,17 @@ impl Server {
         }
     }
 
-    fn spawn(&mut self, program: &str, args: &[String], cwd: &Path, (rows, cols): (u16, u16)) -> Result<()> {
+    fn spawn(&mut self, program: &str, args: &[String], cwd: &Path, extra: &[(String, String)], (rows, cols): (u16, u16)) -> Result<()> {
         let id = self.next_terminal;
         let tag = format!("{}-{id}", std::process::id());
-        let env = [
+        let mut env = vec![
             ("TERM", "xterm-256color"),
             ("COLORTERM", "truecolor"),
             // micro only uses 24-bit color when told.
             ("MICRO_TRUECOLOR", "1"),
             ("PULPO_TAB", tag.as_str()),
         ];
+        env.extend(extra.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         // Don't let programs assume Ghostty features this emulator lacks.
         let pty = pty::spawn(program, args, cwd, &env, &["TERM_PROGRAM", "TERM_PROGRAM_VERSION"], (rows, cols))?;
         self.readers.push(reader(id, &pty.master, self.wake.0.as_raw_fd(), self.events.clone())?);

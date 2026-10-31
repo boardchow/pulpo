@@ -80,8 +80,8 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
-    let workspaces_height = app.workspaces.len().clamp(1, 8) as u16 + 2;
-    let sessions_height = app.terms.len().clamp(1, 6) as u16 + 2;
+    let workspaces_height = app.repos().len().clamp(1, 8) as u16 + 2;
+    let sessions_height = app.sessions().len().clamp(1, 6) as u16 + 2;
     let changes_height = app.ws().status.changes.len().clamp(1, 8) as u16 + 2;
     // Taller while you browse it, to see a commit's files.
     let graph_max = if app.focus == Focus::Graph { 20 } else { 10 };
@@ -105,19 +105,47 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
 
     draw_header(frame, app, mascot.inner(Margin::new(1, 1)));
 
-    // Workspaces: each repository followed by its worktrees.
+    // Workspaces: the repositories, each with how its sessions are doing.
+    let current_repo = app.ws().repo.clone();
     let items: Vec<ListItem> = app
-        .workspaces
-        .iter()
-        .enumerate()
-        .map(|(i, w)| {
-            let current = i == app.current;
+        .repos()
+        .into_iter()
+        .map(|i| {
+            let w = &app.workspaces[i];
+            let current = w.repo == current_repo;
             let mut spans = vec![Span::from(if current { " ● " } else { "   " }).fg(ACCENT)];
-            if w.is_worktree() {
-                spans.push(Span::from("└ ").fg(DIM));
-            }
             let name = Span::from(w.name.clone());
             spans.push(if current { name.bold() } else { name });
+            // Something works or waits in one of its sessions.
+            let states = app.workspaces.iter().enumerate().filter(|(_, s)| s.repo == w.repo).filter_map(|(s, _)| app.session_state(s));
+            if let Some(state @ (State::Running | State::Waiting | State::Done)) = states.max_by_key(|state| state.urgency()) {
+                let (icon, color) = state_icon(state);
+                spans.push(Span::from(format!(" {icon}")).fg(color).bold());
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    let focused = app.focus == Focus::Workspaces;
+    let list = List::new(items).block(block("Workspaces", focused)).highlight_style(highlight(focused));
+    frame.render_stateful_widget(list, workspaces, &mut app.workspaces_state);
+
+    // Sessions of this repository: the checkout itself, then its worktrees.
+    // The current one holds the terminals, files and changes on screen.
+    let focused = app.focus == Focus::Sessions;
+    let items: Vec<ListItem> = app
+        .sessions()
+        .into_iter()
+        .map(|i| {
+            let w = &app.workspaces[i];
+            let current = i == app.current;
+            let (icon, color) = app.session_state(i).map_or((" ", DIM), state_icon);
+            let name = Span::from(app.session_name(i).to_string());
+            let name = match app.session_state(i) {
+                Some(State::Waiting | State::Done) => name.fg(color).bold(),
+                _ if current => name.fg(FG).bold(),
+                _ => name.fg(MUTED),
+            };
+            let mut spans = vec![Span::from(format!(" {icon} ")).fg(color).bold(), name];
             if let Some(branch) = &w.status.branch {
                 spans.push(Span::from(format!("  {branch}")).fg(MUTED));
             }
@@ -130,48 +158,18 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             if !w.status.changes.is_empty() {
                 spans.push(Span::from(format!(" ±{}", w.status.changes.len())).fg(BLUE));
             }
+            // An isolated session: where its app answers.
+            if let Some(session) = app.isolated.iter().find(|s| s.root == w.root) {
+                let web = session.ports.iter().filter(|(var, _)| ["APP", "WEB", "HTTP"].iter().any(|k| var.contains(k)));
+                for (_, port) in web {
+                    spans.push(Span::from(format!(" :{port}")).fg(SKY));
+                }
+            }
             ListItem::new(Line::from(spans))
         })
         .collect();
-    let focused = app.focus == Focus::Workspaces;
-    let list = List::new(items).block(block("Workspaces", focused)).highlight_style(highlight(focused));
-    frame.render_stateful_widget(list, workspaces, &mut app.workspaces_state);
-
-    // Agents and terminals, across all workspaces.
-    let focused = app.focus == Focus::Sessions;
-    let sessions_block = block("Terminals", focused);
-    if app.terms.is_empty() {
-        let hint = Line::from(" s: new shell").fg(MUTED);
-        frame.render_widget(Paragraph::new(hint).block(sessions_block), sessions);
-    } else {
-        let items: Vec<ListItem> = app
-            .terms
-            .iter()
-            .enumerate()
-            .map(|(i, term)| {
-                let state = app.term_state(term);
-                let (icon, color) = state_icon(state);
-                // Only a terminal that waits for you stands out; quiet ones fade.
-                let label = Span::from(term.label().to_string());
-                let label = match state {
-                    State::Waiting => label.fg(color).bold(),
-                    State::Idle => label.fg(MUTED),
-                    _ => label,
-                };
-                let mut spans = vec![
-                    Span::from(format!(" {} ", i + 1)).fg(MUTED),
-                    Span::from(format!("{icon} ")).fg(color).bold(),
-                    label,
-                ];
-                if let Some(ws) = app.workspace_name(&term.info.cwd) {
-                    spans.push(Span::from(format!(" {ws}")).fg(MUTED));
-                }
-                ListItem::new(Line::from(spans))
-            })
-            .collect();
-        let list = List::new(items).block(sessions_block).highlight_style(highlight(focused));
-        frame.render_stateful_widget(list, sessions, &mut app.sessions_state);
-    }
+    let list = List::new(items).block(block("Sessions", focused)).highlight_style(highlight(focused));
+    frame.render_stateful_widget(list, sessions, &mut app.sessions_state);
 
     let current = app.current;
     let ws = &mut app.workspaces[current];
@@ -305,7 +303,7 @@ fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     // Zoomed: the terminal alone, the viewer stays open but hidden.
-    let viewer_shown = app.viewer.is_open() && !(app.zoomed && !app.terms.is_empty());
+    let viewer_shown = app.viewer.is_open() && !(app.zoomed && app.active.is_some());
     let [top, bottom] = Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
     let term_area = if viewer_shown { top } else { area };
     let inner = Block::bordered().inner(term_area);
@@ -314,7 +312,7 @@ fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
     app.areas.terminal = Rect::default();
     app.areas.viewer = Rect::default();
     app.areas.ruler = Rect::default();
-    match (app.terms.is_empty(), viewer_shown) {
+    match (app.active.is_none(), viewer_shown) {
         (true, true) => draw_viewer(frame, app, area),
         (_, true) => {
             draw_terminal(frame, app, top);
@@ -326,29 +324,32 @@ fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Terminal;
-    // The terminal on screen; the others are in the sidebar list.
-    let title = match app.terms.get(app.active) {
-        Some(term) => {
-            let (icon, color) = state_icon(app.term_state(term));
-            let mut spans = vec![
-                Span::from(format!(" {} ", app.active + 1)).fg(MUTED),
-                Span::from(format!("{icon} ")).fg(color).bold(),
-                Span::from(term.label().to_string()).fg(FG).bold(),
-            ];
-            if let Some(ws) = app.workspace_name(&term.info.cwd) {
-                spans.push(Span::from(format!(" · {ws}")).fg(MUTED));
-            }
-            spans.push(Span::from(" "));
-            Line::from(spans)
+    // The session's terminals as tabs: the one on screen stands out.
+    let mut spans = Vec::new();
+    for (n, i) in app.session_terms().into_iter().enumerate() {
+        let term = &app.terms[i];
+        let (icon, color) = state_icon(app.term_state(term));
+        let shown = app.active == Some(term.id);
+        if n > 0 {
+            spans.push(Span::from(" ·").fg(DIM));
         }
-        None => Line::from(" Terminal ").fg(MUTED),
+        spans.push(Span::from(format!(" {} ", n + 1)).fg(MUTED));
+        spans.push(Span::from(format!("{icon} ")).fg(color).bold());
+        let label = Span::from(term.label().to_string());
+        spans.push(if shown { label.fg(FG).bold() } else { label.fg(MUTED) });
+    }
+    let title = if spans.is_empty() {
+        Line::from(" Terminal ").fg(MUTED)
+    } else {
+        spans.push(Span::from(format!(" · {} ", app.session_name(app.current))).fg(DIM));
+        Line::from(spans)
     };
     let block = Block::bordered().title(title).border_style(border(focused)).style(Style::new().bg(BG));
     let inner = block.inner(area);
     app.areas.terminal = area;
     frame.render_widget(block, area);
 
-    match app.terms.get(app.active) {
+    match app.term() {
         Some(term) => {
             if let Some(cursor) = term.render(inner, frame.buffer_mut())
                 && focused
@@ -360,9 +361,9 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
             let key = |k: &str, text: &str| Line::from(vec![Span::from(format!("  {k:<12}")).fg(BLUE).bold(), Span::from(text.to_string())]);
             let hint = vec![
                 Line::default(),
-                Line::from("  No terminals open.").bold(),
+                Line::from("  No terminals in this session.").bold(),
                 Line::default(),
-                key("s", "open a shell in this workspace (then type claude for an agent)"),
+                key("s", "open a shell in it (then type claude for an agent)"),
             ];
             frame.render_widget(Paragraph::new(hint), inner);
         }
@@ -397,7 +398,20 @@ fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     if app.new_menu {
-        frame.render_widget(Line::from(footer_spans("NEW", ACCENT, &[("w", "workspace"), ("s", "shell"), ("f", "file or folder"), ("esc", "cancel")], &[])), area);
+        let keys = [("w", "workspace"), ("s", "session"), ("t", "terminal"), ("f", "file or folder"), ("esc", "cancel")];
+        frame.render_widget(Line::from(footer_spans("NEW", ACCENT, &keys, &[])), area);
+        return;
+    }
+    if let Some(create) = app.creating.as_ref().filter(|c| c.session) {
+        let mut spans = footer_spans("NEW SESSION", ACCENT, &[("⏎", "create"), ("esc", "cancel")], &[]);
+        let input = vec![
+            Span::from("› ").fg(BLUE).bold(),
+            Span::from(create.name.clone()),
+            Span::from("█").fg(BLUE),
+            Span::from("   its own copy, Docker, ports and database   ").fg(MUTED),
+        ];
+        spans.splice(2..2, input);
+        frame.render_widget(Line::from(spans), area);
         return;
     }
     if let Some(create) = &app.creating {
@@ -447,7 +461,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         // Every key goes to the editor; micro's, or how to come back.
         Focus::Terminal if app.in_editor() => (
             "EDITOR",
-            match app.terms.get(app.active).map(|t| t.info.name.as_str()) {
+            match app.term().map(|t| t.info.name.as_str()) {
                 Some("micro") => &[
                     ("ctrl-s", "save and close"),
                     ("ctrl-q", "close (asks to save)"),
@@ -470,7 +484,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             },
         ),
         Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("x", "remove")]),
-        Focus::Sessions => ("TERMINALS", &[("j/k", "pick"), ("⏎", "enter"), ("x", "close")]),
+        Focus::Sessions => ("SESSIONS", &[("j/k", "switch"), ("⏎", "its terminal"), ("n t", "new terminal in it")]),
         Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff"), ("e", "edit"), ("y", "copy path")]),
         Focus::Graph => ("GRAPH", &[("j/k", "move"), ("⏎", "a commit's files / read a diff"), ("h/l", "fold")]),
         Focus::Files => ("FILES", &[("j/k", "move"), ("⏎", "open"), ("h/l", "fold"), ("e", "edit"), ("y", "copy path"), ("x", "delete")]),
@@ -511,7 +525,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Go to a panel",
         &[
-            ("w t c g f v", "Workspaces, Terminals, Changes, Graph, Files, Viewer (g: not from the viewer)"),
+            ("w t c g f v", "Workspaces, Sessions, Changes, Graph, Files, Viewer (g: not from the viewer)"),
             ("s", "into the current shell (opens one if there is none)"),
             ("z / ctrl-f", "into the current shell, full height (hides the viewer)"),
             ("tab / shift-tab", "next / previous panel"),
@@ -520,13 +534,14 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "In a panel",
         &[
-            ("n w  n s  n f", "new workspace / shell / file or folder (end the name with /)"),
+            ("n w  n t  n f", "new workspace / terminal in this session / file or folder (end the name with /)"),
+            ("n s", "new session, with its own copy, Docker, ports and database"),
             ("e", "edit the file in micro (offers to install it), or $PULPO_EDITOR"),
             ("y", "copy the file's path, relative to the workspace"),
-            ("x x", "remove a workspace from the list (files kept) / delete a file / close the terminal"),
-            ("j k  ↑ ↓  ⏎", "move, open (a terminal, a file, a diff, a commit's files)"),
+            ("x x", "remove a workspace from the list (files kept) / delete a file or a task session / close the terminal"),
+            ("j k  ↑ ↓  ⏎", "move, open (a session's terminal, a file, a diff, a commit's files)"),
             ("h l", "fold / unfold a folder, or a commit's files in Graph"),
-            ("1-9  [ ]", "enter terminal N / previous, next terminal"),
+            ("1-9  [ ]", "enter the session's terminal N / previous, next terminal"),
             ("/  tab", "search files by name / tab: search inside files"),
             ("r", "refresh"),
             ("q q", "quit Pulpo; terminals keep running, and come back next time"),
@@ -537,9 +552,9 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         "Inside a terminal",
         &[
             ("ctrl-s", "back to the sidebar (ctrl-s or s to come back)"),
-            ("ctrl-n", "new shell in this terminal's workspace"),
+            ("ctrl-n", "new shell in this session"),
             ("ctrl-q", "close this shell (asks again if something is running in it)"),
-            ("ctrl-[ ]  ctrl-1-9", "previous, next terminal / terminal 1-9"),
+            ("ctrl-[ ]  ctrl-1-9", "previous, next terminal of the session / terminal 1-9"),
             ("ctrl-f", "hide / show the viewer under the terminal"),
             ("shift-⏎", "new line in a Claude prompt"),
             ("claude", "type it in a shell to start an agent; the terminal is named after it"),

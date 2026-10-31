@@ -33,13 +33,33 @@ Run it from anywhere: it opens your workspaces. Started inside a git repository,
 
 | Key | Does |
 | --- | --- |
-| `w` `t` `c` `g` `f` | go to Workspaces, Terminals, Changes, Graph, Files |
-| `n w` / `n s` | new workspace / new shell in this workspace (type `claude` in it for an agent) |
-| `ctrl-n` | in a terminal: new shell in the same workspace |
+| `w` `t` `c` `g` `f` | go to Workspaces, Sessions, Changes, Graph, Files |
+| `n s` | new session, with its own copy, Docker, ports and database |
+| `n t` / `n w` | new terminal in this session (type `claude` in it for an agent) / new workspace |
+| `ctrl-n` | in a terminal: new shell in the same session |
+| `ctrl-[` `ctrl-]` | in a terminal: previous / next terminal of the session |
 | `ctrl-s` | switch between the sidebar and the terminal |
 | `/` | find a file; `tab` searches inside files |
 | `q` | quit; terminals keep running and come back next time |
 | `Q` | quit and stop every terminal |
+
+Workspaces lists your repositories. Sessions lists the checkouts of the selected one: `main`, the repository itself, then its git worktrees. Picking a session brings up everything of it: its terminals (a session can hold several, say `claude`, `make run` and a shell, shown as tabs above the terminal), its files, changes and graph. Each session comes back on the terminal you left it on, and a mark beside each session and repository shows when something in it works (spinner) or waits for you (◆).
+
+### Task sessions
+
+To work on several tasks at once, each with its own agent, `n s` makes a new session: a full copy of the repository's checkout, next to it in `<repo>.sessions/<name>`. It is an APFS clone, so it takes a second and no extra disk until files change, and it is exact: uncommitted work, `.env` and other settings you made by hand, installed dependencies. Pulpo runs no git command for it; the copy has main's history, and the agent makes its branch there.
+
+If the repository has a Docker Compose file, the session gets its own Compose project and its own value for each port variable the file uses (`${DB_PORT:-3306}`), from 20000 up, so its containers and database never meet main's or another session's. Its first terminal sets it up while you watch:
+
+1. It reuses main's built images instead of building them again.
+2. It copies main's database into its own (MySQL or PostgreSQL), or prepares a fresh one when main's isn't running.
+3. It starts its containers, then becomes the session's shell.
+
+Every terminal of the session gets those variables (`COMPOSE_PROJECT_NAME`, the ports), so `docker compose` there always means the session's. The ports of its app show beside it in Sessions.
+
+How sessions of a repository are set up is guessed from its compose file the first time, into `~/.config/pulpo/repos/<repo>.toml`, which you can edit (extra setup and teardown commands, the command for a fresh database). The setup says what sessions can't keep apart: a fixed host port (`3000:3000`), a fixed container name, a volume with a fixed name.
+
+`x x` on a session in Sessions removes it. It first says what would be lost (uncommitted changes, commits not pushed). Then it stops its terminals, removes its containers and volumes (its database) with the image tags made for it, and deletes the copy. Main and other sessions are left alone. What lives outside the copy and Docker is shared by all sessions: remote services, `~/.config` credentials, global caches. Claude asks to trust each new session's folder once.
 
 Terminals live in a small background process, `pulpo serve`, that Pulpo starts when it first needs it. Quitting Pulpo, or rebuilding it with `make install`, leaves Claude, dev servers and long jobs running; the next Pulpo shows them as they are. A rebuilt Pulpo hands the running terminals to its new build without restarting them.
 

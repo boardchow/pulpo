@@ -260,6 +260,18 @@ pub enum State {
     Done,
 }
 
+impl State {
+    /// Which state shows when several terminals are summed up: one that
+    /// waits for you, then one at work.
+    pub fn urgency(self) -> u8 {
+        match self {
+            State::Waiting | State::Done => 2,
+            State::Running => 1,
+            State::Idle => 0,
+        }
+    }
+}
+
 pub struct Agent {
     /// The Pulpo terminal running this session (`PULPO_TAB`), if any.
     pub tab: String,
