@@ -40,6 +40,7 @@ Run it from anywhere: it opens your workspaces. Started inside a git repository,
 | `ctrl-[` `ctrl-]` | in a terminal: previous / next terminal of the session |
 | `ctrl-s` | switch between the sidebar and the terminal |
 | `/` | find a file; `tab` searches inside files |
+| `e` | edit the selected file, right here: it looks exactly as in the viewer |
 | `q` | quit; terminals keep running and come back next time |
 | `Q` | quit and stop every terminal |
 
@@ -65,6 +66,8 @@ Terminals live in a small background process, `pulpo serve`, that Pulpo starts w
 
 So nothing keeps running unnoticed:
 
+- Pulpo reopens where you were: the session you had on screen (or, started inside a repository, the session you last used in it), and in each session the terminal you left it on.
+- After a reboot the server starts with nothing in it; Pulpo opens your terminals again, each in its session, and resumes the Claude sessions that were running in them (`claude --resume`), then leaves a shell when Claude exits. `Q` means you stopped them on purpose: nothing comes back after it.
 - `q` asks first and lists what keeps running, with the ports it listens on (`npm :3000`). A Docker CLI is named, since Docker's own processes hold its ports.
 - `Q`, or closing a terminal, stops what runs in it the way you would: Ctrl-C to the program first, so `docker compose up` stops its containers and a dev server frees its port, then a hang-up, then a kill for what remains.
 - The server listens only on a Unix socket in `~/.local/state/pulpo/server/` that your account alone can open, never on a network port. It exits by itself a minute after its last terminal and Pulpo are gone.
@@ -73,6 +76,10 @@ So nothing keeps running unnoticed:
 To know exactly when Claude waits for you or is done, run `pulpo hooks install` once. It adds Pulpo's hooks to `~/.claude/settings.json` and leaves the rest of the file as it was; `pulpo hooks status` shows what is installed and `pulpo hooks remove` takes them out again. When an agent asks you something or finishes while you look elsewhere, Ghostty shows a notification saying what it asks. The sidebar itself only shows each terminal working or waiting.
 
 Any program can also say what it is doing with the [program status escape sequence](https://www.superlogical.com/rex/docs/build/program-status) (OSC 7501): Pulpo shows it working or waiting on you, and its message goes in the notification.
+
+### Editing
+
+`e` opens the file in Pulpo's own editor, on the right, colored exactly as the viewer shows it: the same syntax definitions, theme and highlighter. The keys are the usual ones: arrows, shift to select, alt or ctrl + arrows by word, ctrl-c / x / v (a whole line without a selection), ctrl-z / y, tab and shift-tab to indent, ctrl-f to find, ctrl-s to save, esc to close (it asks again if something isn't saved). When an agent changes the file while it is open and you haven't changed it, the editor takes the new version. To use your own terminal editor instead, set `PULPO_EDITOR` (for example `PULPO_EDITOR=nvim`).
 
 ## Development
 

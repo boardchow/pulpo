@@ -13,8 +13,8 @@ use syntect::highlighting::{FontStyle, Theme};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
-const MAX_BYTES: usize = 2 * 1024 * 1024;
-const MAX_HIGHLIGHTED_LINES: usize = 10_000;
+pub(crate) const MAX_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_HIGHLIGHTED_LINES: usize = 10_000;
 
 #[derive(Clone, PartialEq)]
 pub enum Source {
@@ -668,7 +668,7 @@ fn pair_rows(kinds: &[Kind]) -> Vec<(Option<usize>, Option<usize>)> {
 
 /// Drop `n` characters of code after the first `gutter` ones (the line
 /// numbers), for scrolling sideways.
-fn shift(line: Line<'static>, gutter: usize, n: usize) -> Line<'static> {
+pub(crate) fn shift(line: Line<'static>, gutter: usize, n: usize) -> Line<'static> {
     if n == 0 {
         return line;
     }
@@ -725,7 +725,7 @@ fn hunk_starts(header: &str) -> (usize, usize) {
     (start('-'), start('+'))
 }
 
-fn syntax_for(path: &Path) -> &'static SyntaxReference {
+pub(crate) fn syntax_for(path: &Path) -> &'static SyntaxReference {
     let (syntaxes, _) = assets();
     syntaxes
         .find_syntax_for_file(path)
@@ -736,7 +736,7 @@ fn syntax_for(path: &Path) -> &'static SyntaxReference {
 }
 
 /// Highlighted pieces as spans, or the plain line if highlighting failed.
-fn styled(ranges: Option<Vec<(syntect::highlighting::Style, &str)>>, line: &str) -> Vec<Span<'static>> {
+pub(crate) fn styled(ranges: Option<Vec<(syntect::highlighting::Style, &str)>>, line: &str) -> Vec<Span<'static>> {
     match ranges {
         Some(ranges) => ranges
             .into_iter()
@@ -766,7 +766,7 @@ fn fold(text: &str, ignore_case: bool) -> String {
 
 /// Split the line's spans so occurrences of `query` (after `skip`
 /// characters) stand out.
-fn highlight_matches(line: Line<'static>, query: &str, ignore_case: bool, skip: usize) -> Line<'static> {
+pub(crate) fn highlight_matches(line: Line<'static>, query: &str, ignore_case: bool, skip: usize) -> Line<'static> {
     let fold = |c: char| if ignore_case { c.to_lowercase().next().unwrap_or(c) } else { c };
     let needle: Vec<char> = query.chars().map(fold).collect();
     let chars: Vec<char> = line.spans.iter().flat_map(|s| s.content.chars()).map(fold).collect();
@@ -822,7 +822,7 @@ pub fn warm_up() {
     std::thread::spawn(assets);
 }
 
-fn assets() -> &'static (SyntaxSet, Theme) {
+pub(crate) fn assets() -> &'static (SyntaxSet, Theme) {
     static ASSETS: OnceLock<(SyntaxSet, Theme)> = OnceLock::new();
     ASSETS.get_or_init(|| {
         (two_face::syntax::extra_newlines(), crate::theme::syntax())

@@ -11,7 +11,9 @@ use ratatui::widgets::{Block, ListState};
 use crate::Msg;
 use crate::agents::{Agents, State};
 use crate::client::{self, Link};
+use crate::editor::Editor;
 use crate::git;
+use crate::layout::{self, Layout};
 use crate::procs;
 use crate::proto::{PROTOCOL, ToClient, ToServer};
 use crate::search::{Mode, Search};
@@ -33,6 +35,8 @@ pub enum Focus {
     Files,
     Viewer,
     Terminal,
+    /// The built-in editor (`editor.rs`).
+    Editor,
 }
 
 /// A file or folder about to be made in `dir`; a name ending in / is a folder.
@@ -53,6 +57,8 @@ pub struct Areas {
     pub files: Rect,
     pub terminal: Rect,
     pub viewer: Rect,
+    /// The editor's text (inside its border).
+    pub editor: Rect,
     /// The viewer's overview ruler.
     pub ruler: Rect,
 }
@@ -75,10 +81,16 @@ pub struct App {
     pub terms: Vec<Term>,
     /// The id of the terminal on screen, one of the current session's.
     pub active: Option<usize>,
-    /// The terminal last on screen in each session, and the session last
-    /// used in each repository.
-    last_term: HashMap<PathBuf, usize>,
+    /// The terminal (its tag) last on screen in each session, and the
+    /// session last used in each repository.
+    last_term: HashMap<PathBuf, String>,
     last_session: HashMap<PathBuf, PathBuf>,
+    /// Where you were, as last written to disk (`layout.rs`); written again
+    /// when it changes, once the server has shown what it has.
+    saved: Layout,
+    ready: bool,
+    /// Terminals being brought back after a restart: token → old tag.
+    reopening: HashMap<u64, String>,
     /// The server that runs the terminals.
     link: Link,
     /// Terminals asked of the server and not shown yet: whether to go into
@@ -107,14 +119,11 @@ pub struct App {
     /// The terminal editing a file: its id, the file, and the panel to go
     /// back to when the editor quits.
     editing: Option<(usize, PathBuf, Focus)>,
-    /// The file to edit once micro is installed (or declined), and the
-    /// terminal installing it.
-    editor_offer: Option<(PathBuf, Option<usize>)>,
-    installing: Option<(usize, PathBuf, Option<usize>)>,
     /// The terminal removing a session; the list is reloaded when it ends.
     removing: Option<usize>,
-    /// Declined micro for this session: use the editor that is there.
-    skip_micro: bool,
+    /// A file being edited in Pulpo, and the panel to go back to after.
+    pub editor: Option<Editor>,
+    editor_back: Focus,
     /// What the pending x deletes, so the selection can't change under it.
     deleting: Option<PathBuf>,
     /// The terminal takes the whole right side; the viewer comes back when
@@ -143,6 +152,7 @@ impl App {
         })?;
         let mut agents = Agents::default();
         agents.load();
+        let layout = layout::load();
         let mut app = App {
             workspaces: Vec::new(),
             isolated: Vec::new(),
@@ -154,8 +164,11 @@ impl App {
             agents,
             terms: Vec::new(),
             active: None,
-            last_term: HashMap::new(),
-            last_session: HashMap::new(),
+            last_term: layout.terminals.clone().into_iter().collect(),
+            last_session: layout.sessions.clone().into_iter().collect(),
+            saved: layout.clone(),
+            ready: false,
+            reopening: HashMap::new(),
             link,
             spawning: HashMap::new(),
             // Far above any terminal id, so the two never mix.
@@ -174,10 +187,9 @@ impl App {
             new_menu: false,
             creating: None,
             editing: None,
-            editor_offer: None,
-            installing: None,
+            editor: None,
+            editor_back: Focus::Files,
             removing: None,
-            skip_micro: false,
             deleting: None,
             zoomed: false,
             pending: None,
@@ -188,7 +200,18 @@ impl App {
             tx,
         };
         app.load_workspaces();
-        if let Some(i) = launch.and_then(|l| app.workspaces.iter().position(|w| w.root == l)) {
+        // Where you were: the session last used in the repository Pulpo was
+        // opened in (or in a session's own folder, that one); opened
+        // elsewhere, the session on screen last time.
+        let at = |root: &Path| app.workspaces.iter().position(|w| w.root == root);
+        let start = match &launch {
+            Some(dir) => at(dir).map(|i| match &app.workspaces[i] {
+                w if !w.is_worktree() => app.last_session.get(&w.repo).and_then(|s| at(s)).unwrap_or(i),
+                _ => i,
+            }),
+            None => layout.current.as_deref().and_then(at),
+        };
+        if let Some(i) = start {
             app.set_current(i);
         }
         Ok(app)
@@ -335,6 +358,13 @@ impl App {
         if dirty.contains(&self.ws().root) {
             let root = self.ws().root.clone();
             self.viewer.reload(&root);
+            // An agent changed the file being edited: take it, unless you
+            // changed it too.
+            if let Some(editor) = &mut self.editor
+                && editor.reload_if_changed()
+            {
+                self.message = Some(format!("{} changed on disk: reloaded", editor.path.display()));
+            }
         }
     }
 
@@ -381,15 +411,54 @@ impl App {
     /// Start `program` in a new terminal. The server shows it shortly; until
     /// then the returned token stands in for its id.
     fn run(&mut self, program: &str, args: &[String], focus: bool) -> Option<usize> {
+        let cwd = self.ws().root.clone();
+        Some(self.spawn_in(cwd, program, args, focus) as usize)
+    }
+
+    /// Start `program` in a new terminal working in `cwd`; its token.
+    fn spawn_in(&mut self, cwd: PathBuf, program: &str, args: &[String], focus: bool) -> u64 {
         let token = self.next_token;
         self.next_token += 1;
         let (rows, cols) = self.term_size;
-        let cwd = self.ws().root.clone();
         // An isolated session's terminals get its Compose project and ports.
         let env = self.isolated.iter().find(|s| s.root == cwd).map(session::env).unwrap_or_default();
         self.link.send(&ToServer::Spawn { token, program: program.into(), args: args.to_vec(), cwd, rows, cols, env });
         self.spawning.insert(token, focus);
-        Some(token as usize)
+        token
+    }
+
+    /// The server came back with no terminals (a reboot, or it stopped):
+    /// open the ones you had again, each in its session, resuming the
+    /// Claude session that was alive in it.
+    fn reopen(&mut self) {
+        let open = std::mem::take(&mut self.saved.open);
+        let (mut terminals, mut agents) = (0, 0);
+        for was in open.iter().filter(|o| o.cwd.is_dir()) {
+            let args = layout::reopen(was, &shell());
+            agents += usize::from(!args.is_empty());
+            let token = self.spawn_in(was.cwd.clone(), &shell(), &args, false);
+            self.reopening.insert(token, was.tag.clone());
+            terminals += 1;
+        }
+        if terminals > 0 {
+            let agents = if agents > 0 { format!(", resuming {agents} Claude session(s)") } else { String::new() };
+            self.message = Some(format!("reopened {terminals} terminal(s) from before the restart{agents}"));
+        }
+    }
+
+    /// Where you are now, to write down.
+    fn layout(&self) -> Layout {
+        let open = self
+            .terms
+            .iter()
+            .map(|t| layout::Open { cwd: t.info.cwd.clone(), tag: t.info.tag.clone(), claude: self.agents.session_for_tab(&t.info.tag).map(String::from) })
+            .collect();
+        Layout {
+            current: Some(self.ws().root.clone()),
+            sessions: self.last_session.clone().into_iter().collect(),
+            terminals: self.last_term.clone().into_iter().collect(),
+            open,
+        }
     }
 
     pub fn on_server(&mut self, message: ToClient) {
@@ -403,17 +472,30 @@ impl App {
                 let i = self.terms.len() - 1;
                 self.terms[i].resize(self.term_size.0, self.term_size.1);
                 let session = self.session_of(&self.terms[i]);
+                // Brought back after a restart: it stands for the old one, and
+                // the session shows the one you had on screen.
+                if let Some(old) = token.and_then(|t| self.reopening.remove(&t)) {
+                    for tag in self.last_term.values_mut().filter(|tag| **tag == old) {
+                        *tag = self.terms[i].info.tag.clone();
+                    }
+                    self.spawning.remove(&token.unwrap_or_default());
+                    if session.is_none_or(|s| s == self.current) {
+                        self.restore_term();
+                    }
+                    return;
+                }
                 let Some(focus) = token.and_then(|t| self.spawning.remove(&t)) else {
-                    // Someone else's, or one that kept running: shown if the
-                    // session has nothing on screen.
-                    if self.active.is_none() && session.is_none_or(|s| s == self.current) {
-                        self.select_term(id);
+                    // One that kept running is shown once all are in (`Ready`),
+                    // the way you left it. Another Pulpo's, if this session has
+                    // nothing on screen.
+                    if self.ready && self.active.is_none() && session.is_none_or(|s| s == self.current) {
+                        self.restore_term();
                     }
                     return;
                 };
                 // Ours: what waited for its id gets it.
                 let token = token.unwrap_or_default() as usize;
-                let waiting = [self.editing.as_mut().map(|e| &mut e.0), self.installing.as_mut().map(|i| &mut i.0), self.removing.as_mut()];
+                let waiting = [self.editing.as_mut().map(|e| &mut e.0), self.removing.as_mut()];
                 for waiting in waiting.into_iter().flatten() {
                     if *waiting == token {
                         *waiting = id;
@@ -433,16 +515,20 @@ impl App {
             ToClient::Hello { protocol, exe, built, .. } => self.check_server_build(protocol, &exe, built),
             // Everything the server had is shown: start with a shell if it had none.
             ToClient::Ready => {
-                if let Some(had) = self.reconnected.take()
-                    && had > 0
-                    && self.terms.is_empty()
-                {
+                let stopped = self.reconnected.take().is_some_and(|had| had > 0) && self.terms.is_empty();
+                if self.terms.is_empty() && !self.saved.open.is_empty() {
+                    self.reopen();
+                }
+                if stopped {
                     let log = crate::server::dir().join("log");
-                    self.message = Some(format!("the Pulpo server stopped and its {had} terminal(s) with it (see {})", log.display()));
+                    let reopened = self.message.take().map(|m| format!("; {m}")).unwrap_or_default();
+                    self.message = Some(format!("the Pulpo server stopped (see {}){reopened}", log.display()));
                 }
                 if self.session_terms().is_empty() && self.spawning.is_empty() {
                     self.spawn(&shell(), false);
                 }
+                self.ready = true;
+                self.restore_term();
             }
             ToClient::Info { info } => {
                 if let Some(term) = self.terms.iter_mut().find(|t| t.id == info.id as usize) {
@@ -482,6 +568,8 @@ impl App {
     /// the terminals with it. Connect again; what comes back tells which.
     pub fn on_server_gone(&mut self) {
         let had = self.terms.len();
+        // Keep what was open on disk until the server says what it still has.
+        self.ready = false;
         self.terms.clear();
         self.spawning.clear();
         self.active = None;
@@ -522,16 +610,6 @@ impl App {
             self.zoomed = false;
             self.set_focus(back);
         }
-        // Homebrew is done: open the file that was waiting for micro.
-        if self.installing.as_ref().is_some_and(|(i, ..)| *i == id)
-            && let Some((_, path, line)) = self.installing.take()
-        {
-            if on_path("micro") {
-                self.open_editor(path, line);
-            } else {
-                self.message = Some("micro was not installed".into());
-            }
-        }
     }
 
     pub fn on_paste(&mut self, text: &str) {
@@ -542,6 +620,15 @@ impl App {
             search.update(&self.tx);
         } else if self.viewer.find.as_ref().is_some_and(|f| f.typing) {
             self.viewer.edit_find(|q| q.push_str(text.trim()));
+        } else if self.focus == Focus::Editor
+            && let Some(editor) = &mut self.editor
+        {
+            if editor.find_typing {
+                editor.find.get_or_insert_default().push_str(text.trim());
+            } else {
+                editor.insert(text);
+                editor.follow_cursor();
+            }
         } else if self.focus == Focus::Terminal
             && let Some(term) = self.term_mut()
         {
@@ -573,6 +660,13 @@ impl App {
     /// Before each draw: runs that ended and agents that stopped or asked
     /// leave something to read, unless you are in that terminal.
     pub fn tick(&mut self) {
+        if self.ready {
+            let layout = self.layout();
+            if layout != self.saved {
+                layout::save(&layout);
+                self.saved = layout;
+            }
+        }
         let viewing = self.active.filter(|_| self.focus == Focus::Terminal);
         let mut notices = Vec::new();
         for term in &mut self.terms {
@@ -636,14 +730,16 @@ impl App {
 
     fn select_term(&mut self, id: usize) {
         self.active = Some(id);
-        self.last_term.insert(self.ws().root.clone(), id);
+        if let Some(term) = self.terms.iter().find(|t| t.id == id) {
+            self.last_term.insert(self.ws().root.clone(), term.info.tag.clone());
+        }
     }
 
     /// Show the terminal this session last had on screen, or its first.
     fn restore_term(&mut self) {
-        let ids: Vec<usize> = self.session_terms().into_iter().map(|i| self.terms[i].id).collect();
-        let last = self.last_term.get(&self.ws().root).copied().filter(|id| ids.contains(id));
-        self.active = last.or(ids.first().copied());
+        let terms: Vec<&Term> = self.session_terms().into_iter().map(|i| &self.terms[i]).collect();
+        let last = self.last_term.get(&self.ws().root).and_then(|tag| terms.iter().find(|t| &t.info.tag == tag));
+        self.active = last.or(terms.first()).map(|t| t.id);
     }
 
     /// Take a terminal off the list. If it was on screen, its neighbor in
@@ -718,6 +814,10 @@ impl App {
             self.terminal_key(key, pending);
             return false;
         }
+        if self.focus == Focus::Editor && self.editor.is_some() {
+            self.editor_key(key, pending);
+            return false;
+        }
 
         self.message = None;
         match key.code {
@@ -754,6 +854,9 @@ impl App {
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('r') => self.refresh(),
             // Terminals keep running in the server; say which, and their ports.
+            KeyCode::Char('q' | 'Q') if self.editor.as_ref().is_some_and(|e| e.dirty) => {
+                self.message = Some("unsaved changes in the editor: ctrl-s saves them, esc there discards them".into());
+            }
             KeyCode::Char('q') => {
                 if (self.terms.is_empty() && self.isolated.is_empty()) || pending == Some('q') {
                     return true;
@@ -774,6 +877,8 @@ impl App {
                     for term in &self.terms {
                         self.link.send(&ToServer::Close { id: term.info.id });
                     }
+                    // Stopped on purpose: nothing to bring back next time.
+                    layout::save(&Layout { open: Vec::new(), ..self.layout() });
                     return true;
                 }
                 let n = self.terms.len();
@@ -796,13 +901,6 @@ impl App {
             }
             KeyCode::Char('x') if self.focus == Focus::Files => self.delete(pending),
             KeyCode::Char('x') => self.close_terminal('x', "x", pending),
-            KeyCode::Char('i') if pending == Some('i') => self.install_micro(),
-            KeyCode::Char('e') if pending == Some('i') => {
-                self.skip_micro = true;
-                if let Some((path, line)) = self.editor_offer.take() {
-                    self.open_editor(path, line);
-                }
-            }
             KeyCode::Char('e') => self.edit(),
             KeyCode::Char('y') => self.copy_path(),
             KeyCode::Char(d @ '1'..='9') => self.enter_term(d as usize - '1' as usize),
@@ -967,6 +1065,25 @@ impl App {
         }
         let pos = Position::new(mouse.column, mouse.row);
         let areas = self.areas;
+        // In the editor: place the cursor, select by dragging, scroll.
+        if areas.editor.contains(pos)
+            && let Some(editor) = &mut self.editor
+        {
+            let (row, column) = ((pos.y - areas.editor.y) as usize, (pos.x - areas.editor.x) as usize);
+            let column = column.saturating_sub(editor.gutter());
+            let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    editor.click(row, column, shift);
+                    self.set_focus(Focus::Editor);
+                }
+                MouseEventKind::Drag(MouseButton::Left) => editor.click(row, column, true),
+                MouseEventKind::ScrollUp => editor.scroll_by(-3),
+                MouseEventKind::ScrollDown => editor.scroll_by(3),
+                _ => {}
+            }
+            return;
+        }
         let (target, area) = [
             (Focus::Terminal, areas.terminal),
             (Focus::Viewer, areas.viewer),
@@ -1511,7 +1628,8 @@ impl App {
     /// Edit the file in the viewer, or the one selected in Files or Changes.
     fn edit(&mut self) {
         match self.selected_path() {
-            Some((path, line)) if path.is_file() => self.open_editor(path, line),
+            Some((path, line)) if path.is_file() && external_editor().is_some() => self.open_editor(path, line),
+            Some((path, line)) if path.is_file() => self.edit_here(path, line),
             Some((path, _)) if path.is_dir() => self.message = Some("select a file to edit".into()),
             Some(_) => self.message = Some("that file is not in the working tree".into()),
             None => self.message = Some("select a file to edit".into()),
@@ -1545,30 +1663,131 @@ impl App {
             return;
         };
         let rel = path.strip_prefix(&self.ws().root).unwrap_or(&path).display().to_string();
-        let copied = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write;
-                child.stdin.take().map_or(Ok(()), |mut stdin| stdin.write_all(rel.as_bytes()))?;
-                child.wait()
-            });
-        self.message = Some(match copied {
-            Ok(status) if status.success() => format!("copied {rel}"),
-            _ => "could not copy to the clipboard".into(),
-        });
+        self.message = Some(if set_clipboard(&rel) { format!("copied {rel}") } else { "could not copy to the clipboard".into() });
     }
 
-    /// Open `path` in a terminal editor, full height. Without micro, offer
-    /// to install it first.
-    fn open_editor(&mut self, path: PathBuf, line: Option<usize>) {
-        let mut args = editor();
-        let program = args.remove(0);
-        if program != "micro" && !self.skip_micro && std::env::var_os("PULPO_EDITOR").is_none() && on_path("brew") {
-            self.editor_offer = Some((path, line));
-            self.confirm('i', format!("micro isn't installed: i installs it with Homebrew, e opens {program} instead"));
+    /// Edit `path` in Pulpo, on the right, looking exactly like the viewer.
+    fn edit_here(&mut self, path: PathBuf, line: Option<usize>) {
+        match Editor::open(path, line) {
+            Ok(editor) => {
+                self.editor_back = if matches!(self.focus, Focus::Terminal | Focus::Editor) { self.sidebar_focus } else { self.focus };
+                self.editor = Some(editor);
+                self.set_focus(Focus::Editor);
+            }
+            Err(e) => self.message = Some(e),
+        }
+    }
+
+    /// Close the editor; with unsaved changes, only when asked twice. The
+    /// viewer then shows the file where the cursor was.
+    fn close_editor(&mut self, pending: Option<char>) {
+        let Some(editor) = &self.editor else { return };
+        if editor.dirty && pending != Some('E') {
+            self.confirm('E', "unsaved changes: ctrl-s saves them, esc again closes without saving".into());
             return;
         }
+        let Some(editor) = self.editor.take() else { return };
+        let root = self.ws().root.clone();
+        self.viewer.open_at(editor.path.clone(), Some(editor.cursor.line + 1), &root);
+        self.viewer.reload(&root);
+        self.set_focus(self.editor_back);
+    }
+
+    /// Keys in the editor: the usual ones (micro, VS Code).
+    fn editor_key(&mut self, key: KeyEvent, pending: Option<char>) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        self.message = None;
+        let Some(editor) = &mut self.editor else { return };
+        // Typing what to find.
+        if editor.find_typing {
+            match key.code {
+                KeyCode::Esc => editor.find_typing = false,
+                KeyCode::Enter => {
+                    editor.find_next(!shift);
+                }
+                KeyCode::Backspace => {
+                    editor.find.get_or_insert_default().pop();
+                }
+                KeyCode::Char(c) if !ctrl => {
+                    editor.find.get_or_insert_default().push(c);
+                    // Look again from where this match starts.
+                    if let Some((start, _)) = editor.selection() {
+                        editor.click_at(start);
+                    }
+                    editor.find_next(true);
+                }
+                _ => {}
+            }
+            editor.follow_cursor();
+            return;
+        }
+        match key.code {
+            KeyCode::Esc if editor.find.is_some() => editor.find = None,
+            KeyCode::Esc => return self.close_editor(pending),
+            KeyCode::Char('q') if ctrl => return self.close_editor(pending),
+            KeyCode::Char('s') if ctrl => {
+                let message = match editor.save() {
+                    Ok(()) => format!("saved {}", editor.path.file_name().unwrap_or_default().to_string_lossy()),
+                    Err(e) => e,
+                };
+                self.message = Some(message);
+                return;
+            }
+            KeyCode::Char('z') if ctrl && shift => editor.redo(),
+            KeyCode::Char('Z') if ctrl => editor.redo(),
+            KeyCode::Char('z') if ctrl => editor.undo(),
+            KeyCode::Char('y') if ctrl => editor.redo(),
+            KeyCode::Char('a') if ctrl => editor.select_all(),
+            KeyCode::Char('c') if ctrl => {
+                let text = editor.copy();
+                set_clipboard(&text);
+            }
+            KeyCode::Char('x') if ctrl => {
+                let text = editor.cut();
+                set_clipboard(&text);
+            }
+            KeyCode::Char('v') if ctrl => {
+                if let Some(text) = clipboard() {
+                    editor.insert(&text);
+                }
+            }
+            KeyCode::Char('f') if ctrl => {
+                editor.find_typing = true;
+                editor.find.get_or_insert_default();
+            }
+            KeyCode::Char('g') if ctrl => {
+                editor.find_next(!shift);
+            }
+            KeyCode::Left if alt || ctrl => editor.word(false, shift),
+            KeyCode::Right if alt || ctrl => editor.word(true, shift),
+            KeyCode::Left => editor.left(shift),
+            KeyCode::Right => editor.right(shift),
+            KeyCode::Up => editor.vertical(-1, shift),
+            KeyCode::Down => editor.vertical(1, shift),
+            KeyCode::Home if ctrl => editor.edge(false, shift),
+            KeyCode::End if ctrl => editor.edge(true, shift),
+            KeyCode::Home => editor.home(shift),
+            KeyCode::End => editor.end(shift),
+            KeyCode::PageUp => editor.page(-1, shift),
+            KeyCode::PageDown => editor.page(1, shift),
+            KeyCode::Enter => editor.newline(),
+            KeyCode::Tab => editor.tab(),
+            KeyCode::BackTab => editor.untab(),
+            KeyCode::Backspace => editor.backspace(alt || ctrl),
+            KeyCode::Delete => editor.delete(alt || ctrl),
+            KeyCode::Char(c) if !ctrl => editor.insert(&c.to_string()),
+            _ => {}
+        }
+        editor.follow_cursor();
+    }
+
+    /// Open `path` in your own editor ($PULPO_EDITOR), in a terminal, full
+    /// height.
+    fn open_editor(&mut self, path: PathBuf, line: Option<usize>) {
+        let Some(mut args) = external_editor() else { return };
+        let program = args.remove(0);
         let back = if self.focus == Focus::Terminal { self.sidebar_focus } else { self.focus };
         args.extend(editor_look(&program));
         let file = path.display().to_string();
@@ -1588,15 +1807,6 @@ impl App {
         self.editing.as_ref().is_some_and(|(id, ..)| self.active == Some(*id))
     }
 
-    /// Install micro in a terminal, so its progress shows; a failure stays
-    /// on screen until enter.
-    fn install_micro(&mut self) {
-        let Some((path, line)) = self.editor_offer.take() else { return };
-        let script = "brew install micro || { echo; echo 'Homebrew could not install micro. Press enter to close.'; read _; }";
-        if let Some(id) = self.run("sh", &["-c".into(), script.into()], true) {
-            self.installing = Some((id, path, line));
-        }
-    }
 }
 
 /// A desktop notification from the terminal Pulpo runs in (OSC 9, which
@@ -1606,22 +1816,30 @@ fn notify(text: &str) {
     crate::term::to_host(format!("\x1b]9;{text}\x07").as_bytes());
 }
 
-/// The editor to use inside Pulpo: $PULPO_EDITOR, or micro, or the first
-/// other terminal editor found. $EDITOR is skipped, as it is often a GUI
-/// app (code -w).
-fn editor() -> Vec<String> {
-    if let Ok(cmd) = std::env::var("PULPO_EDITOR")
-        && !cmd.trim().is_empty()
-    {
-        return cmd.split_whitespace().map(String::from).collect();
-    }
-    let found = ["micro", "nvim", "hx", "vim", "nano"].into_iter().find(|name| on_path(name));
-    vec![found.unwrap_or("vi").to_string()]
+/// Your own terminal editor, if you set $PULPO_EDITOR; otherwise Pulpo
+/// edits files itself. $EDITOR is not used, as it is often a GUI app.
+fn external_editor() -> Option<Vec<String>> {
+    let cmd = std::env::var("PULPO_EDITOR").ok().filter(|c| !c.trim().is_empty())?;
+    Some(cmd.split_whitespace().map(String::from).collect())
 }
 
-fn on_path(program: &str) -> bool {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+/// Put `text` on the system clipboard.
+fn set_clipboard(text: &str) -> bool {
+    use std::io::Write;
+    std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.take().map_or(Ok(()), |mut stdin| stdin.write_all(text.as_bytes()))?;
+            child.wait()
+        })
+        .is_ok_and(|status| status.success())
+}
+
+/// What is on the system clipboard.
+fn clipboard() -> Option<String> {
+    let out = std::process::Command::new("pbpaste").output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Arguments giving the editor Pulpo's colors, unless you configured it

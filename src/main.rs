@@ -1,7 +1,9 @@
 mod agents;
 mod app;
 mod client;
+mod editor;
 mod git;
+mod layout;
 mod procs;
 mod proto;
 mod pty;
@@ -68,7 +70,9 @@ fn main() -> Result<()> {
             let start = arg.map(PathBuf::from).unwrap_or(std::env::current_dir()?).canonicalize()?;
             // Opening Pulpo inside a repository adds it to the workspace list.
             let launch = git::toplevel(&start);
-            if let Some(repo) = launch.as_deref().and_then(git::main_repo) {
+            // A session's copy is its repository's session, not a repository.
+            let copy = launch.as_ref().is_some_and(|top| session::all().iter().any(|s| &s.root == top));
+            if let Some(repo) = launch.as_deref().filter(|_| !copy).and_then(git::main_repo) {
                 workspace::register(&repo);
             }
             run(launch, start)?;

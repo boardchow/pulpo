@@ -296,6 +296,15 @@ const LANES: [Color; 5] = [BLUE, MAGENTA, GREEN, YELLOW, SKY];
 
 /// The current terminal on top, the file viewer below when something is open.
 fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.areas.editor = Rect::default();
+    // A file being edited takes the right side, unless you go into a terminal.
+    if app.editor.is_some() && app.focus != Focus::Terminal {
+        app.areas.terminal = Rect::default();
+        app.areas.viewer = Rect::default();
+        app.areas.ruler = Rect::default();
+        draw_editor(frame, app, area);
+        return;
+    }
     if app.viewer.expanded && app.viewer.is_open() {
         // Terminals keep running, unseen and at their current size.
         app.areas.terminal = Rect::default();
@@ -367,6 +376,29 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
             ];
             frame.render_widget(Paragraph::new(hint), inner);
         }
+    }
+}
+
+/// The file being edited, drawn as the viewer draws files.
+fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Editor;
+    let root = app.ws().root.clone();
+    let Some(editor) = app.editor.as_mut() else { return };
+    let name = editor.path.strip_prefix(&root).unwrap_or(&editor.path).display().to_string();
+    let title = if editor.dirty { format!("{name} ● unsaved") } else { name };
+    let block = block(&title, focused).style(Style::new().bg(EDITOR_BG));
+    let inner = block.inner(area);
+    editor.view = (inner.height as usize, inner.width as usize);
+    let rows = editor.rows(inner.height as usize);
+    let cursor = editor.cursor_cell();
+    app.areas.editor = inner;
+    frame.render_widget(Paragraph::new(rows).block(block), area);
+    if focused
+        && let Some((row, col)) = cursor
+        && row < inner.height as usize
+        && col < inner.width as usize
+    {
+        frame.set_cursor_position((inner.x + col as u16, inner.y + row as u16));
     }
 }
 
@@ -456,8 +488,33 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(Line::from(spans), area);
         return;
     }
+    // Typing what to find in the editor, like finding in the viewer.
+    if let Some(editor) = app.editor.as_ref().filter(|e| e.find_typing && app.focus == Focus::Editor) {
+        let input = vec![
+            Span::from("› ").fg(BLUE).bold(),
+            Span::from(editor.find.clone().unwrap_or_default()),
+            Span::from("█").fg(BLUE),
+            Span::from("   ").fg(MUTED),
+        ];
+        let mut spans = footer_spans("FIND IN FILE", ACCENT, &[("⏎", "next"), ("shift-⏎", "previous"), ("esc", "done")], &[]);
+        spans.splice(2..2, input);
+        frame.render_widget(Line::from(spans), area);
+        return;
+    }
     // Where you are, then the keys that work there, then the global ones.
     let (badge, keys): (&str, &[(&str, &str)]) = match app.focus {
+        Focus::Editor => (
+            "EDIT",
+            &[
+                ("ctrl-s", "save"),
+                ("esc", "close"),
+                ("ctrl-z/y", "undo/redo"),
+                ("shift-arrows", "select"),
+                ("ctrl-c/x/v", "copy/cut/paste"),
+                ("ctrl-f", "find"),
+                ("ctrl-g", "next"),
+            ],
+        ),
         // Every key goes to the editor; micro's, or how to come back.
         Focus::Terminal if app.in_editor() => (
             "EDITOR",
@@ -496,7 +553,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         },
     };
     let global: &[(&str, &str)] = match app.focus {
-        Focus::Terminal => &[],
+        Focus::Terminal | Focus::Editor => &[],
         // In the viewer, / finds in the file instead.
         Focus::Viewer => &[("w t c f s", "go to panel"), ("?", "all keys"), ("q", "quit")],
         _ => &[("w t c g f s", "go to panel"), ("n", "new"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
@@ -536,7 +593,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("n w  n t  n f", "new workspace / terminal in this session / file or folder (end the name with /)"),
             ("n s", "new session, with its own copy, Docker, ports and database"),
-            ("e", "edit the file in micro (offers to install it), or $PULPO_EDITOR"),
+            ("e", "edit the file here, looking just as in the viewer ($PULPO_EDITOR: your own editor instead)"),
             ("y", "copy the file's path, relative to the workspace"),
             ("x x", "remove a workspace from the list (files kept) / delete a file or a task session / close the terminal"),
             ("j k  ↑ ↓  ⏎", "move, open (a session's terminal, a file, a diff, a commit's files)"),
@@ -568,6 +625,18 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("d u  g G", "page down, up / top, bottom"),
             ("h l  ← →  0", "scroll sideways / back to the start (also shift + wheel, trackpad)"),
             ("click", "focus a panel, pick an item; shift-drag selects text"),
+        ],
+    ),
+    (
+        "In the editor",
+        &[
+            ("ctrl-s  esc", "save / close (asks again with unsaved changes)"),
+            ("shift + moves", "select; alt or ctrl + ← → moves by word, ctrl + home end to the file's ends"),
+            ("ctrl-c x v  a", "copy, cut, paste (a whole line without a selection) / select all"),
+            ("ctrl-z  ctrl-y", "undo / redo"),
+            ("tab  shift-tab", "indent (the selected lines) / unindent"),
+            ("ctrl-f  ctrl-g", "find / next match (shift: previous)"),
+            ("click  drag", "place the cursor / select"),
         ],
     ),
 ];
