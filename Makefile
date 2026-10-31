@@ -2,7 +2,7 @@
 #   make install    build and install pulpo into ~/.cargo/bin (on your PATH with rustup)
 #   make uninstall  remove it
 #   make run        build and run from the checkout
-#   make test       unit tests
+#   make test       unit tests and the server end-to-end test
 
 .PHONY: install uninstall run test
 

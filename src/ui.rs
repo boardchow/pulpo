@@ -41,7 +41,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let lines: Vec<Line> = PULPO.iter().map(|row| Line::from(*row)).collect();
     frame.render_widget(Paragraph::new(lines).fg(BLUE), art);
 
-    let states: Vec<State> = app.terms.iter().map(|term| app.term_state(term).0).collect();
+    let states: Vec<State> = app.terms.iter().map(|term| app.term_state(term)).collect();
     let count = |state: State| states.iter().filter(|&&s| s == state).count();
     let busy: Vec<String> = [(count(State::Waiting), "to read"), (count(State::Running), "working")]
         .into_iter()
@@ -149,7 +149,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             .iter()
             .enumerate()
             .map(|(i, term)| {
-                let (state, detail) = app.term_state(term);
+                let state = app.term_state(term);
                 let (icon, color) = state_icon(state);
                 // Only a terminal that waits for you stands out; quiet ones fade.
                 let label = Span::from(term.label().to_string());
@@ -163,11 +163,8 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                     Span::from(format!("{icon} ")).fg(color).bold(),
                     label,
                 ];
-                if let Some(ws) = app.workspace_name(&term.cwd) {
+                if let Some(ws) = app.workspace_name(&term.info.cwd) {
                     spans.push(Span::from(format!(" {ws}")).fg(MUTED));
-                }
-                if !detail.is_empty() {
-                    spans.push(Span::from(format!("  {detail}")).fg(color));
                 }
                 ListItem::new(Line::from(spans))
             })
@@ -332,13 +329,13 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
     // The terminal on screen; the others are in the sidebar list.
     let title = match app.terms.get(app.active) {
         Some(term) => {
-            let (icon, color) = state_icon(app.term_state(term).0);
+            let (icon, color) = state_icon(app.term_state(term));
             let mut spans = vec![
                 Span::from(format!(" {} ", app.active + 1)).fg(MUTED),
                 Span::from(format!("{icon} ")).fg(color).bold(),
                 Span::from(term.label().to_string()).fg(FG).bold(),
             ];
-            if let Some(ws) = app.workspace_name(&term.cwd) {
+            if let Some(ws) = app.workspace_name(&term.info.cwd) {
                 spans.push(Span::from(format!(" · {ws}")).fg(MUTED));
             }
             spans.push(Span::from(" "));
@@ -450,7 +447,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         // Every key goes to the editor; micro's, or how to come back.
         Focus::Terminal if app.in_editor() => (
             "EDITOR",
-            match app.terms.get(app.active).map(|t| t.name.as_str()) {
+            match app.terms.get(app.active).map(|t| t.info.name.as_str()) {
                 Some("micro") => &[
                     ("ctrl-s", "save and close"),
                     ("ctrl-q", "close (asks to save)"),
@@ -532,7 +529,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("1-9  [ ]", "enter terminal N / previous, next terminal"),
             ("/  tab", "search files by name / tab: search inside files"),
             ("r", "refresh"),
-            ("q q", "quit Pulpo (closes all terminals)"),
+            ("q q", "quit Pulpo; terminals keep running, and come back next time"),
+            ("Q Q", "quit Pulpo and stop every terminal (ctrl-c, then hang up)"),
         ],
     ),
     (

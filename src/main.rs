@@ -1,9 +1,15 @@
 mod agents;
 mod app;
+mod client;
 mod git;
+mod procs;
+mod proto;
+mod pty;
+mod server;
 mod term;
 mod theme;
 mod search;
+mod status;
 mod tree;
 mod ui;
 mod viewer;
@@ -27,8 +33,11 @@ use app::App;
 
 const USAGE: &str = "usage:
   pulpo [path]   open Pulpo; a repository at path (default: .) joins the workspace list
-  pulpo hooks    print the Claude Code hooks config for detailed agent status
-  pulpo emit     record a hook event from stdin (called by the hooks)";
+  pulpo hooks install|status|remove [--dry-run]
+                 add Pulpo's hooks to Claude Code, for what agents run and ask
+  pulpo hooks    print those hooks instead
+  pulpo emit     record a hook event from stdin (called by the hooks)
+  pulpo serve    run the server that keeps terminals running (Pulpo starts it)";
 
 /// Minimum time between two refreshes caused by file changes, so a build
 /// writing thousands of files doesn't run `git status` thousands of times.
@@ -38,8 +47,9 @@ pub enum Msg {
     Input(Event),
     Fs(Vec<PathBuf>),
     Agents,
-    Pty(usize, Vec<u8>),
-    PtyExit(usize),
+    Server(proto::ToClient),
+    Output(u32, Vec<u8>),
+    ServerGone,
     Search(usize, Vec<search::Hit>),
     Repos(Vec<String>),
 }
@@ -48,7 +58,8 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("emit") => agents::emit(),
-        Some("hooks") => agents::print_hooks()?,
+        Some("serve") => server::serve(&args[1..])?,
+        Some("hooks") => agents::hooks(&args[1..])?,
         Some("-h" | "--help") => println!("{USAGE}"),
         arg => {
             let start = arg.map(PathBuf::from).unwrap_or(std::env::current_dir()?).canonicalize()?;
@@ -86,7 +97,8 @@ fn run(launch: Option<PathBuf>, scratch: PathBuf) -> Result<()> {
     });
 
     viewer::warm_up();
-    let mut app = App::new(launch, scratch, tx)?;
+    let link = client::connect(tx.clone())?;
+    let mut app = App::new(launch, scratch, tx, link)?;
     let mut terminal = ratatui::init();
     // The kitty keyboard protocol lets Ghostty report keys like Shift+Enter
     // that the legacy encoding can't tell apart. Terminals without it ignore this.
@@ -99,15 +111,14 @@ fn run(launch: Option<PathBuf>, scratch: PathBuf) -> Result<()> {
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>) -> Result<()> {
-    // Draw once so the terminal size is known, then open a first shell.
+    // Draw once so the terminal size is known; the server then shows its
+    // terminals, or a first shell.
     terminal.draw(|frame| ui::draw(frame, app))?;
-    app.spawn(&app::shell(), false);
     if workspace::registered().is_empty() {
         app.open_repo_picker();
     }
 
     let mut last_fs_refresh = Instant::now();
-    let mut last_foreground = Instant::now();
     loop {
         app.tick();
         terminal.draw(|frame| ui::draw(frame, app))?;
@@ -132,15 +143,12 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
                 Msg::Input(_) => {}
                 Msg::Fs(paths) => app.on_fs(&paths),
                 Msg::Agents => app.agents.load(),
-                Msg::Pty(id, bytes) => app.on_pty(id, &bytes),
-                Msg::PtyExit(id) => app.on_exit(id),
+                Msg::Server(message) => app.on_server(message),
+                Msg::Output(id, bytes) => app.on_output(id, &bytes),
+                Msg::ServerGone => app.on_server_gone(),
                 Msg::Search(generation, hits) => app.on_search(generation, hits),
                 Msg::Repos(repos) => app.on_repos(repos),
             }
-        }
-        if last_foreground.elapsed() >= Duration::from_secs(1) {
-            app.refresh_foreground();
-            last_foreground = Instant::now();
         }
         if app.fs_pending() && last_fs_refresh.elapsed() >= FS_THROTTLE {
             app.flush_fs();

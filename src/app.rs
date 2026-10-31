@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -9,11 +10,18 @@ use ratatui::widgets::{Block, ListState};
 
 use crate::Msg;
 use crate::agents::{Agents, State};
+use crate::client::{self, Link};
 use crate::git;
+use crate::procs;
+use crate::proto::{PROTOCOL, ToClient, ToServer};
 use crate::search::{Mode, Search};
+use crate::status::Status;
 use crate::term::Term;
 use crate::viewer::{Source, Viewer};
 use crate::workspace::{self, GraphItem, Workspace};
+
+/// At most one desktop notification per terminal this often.
+const NOTICE_EVERY: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -58,7 +66,18 @@ pub struct App {
     pub agents: Agents,
     pub terms: Vec<Term>,
     pub active: usize,
-    next_id: usize,
+    /// The server that runs the terminals.
+    link: Link,
+    /// Terminals asked of the server and not shown yet: whether to go into
+    /// each when it comes. Its token stands in for its id until then.
+    spawning: HashMap<u64, bool>,
+    next_token: u64,
+    /// Upgrading the server was asked once already.
+    upgrade_asked: bool,
+    /// Connected again after the server went away (an upgrade, or it
+    /// stopped), with this many terminals before; and when.
+    reconnected: Option<usize>,
+    last_reconnect: Option<Instant>,
     /// Rows and columns available to terminals, set when drawing.
     term_size: (u16, u16),
     pub viewer: Viewer,
@@ -100,7 +119,7 @@ pub struct App {
 impl App {
     /// `launch` is the checkout Pulpo was started in, if any; `scratch` the
     /// directory to show when no repository is registered.
-    pub fn new(launch: Option<PathBuf>, scratch: PathBuf, tx: Sender<Msg>) -> anyhow::Result<Self> {
+    pub fn new(launch: Option<PathBuf>, scratch: PathBuf, tx: Sender<Msg>, link: Link) -> anyhow::Result<Self> {
         let fs_tx = tx.clone();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(event) = res {
@@ -119,12 +138,19 @@ impl App {
             agents,
             terms: Vec::new(),
             active: 0,
-            next_id: 0,
+            link,
+            spawning: HashMap::new(),
+            // Far above any terminal id, so the two never mix.
+            next_token: 1 << 40,
+            upgrade_asked: false,
+            reconnected: None,
+            last_reconnect: None,
             term_size: (24, 80),
             viewer: Viewer::default(),
             sessions_state: ListState::default().with_selected(Some(0)),
             areas: Areas::default(),
-            message: None,
+            message: (!crate::agents::hooks_installed())
+                .then(|| "run `pulpo hooks install` to see what Claude runs and asks in each terminal".into()),
             search: None,
             help: false,
             new_menu: false,
@@ -283,33 +309,111 @@ impl App {
         self.run(program, &[], focus);
     }
 
-    /// Start `program` in a new terminal; its id, if it started.
+    /// Start `program` in a new terminal. The server shows it shortly; until
+    /// then the returned token stands in for its id.
     fn run(&mut self, program: &str, args: &[String], focus: bool) -> Option<usize> {
+        let token = self.next_token;
+        self.next_token += 1;
+        let (rows, cols) = self.term_size;
         let cwd = self.ws().root.clone();
-        match Term::spawn(self.next_id, program, args, &cwd, self.term_size, self.tx.clone()) {
-            Ok(term) => {
-                self.next_id += 1;
-                self.terms.push(term);
-                self.select_term(self.terms.len() - 1);
+        self.link.send(&ToServer::Spawn { token, program: program.into(), args: args.to_vec(), cwd, rows, cols });
+        self.spawning.insert(token, focus);
+        Some(token as usize)
+    }
+
+    pub fn on_server(&mut self, message: ToClient) {
+        match message {
+            ToClient::Attach { info, rows, cols, token } => {
+                let id = info.id as usize;
+                if self.terms.iter().any(|t| t.id == id) {
+                    return;
+                }
+                self.terms.push(Term::new(info, (rows, cols), self.link.clone()));
+                let i = self.terms.len() - 1;
+                self.terms[i].resize(self.term_size.0, self.term_size.1);
+                let Some(focus) = token.and_then(|t| self.spawning.remove(&t)) else { return };
+                // Ours: what waited for its id gets it.
+                let token = token.unwrap_or_default() as usize;
+                for waiting in [self.editing.as_mut().map(|e| &mut e.0), self.installing.as_mut().map(|i| &mut i.0)].into_iter().flatten() {
+                    if *waiting == token {
+                        *waiting = id;
+                    }
+                }
+                self.select_term(i);
                 if focus {
                     self.set_focus(Focus::Terminal);
                 }
-                Some(self.next_id - 1)
             }
-            Err(e) => {
-                self.message = Some(format!("could not start {program}: {e}"));
-                None
+            ToClient::Hello { protocol, exe, built, .. } => self.check_server_build(protocol, &exe, built),
+            // Everything the server had is shown: start with a shell if it had none.
+            ToClient::Ready => {
+                if let Some(had) = self.reconnected.take()
+                    && had > 0
+                    && self.terms.is_empty()
+                {
+                    let log = crate::server::dir().join("log");
+                    self.message = Some(format!("the Pulpo server stopped and its {had} terminal(s) with it (see {})", log.display()));
+                }
+                if self.terms.is_empty() && self.spawning.is_empty() {
+                    self.spawn(&shell(), false);
+                }
             }
+            ToClient::Info { info } => {
+                if let Some(term) = self.terms.iter_mut().find(|t| t.id == info.id as usize) {
+                    term.set_info(info);
+                }
+            }
+            ToClient::Resized { id, rows, cols } => {
+                if let Some(term) = self.terms.iter_mut().find(|t| t.id == id as usize) {
+                    term.set_size(rows, cols);
+                }
+            }
+            ToClient::Exit { id } => self.on_exit(id as usize),
+            ToClient::Error { message } => self.message = Some(message),
         }
     }
 
-    pub fn on_pty(&mut self, id: usize, bytes: &[u8]) {
-        if let Some(term) = self.terms.iter_mut().find(|t| t.id == id) {
+    pub fn on_output(&mut self, id: u32, bytes: &[u8]) {
+        if let Some(term) = self.terms.iter_mut().find(|t| t.id == id as usize) {
             term.feed(bytes);
         }
     }
 
-    pub fn on_exit(&mut self, id: usize) {
+    /// A server runs an older build of this Pulpo: have it become this one.
+    /// It keeps its terminals; the connection drops and comes back.
+    fn check_server_build(&mut self, protocol: u32, exe: &Path, built: u64) {
+        let Ok(mine) = std::env::current_exe() else { return };
+        let same = std::fs::canonicalize(&mine).ok() == std::fs::canonicalize(exe).ok();
+        if same && !self.upgrade_asked && (crate::server::built(&mine) > built || protocol != PROTOCOL) {
+            self.upgrade_asked = true;
+            self.link.send(&ToServer::Upgrade { exe: mine });
+        } else if protocol != PROTOCOL {
+            self.message = Some(format!("the Pulpo server runs another build ({}); it stops once its terminals are closed", exe.display()));
+        }
+    }
+
+    /// The connection to the server dropped: it upgraded, or it stopped and
+    /// the terminals with it. Connect again; what comes back tells which.
+    pub fn on_server_gone(&mut self) {
+        let had = self.terms.len();
+        self.terms.clear();
+        self.spawning.clear();
+        self.after_close();
+        if self.last_reconnect.is_some_and(|at| at.elapsed() < Duration::from_secs(2)) {
+            self.message = Some("the Pulpo server keeps stopping: see its log, ~/.local/state/pulpo/server/log".into());
+            return;
+        }
+        self.last_reconnect = Some(Instant::now());
+        match client::connect(self.tx.clone()) {
+            Ok(link) => {
+                self.link = link;
+                self.reconnected = Some(had);
+            }
+            Err(e) => self.message = Some(format!("{e:#}")),
+        }
+    }
+
+    fn on_exit(&mut self, id: usize) {
         if let Some(i) = self.terms.iter().position(|t| t.id == id) {
             self.terms.remove(i);
             self.after_close();
@@ -361,16 +465,16 @@ impl App {
     }
 
     /// Working while the program prints on its own; then, until you look at
-    /// it, waiting with something to read (what it asks, with hooks).
-    pub fn term_state(&self, term: &Term) -> (State, String) {
-        let agent = self.agents.for_tab(&term.tag);
-        let detail = |state: State| agent.filter(|a| a.state == state).map(|a| a.detail.clone()).unwrap_or_default();
-        if term.working() {
-            (State::Running, detail(State::Running))
-        } else if term.unread {
-            (State::Waiting, detail(State::Waiting))
-        } else {
-            (State::Idle, String::new())
+    /// it, waiting with something to read. A program that reports its
+    /// status (OSC 7501) is taken at its word. What it runs or asks goes in
+    /// the notification, not here.
+    pub fn term_state(&self, term: &Term) -> State {
+        match term.status().map(|(status, _)| status) {
+            Some(Status::Working) => State::Running,
+            Some(Status::Blocked) => State::Waiting,
+            None if term.working() => State::Running,
+            _ if term.unread() => State::Waiting,
+            _ => State::Idle,
         }
     }
 
@@ -378,22 +482,37 @@ impl App {
     /// leave something to read, unless you are in that terminal.
     pub fn tick(&mut self) {
         let viewing = (self.focus == Focus::Terminal).then_some(self.active);
+        let mut notices = Vec::new();
         for (i, term) in self.terms.iter_mut().enumerate() {
-            term.settle();
-            let reported = self.agents.for_tab(&term.tag).map_or(State::Idle, |a| a.state);
+            let agent = self.agents.for_tab(&term.info.tag);
+            let reported = agent.map_or(State::Idle, |a| a.state);
             if reported != term.reported {
-                term.unread |= matches!(reported, State::Waiting | State::Done);
+                if matches!(reported, State::Waiting | State::Done) {
+                    term.hook_unread = true;
+                    term.notice = Some(agent.map(|a| a.detail.clone()).unwrap_or_default());
+                }
                 term.reported = reported;
             }
             if viewing == Some(i) {
-                term.unread = false;
+                term.seen();
             }
+            if let Some(detail) = term.notice.take()
+                && term.last_notice.is_none_or(|at| at.elapsed() >= NOTICE_EVERY)
+            {
+                term.last_notice = Some(Instant::now());
+                let detail = if detail.is_empty() { "finished".to_string() } else { detail };
+                notices.push((term.label().to_string(), term.info.cwd.clone(), detail));
+            }
+        }
+        for (label, cwd, detail) in notices {
+            let place = self.workspace_name(&cwd).map(|ws| format!(" in {ws}")).unwrap_or_default();
+            notify(&format!("{label}{place}: {detail}"));
         }
     }
 
     /// Something is working, so its spinner needs frequent redraws.
     pub fn animating(&self) -> bool {
-        self.terms.iter().any(|term| self.term_state(term).0 == State::Running)
+        self.terms.iter().any(|term| self.term_state(term) == State::Running)
     }
 
     pub fn workspace_name(&self, dir: &Path) -> Option<&str> {
@@ -499,11 +618,26 @@ impl App {
             KeyCode::Char('f' | 'z') => self.zoom_terminal(),
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('r') => self.refresh(),
+            // Terminals keep running in the server; say which, and their ports.
             KeyCode::Char('q') => {
                 if self.terms.is_empty() || pending == Some('q') {
                     return true;
                 }
-                self.confirm('q', format!("{} terminal(s) open: press q again to quit Pulpo", self.terms.len()));
+                let running = self.still_running();
+                self.confirm('q', format!("press q again to quit; these keep running: {running} (Q stops them)"));
+            }
+            KeyCode::Char('Q') => {
+                if self.terms.is_empty() {
+                    return true;
+                }
+                if pending == Some('Q') {
+                    for term in &self.terms {
+                        self.link.send(&ToServer::Close { id: term.info.id });
+                    }
+                    return true;
+                }
+                let n = self.terms.len();
+                self.confirm('Q', format!("press Q again to stop {n} terminal(s) and quit (ctrl-c first, then hang up)"));
             }
             KeyCode::Char('x') if self.focus == Focus::Workspaces && self.ws().is_worktree() => {
                 self.message = Some("this is a git worktree of the workspace above; Pulpo leaves worktrees to git".into());
@@ -547,7 +681,7 @@ impl App {
             if let Some(term) = self.terms.get_mut(self.active) {
                 term.key(key);
                 // In micro, saving also closes it: back to the file in the viewer.
-                if save && term.name == "micro" {
+                if save && term.info.name == "micro" {
                     term.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
                 }
             }
@@ -595,9 +729,8 @@ impl App {
     /// Close the active terminal right away if its shell is idle; if a
     /// program runs in it (Claude, a server…), ask for the key again first.
     fn close_terminal(&mut self, confirm_key: char, key_name: &str, pending: Option<char>) {
-        let Some(term) = self.terms.get_mut(self.active) else { return };
-        term.refresh_foreground();
-        match term.running.clone() {
+        let Some(term) = self.terms.get(self.active) else { return };
+        match term.info.running.clone() {
             Some(program) if pending != Some(confirm_key) => {
                 let n = self.active + 1;
                 self.confirm(confirm_key, format!("{program} is running in terminal {n}: press {key_name} again to close it"));
@@ -606,11 +739,40 @@ impl App {
         }
     }
 
-    /// Terminal names follow what runs in each one.
-    pub fn refresh_foreground(&mut self) {
-        for term in &mut self.terms {
-            term.refresh_foreground();
+    /// What keeps running when Pulpo quits: each terminal's program with
+    /// the ports it listens on, and Docker, whose ports belong to Docker's
+    /// own processes and don't show.
+    fn still_running(&self) -> String {
+        let table = procs::table();
+        let trees: Vec<Vec<&procs::Proc>> = self.terms.iter().map(|t| procs::tree(&table, t.info.pid)).collect();
+        let pids: Vec<i32> = trees.iter().flatten().map(|p| p.pid).collect();
+        let ports = procs::listening(&pids);
+        let mut parts = Vec::new();
+        let mut shells = 0;
+        for (term, tree) in self.terms.iter().zip(&trees) {
+            let mut listening: Vec<u16> = ports.iter().filter(|(pid, _)| tree.iter().any(|p| p.pid == *pid)).map(|&(_, port)| port).collect();
+            listening.sort_unstable();
+            listening.dedup();
+            let docker = tree.iter().any(|p| p.name.starts_with("docker"));
+            if tree.len() <= 1 && listening.is_empty() {
+                shells += 1;
+                continue;
+            }
+            let mut part = term.label().to_string();
+            for port in listening {
+                part.push_str(&format!(" :{port}"));
+            }
+            if docker {
+                part.push_str(" (docker)");
+            }
+            parts.push(part);
         }
+        match shells {
+            0 => {}
+            1 => parts.push("1 shell".into()),
+            n => parts.push(format!("{n} shells")),
+        }
+        parts.join(" · ")
     }
 
     fn enter_term(&mut self, i: usize) {
@@ -632,7 +794,8 @@ impl App {
 
     fn close_active(&mut self) {
         if self.active < self.terms.len() {
-            self.terms.remove(self.active);
+            let term = self.terms.remove(self.active);
+            self.link.send(&ToServer::Close { id: term.info.id });
             self.after_close();
         }
     }
@@ -928,8 +1091,8 @@ impl App {
                     self.set_current(i);
                     // Bring up a terminal working in this workspace, if any.
                     let root = &self.ws().root;
-                    if self.terms.get(self.active).is_some_and(|t| &t.cwd != root)
-                        && let Some(t) = self.terms.iter().position(|t| &t.cwd == root)
+                    if self.terms.get(self.active).is_some_and(|t| &t.info.cwd != root)
+                        && let Some(t) = self.terms.iter().position(|t| &t.info.cwd == root)
                     {
                         self.select_term(t);
                     }
@@ -975,7 +1138,7 @@ impl App {
 
     /// Show the workspace the active terminal works in.
     fn follow_term(&mut self) {
-        let cwd = self.terms.get(self.active).map(|t| t.cwd.clone());
+        let cwd = self.terms.get(self.active).map(|t| t.info.cwd.clone());
         if let Some(i) = cwd.and_then(|cwd| self.workspaces.iter().position(|w| w.root == cwd)) {
             self.set_current(i);
         }
@@ -1220,6 +1383,13 @@ impl App {
             self.installing = Some((id, path, line));
         }
     }
+}
+
+/// A desktop notification from the terminal Pulpo runs in (OSC 9, which
+/// Ghostty shows as a macOS notification).
+fn notify(text: &str) {
+    let text: String = text.chars().filter(|c| !c.is_control()).take(200).collect();
+    crate::term::to_host(format!("\x1b]9;{text}\x07").as_bytes());
 }
 
 /// The editor to use inside Pulpo: $PULPO_EDITOR, or micro, or the first

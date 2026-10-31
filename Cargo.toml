@@ -7,12 +7,12 @@ rust-version = "1.88"
 [dependencies]
 anyhow = "1.0.104"
 ignore = "0.4.34"
+libc = "0.2.191"
 notify = "8.2.1"
 nucleo-matcher = "0.3.1"
-portable-pty = "0.9.0"
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
 vt100 = "0.18.1"

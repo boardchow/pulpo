@@ -38,15 +38,27 @@ Run it from anywhere: it opens your workspaces. Started inside a git repository,
 | `ctrl-n` | in a terminal: new shell in the same workspace |
 | `ctrl-s` | switch between the sidebar and the terminal |
 | `/` | find a file; `tab` searches inside files |
-| `q` | quit (stops everything running inside) |
+| `q` | quit; terminals keep running and come back next time |
+| `Q` | quit and stop every terminal |
 
-To see what Claude is running and asking, add its hooks: run `pulpo hooks` and merge the output into `~/.claude/settings.json`.
+Terminals live in a small background process, `pulpo serve`, that Pulpo starts when it first needs it. Quitting Pulpo, or rebuilding it with `make install`, leaves Claude, dev servers and long jobs running; the next Pulpo shows them as they are. A rebuilt Pulpo hands the running terminals to its new build without restarting them.
+
+So nothing keeps running unnoticed:
+
+- `q` asks first and lists what keeps running, with the ports it listens on (`npm :3000`). A Docker CLI is named, since Docker's own processes hold its ports.
+- `Q`, or closing a terminal, stops what runs in it the way you would: Ctrl-C to the program first, so `docker compose up` stops its containers and a dev server frees its port, then a hang-up, then a kill for what remains.
+- The server listens only on a Unix socket in `~/.local/state/pulpo/server/` that your account alone can open, never on a network port. It exits by itself a minute after its last terminal and Pulpo are gone.
+- Processes deliberately detached from the terminal (`docker run -d`, `nohup … &`) outlive it, as they do when you close any terminal window.
+
+To know exactly when Claude waits for you or is done, run `pulpo hooks install` once. It adds Pulpo's hooks to `~/.claude/settings.json` and leaves the rest of the file as it was; `pulpo hooks status` shows what is installed and `pulpo hooks remove` takes them out again. When an agent asks you something or finishes while you look elsewhere, Ghostty shows a notification saying what it asks. The sidebar itself only shows each terminal working or waiting.
+
+Any program can also say what it is doing with the [program status escape sequence](https://www.superlogical.com/rex/docs/build/program-status) (OSC 7501): Pulpo shows it working or waiting on you, and its message goes in the notification.
 
 ## Development
 
 ```sh
 make run    # build and run from the checkout
-make test   # unit tests
+make test   # unit tests, and the server's end-to-end test
 ```
 
 [PLAN.md](PLAN.md) explains how it is built.

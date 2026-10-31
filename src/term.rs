@@ -1,37 +1,44 @@
-//! An embedded terminal: a process on a PTY, emulated with vt100.
+//! An embedded terminal as Pulpo shows it: a mirror of one that the server
+//! (`server.rs`) runs, fed with its screen and then its output. Also the
+//! emulator parts both sides share.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::num::NonZeroU16;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use anyhow::Result;
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::agents::State;
-use crate::{Msg, theme};
+use crate::client::Link;
+use crate::proto::{Info, ToServer};
+use crate::status::{self, Records, Status};
+use crate::theme;
 
-const SCROLLBACK: usize = 5000;
-const BUSY_FOR: Duration = Duration::from_millis(1500);
-/// Output this soon after you type, paste, click, scroll or resize is the
-/// program answering you (echo, redraw), not working on its own.
-const ECHO: Duration = Duration::from_millis(400);
-/// Output shorter than this is a blip (a redraw), not work.
-const BLIP: Duration = Duration::from_millis(300);
-/// Working at least this long counts as a task, with a result to read.
-const TASK: Duration = Duration::from_secs(1);
+/// History kept by the mirror; the server keeps the same.
+pub const SCROLLBACK: usize = 5000;
 
 /// Things the emulated program asks of its terminal.
 #[derive(Default)]
-struct Events {
-    replies: Vec<u8>,
-    bell: bool,
-    title: Option<String>,
+pub struct Events {
+    pub replies: Vec<u8>,
+    pub bell: bool,
+    pub title: Option<String>,
+    /// Sequences to pass on to the terminal Pulpo runs in (clipboard).
+    pub host: Vec<u8>,
+    /// What the program reports about itself (OSC 7501).
+    pub status: Records,
+    /// Progress (OSC 9;4) stands in for a status until a real one arrives.
+    reports_status: bool,
+}
+
+impl Events {
+    /// Carrying on with what a terminal's programs reported before.
+    pub fn with_status(status: Records) -> Events {
+        Events { reports_status: true, status, ..Events::default() }
+    }
 }
 
 impl vt100::Callbacks for Events {
@@ -41,6 +48,35 @@ impl vt100::Callbacks for Events {
 
     fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
         self.title = Some(String::from_utf8_lossy(title).into_owned());
+    }
+
+    fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, ty: &[u8], data: &[u8]) {
+        self.host.extend([&b"\x1b]52;"[..], ty, b";", data, b"\x07"].concat());
+    }
+
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        match params {
+            [b"7501", b"?"] => self.replies.extend(b"\x1b]7501;?\x1b\\"),
+            [b"7501", body] => {
+                if let Some(report) = status::parse(body) {
+                    self.reports_status = true;
+                    self.status.apply(report);
+                }
+            }
+            [b"9", b"4", state, ..] if !self.reports_status => {
+                let state = match *state {
+                    b"0" => "clear",
+                    b"2" => "error",
+                    _ => "working",
+                };
+                if let Some(report) = status::parse(format!("state={state}").as_bytes()) {
+                    self.status.apply(report);
+                }
+            }
+            // A new shell prompt: whatever ran is over.
+            [b"133", mark, ..] if mark.starts_with(b"A") => self.status.end_runs(),
+            _ => {}
+        }
     }
 
     // Answer cursor position and device attribute queries; some programs
@@ -64,110 +100,106 @@ impl vt100::Callbacks for Events {
     }
 }
 
+/// The mirror only draws: the server answers the program's queries, and
+/// the clipboard goes on to the terminal Pulpo runs in.
+struct Mirror;
+
+impl vt100::Callbacks for Mirror {
+    fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, ty: &[u8], data: &[u8]) {
+        to_host(&[&b"\x1b]52;"[..], ty, b";", data, b"\x07"].concat());
+    }
+}
+
 pub struct Term {
     pub id: usize,
-    /// Exported as `PULPO_TAB` so hook events can be matched to this terminal.
-    pub tag: String,
-    pub name: String,
-    /// The program running in the foreground, when it isn't the shell itself
-    /// (None: the shell is idle at its prompt).
-    pub running: Option<String>,
-    /// The workspace directory the program was started in.
-    pub cwd: PathBuf,
-    pub title: String,
-    /// It finished something or asked you something since you last looked.
-    pub unread: bool,
+    /// What the server says about it: its program, title, state.
+    pub info: Info,
+    /// Its agent finished or asked something (hooks), not seen yet.
+    pub hook_unread: bool,
     /// The agent state its hooks last reported, to notice when it changes.
     pub reported: State,
-    /// Last output the program made on its own, and since when it has been
-    /// working without a pause.
-    last_activity: Instant,
-    working_since: Option<Instant>,
-    /// Last thing sent to the program, or resize.
-    last_input: Instant,
-    parser: vt100::Parser<Events>,
-    master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
-    child: Box<dyn Child + Send + Sync>,
+    /// Something that wants you now (an agent asks or finished), to notify
+    /// about once; Pulpo takes it.
+    pub notice: Option<String>,
+    pub last_notice: Option<Instant>,
+    parser: vt100::Parser<Mirror>,
+    link: Link,
+    /// The size last asked of the server, so each is asked once.
+    asked: (u16, u16),
 }
 
 impl Term {
-    pub fn spawn(id: usize, program: &str, args: &[String], cwd: &Path, (rows, cols): (u16, u16), tx: Sender<Msg>) -> Result<Term> {
-        let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
-        let tag = format!("{}-{id}", std::process::id());
-        let mut cmd = CommandBuilder::new(program);
-        cmd.args(args);
-        cmd.cwd(cwd);
-        cmd.env("TERM", "xterm-256color");
-        cmd.env("COLORTERM", "truecolor");
-        // micro only uses 24-bit color when told.
-        cmd.env("MICRO_TRUECOLOR", "1");
-        cmd.env("PULPO_TAB", &tag);
-        // Don't let programs assume Ghostty features this emulator lacks.
-        cmd.env_remove("TERM_PROGRAM");
-        cmd.env_remove("TERM_PROGRAM_VERSION");
-        let child = pair.slave.spawn_command(cmd)?;
-        drop(pair.slave);
-
-        let mut reader = pair.master.try_clone_reader()?;
-        let writer = pair.master.take_writer()?;
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 16 * 1024];
-            while let Ok(n @ 1..) = reader.read(&mut buf) {
-                if tx.send(Msg::Pty(id, buf[..n].to_vec())).is_err() {
-                    return;
-                }
-            }
-            let _ = tx.send(Msg::PtyExit(id));
-        });
-
-        let name = Path::new(program).file_name().unwrap_or_default().to_string_lossy().into_owned();
-        Ok(Term {
-            id,
-            tag,
-            name,
-            running: None,
-            cwd: cwd.to_path_buf(),
-            title: String::new(),
-            unread: false,
+    pub fn new(info: Info, (rows, cols): (u16, u16), link: Link) -> Term {
+        Term {
+            id: info.id as usize,
+            info,
+            hook_unread: false,
             reported: State::Idle,
-            last_activity: Instant::now(),
-            working_since: None,
-            last_input: Instant::now(),
-            parser: vt100::Parser::new_with_callbacks(nz(rows), nz(cols), SCROLLBACK, Events::default()),
-            master: pair.master,
-            writer,
-            child,
-        })
+            notice: None,
+            last_notice: None,
+            parser: vt100::Parser::new_with_callbacks(nz(rows), nz(cols), SCROLLBACK, Mirror),
+            link,
+            asked: (rows, cols),
+        }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.process(bytes);
-        if self.last_input.elapsed() > ECHO {
-            self.settle();
-            if !self.active() {
-                self.working_since = Some(Instant::now());
-            }
-            self.last_activity = Instant::now();
+    }
+
+    pub fn set_info(&mut self, info: Info) {
+        // It reports that it waits for you, failed or finished.
+        let before = self.info.status.as_ref().map(|(status, _)| *status);
+        if let Some((now, detail)) = &info.status
+            && Some(*now) != before
+            && matches!(now, Status::Blocked | Status::Error | Status::Done)
+        {
+            self.notice = Some(detail.clone());
         }
-        let events = self.parser.callbacks_mut();
-        let replies = std::mem::take(&mut events.replies);
-        if let Some(title) = events.title.take() {
-            self.title = title;
-        }
-        self.unread |= std::mem::take(&mut events.bell);
-        if !replies.is_empty() {
-            let _ = self.writer.write_all(&replies);
+        self.info = info;
+    }
+
+    /// The server changed its size; what follows is drawn at that size.
+    pub fn set_size(&mut self, rows: u16, cols: u16) {
+        self.parser.set_size(nz(rows), nz(cols));
+    }
+
+    /// Ask the server for this size.
+    pub fn resize(&mut self, rows: u16, cols: u16) {
+        if self.asked != (rows, cols) {
+            self.asked = (rows, cols);
+            self.link.send(&ToServer::Resize { id: self.info.id, rows, cols });
         }
     }
 
-    pub fn resize(&mut self, rows: u16, cols: u16) {
-        if self.parser.screen().size() == (nz(rows), nz(cols)) {
-            return;
+    /// You are looking at it: nothing left to read.
+    pub fn seen(&mut self) {
+        self.hook_unread = false;
+        self.notice = None;
+        if self.info.unread {
+            self.info.unread = false;
+            self.link.send(&ToServer::Seen { id: self.info.id });
         }
-        self.last_input = Instant::now();
-        let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
-        self.parser.set_size(nz(rows), nz(cols));
+    }
+
+    /// It finished something or asked you something since you last looked.
+    pub fn unread(&self) -> bool {
+        self.info.unread || self.hook_unread
+    }
+
+    /// The program is printing on its own: an agent at work, a build, a server.
+    pub fn working(&self) -> bool {
+        self.info.working
+    }
+
+    /// What the program says it is doing (OSC 7501), if it says.
+    pub fn status(&self) -> Option<(Status, String)> {
+        self.info.status.clone()
+    }
+
+    /// What to call this terminal: the program running in it, or the shell.
+    pub fn label(&self) -> &str {
+        self.info.running.as_deref().unwrap_or(&self.info.name)
     }
 
     pub fn key(&mut self, key: KeyEvent) {
@@ -185,10 +217,8 @@ impl Term {
     }
 
     fn send(&mut self, bytes: &[u8]) {
-        self.last_input = Instant::now();
         self.parser.screen_mut().set_scrollback(0);
-        let _ = self.writer.write_all(bytes);
-        let _ = self.writer.flush();
+        self.link.input(self.info.id, bytes);
     }
 
     /// The program asked to receive mouse events (Claude, vim with mouse on…).
@@ -208,9 +238,7 @@ impl Term {
         let screen = self.parser.screen();
         match encode_mouse(screen.mouse_protocol_mode(), screen.mouse_protocol_encoding(), kind, col, row, modifiers) {
             Some(bytes) => {
-                self.last_input = Instant::now();
-                let _ = self.writer.write_all(&bytes);
-                let _ = self.writer.flush();
+                self.link.input(self.info.id, &bytes);
                 true
             }
             None => false,
@@ -221,39 +249,6 @@ impl Term {
     pub fn scroll(&mut self, rows: isize) {
         let screen = self.parser.screen_mut();
         screen.set_scrollback(screen.scrollback().saturating_add_signed(rows));
-    }
-
-    /// What to call this terminal: the program running in it, or the shell.
-    pub fn label(&self) -> &str {
-        self.running.as_deref().unwrap_or(&self.name)
-    }
-
-    pub fn refresh_foreground(&mut self) {
-        let leader = self.master.process_group_leader();
-        self.running = match (leader, self.child.process_id()) {
-            (Some(group), Some(shell)) if group as u32 != shell => process_name(group as u32),
-            _ => None,
-        };
-    }
-
-    /// The program is printing on its own: an agent at work, a build, a server.
-    pub fn working(&self) -> bool {
-        self.active() && self.working_since.is_some_and(|since| self.last_activity - since >= BLIP)
-    }
-
-    fn active(&self) -> bool {
-        self.last_activity.elapsed() < BUSY_FOR
-    }
-
-    /// When the program stops working, a run long enough to be a task leaves
-    /// something to read.
-    pub fn settle(&mut self) {
-        if !self.active()
-            && let Some(since) = self.working_since.take()
-            && self.last_activity - since >= TASK
-        {
-            self.unread = true;
-        }
     }
 
     /// Draw the screen into `area`; returns where the cursor should be shown.
@@ -293,20 +288,60 @@ impl Term {
     }
 }
 
-impl Drop for Term {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
+/// Bytes that make a new parser of the same size show what `screen` shows:
+/// its history, then the screen itself with its modes, and the title.
+/// vt100 can't read the screen behind an alternate one (a full-screen
+/// program's); that part and its history are left out.
+pub fn snapshot(screen: &vt100::Screen, title: &str) -> Vec<u8> {
+    let mut screen = screen.clone();
+    let (rows, cols) = (screen.size().0.get(), screen.size().1.get());
+    let mut out = String::new();
+    if screen.alternate_screen() {
+        out.push_str("\x1b[?1049h");
+    } else {
+        screen.set_scrollback(usize::MAX);
+        let mut back = screen.scrollback();
+        if back > 0 {
+            while back > 0 {
+                screen.set_scrollback(back);
+                let n = back.min(usize::from(rows));
+                for row in screen.rows_formatted(0, cols).take(n) {
+                    out.push_str("\x1b[m");
+                    out.push_str(&row);
+                    out.push_str("\x1b[m\r\n");
+                }
+                back -= n;
+            }
+            // Scroll those lines off the screen into the history, so drawing
+            // the screen over them doesn't lose them.
+            out.push_str(&"\n".repeat(usize::from(rows) - 1));
+        }
+        screen.set_scrollback(0);
+    }
+    out.push_str(&screen.state_formatted());
+    if !title.is_empty() {
+        out.push_str(&format!("\x1b]2;{title}\x07"));
+    }
+    out.into_bytes()
+}
+
+/// Write to the terminal Pulpo itself runs in (Ghostty), between frames.
+pub fn to_host(bytes: &[u8]) {
+    if !bytes.is_empty() {
+        let mut out = std::io::stdout();
+        let _ = out.write_all(bytes);
+        let _ = out.flush();
     }
 }
 
-fn process_name(pid: u32) -> Option<String> {
+pub fn process_name(pid: u32) -> Option<String> {
     let out = std::process::Command::new("ps").args(["-o", "comm=", "-p", &pid.to_string()]).output().ok()?;
     let comm = String::from_utf8_lossy(&out.stdout);
     let name = comm.trim().rsplit('/').next()?.trim_start_matches('-');
     (!name.is_empty()).then(|| name.to_string())
 }
 
-fn nz(n: u16) -> NonZeroU16 {
+pub fn nz(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN)
 }
 
@@ -477,5 +512,58 @@ mod tests {
         let mut parser = vt100::Parser::new_with_callbacks(nz(10), nz(20), 0, Events::default());
         parser.process(b"ab\x1b[6n");
         assert_eq!(parser.callbacks().replies, b"\x1b[1;3R");
+    }
+
+    #[test]
+    fn snapshots_rebuild_the_same_terminal() {
+        let mut parser = vt100::Parser::new_with_callbacks(nz(10), nz(30), 100, Events::default());
+        for i in 0..45 {
+            parser.process(format!("\x1b[3{}mline {i}\x1b[m\r\n", i % 8).as_bytes());
+        }
+        parser.process(b"\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?1h$ half typed\x1b[4D");
+        let screen = parser.screen();
+
+        let mut copy = vt100::Parser::new(nz(10), nz(30), 100);
+        copy.process(&snapshot(screen, "work"));
+        let other = copy.screen();
+        assert_eq!(other.contents(), screen.contents());
+        assert_eq!(other.contents_formatted(), screen.contents_formatted());
+        assert_eq!(other.cursor_position(), screen.cursor_position());
+        assert!(other.bracketed_paste() && other.application_cursor());
+        assert_eq!(other.mouse_protocol_mode(), screen.mouse_protocol_mode());
+        assert_eq!(other.mouse_protocol_encoding(), screen.mouse_protocol_encoding());
+        // The same history, colors included.
+        let history = |s: &vt100::Screen| {
+            let mut s = s.clone();
+            s.set_scrollback(usize::MAX);
+            (s.scrollback(), s.contents_formatted())
+        };
+        assert_eq!(history(other), history(screen));
+        assert_eq!(history(other).0, 36);
+
+        // A full-screen program: its screen, without history.
+        parser.process(b"\x1b[?1049h\x1b[2J\x1b[Hvim here");
+        let mut copy = vt100::Parser::new(nz(10), nz(30), 100);
+        copy.process(&snapshot(parser.screen(), ""));
+        assert!(copy.screen().alternate_screen());
+        assert_eq!(copy.screen().contents(), parser.screen().contents());
+    }
+
+    #[test]
+    fn keeps_what_programs_report_about_themselves() {
+        let mut parser = vt100::Parser::new_with_callbacks(nz(10), nz(20), 0, Events::default());
+        parser.process(b"\x1b]7501;?\x1b\\");
+        assert_eq!(parser.callbacks().replies, b"\x1b]7501;?\x1b\\");
+        // Progress counts as working, until the program reports a real status.
+        parser.process(b"\x1b]9;4;3\x07");
+        assert_eq!(parser.callbacks().status.summary().unwrap().0, Status::Working);
+        parser.process(b"\x1b]7501;state=blocked:kind=question:msg=TmFtZT8\x1b\\");
+        parser.process(b"\x1b]9;4;0\x07");
+        assert_eq!(parser.callbacks().status.summary(), Some((Status::Blocked, "Name?".into())));
+        // The next prompt ends it.
+        parser.process(b"\x1b]133;A\x07");
+        assert_eq!(parser.callbacks().status.summary(), None);
+        parser.process(b"\x1b]52;c;aGk=\x07");
+        assert_eq!(parser.callbacks().host, b"\x1b]52;c;aGk=\x07");
     }
 }
