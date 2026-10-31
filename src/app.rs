@@ -821,16 +821,18 @@ impl App {
 
         self.message = None;
         match key.code {
-            // Panels, by their initial.
+            // Panels, by their initial; t goes into the terminal.
             KeyCode::Char('w') => self.set_focus(Focus::Workspaces),
-            KeyCode::Char('t') => self.set_focus(Focus::Sessions),
+            KeyCode::Char('s') if !ctrl => self.set_focus(Focus::Sessions),
             KeyCode::Char('c') => self.set_focus(Focus::Changes),
             // In the viewer, g goes to the top instead.
             KeyCode::Char('g') if self.focus != Focus::Viewer => self.set_focus(Focus::Graph),
             KeyCode::Char('f') if !ctrl => self.set_focus(Focus::Files),
             KeyCode::Char('v') if self.viewer.is_open() => self.set_focus(Focus::Viewer),
-            KeyCode::Char('s') if ctrl || self.active.is_some() => self.toggle_terminal(),
-            KeyCode::Char('s') => self.spawn(&shell(), true),
+            // ctrl-s, as inside a terminal: back and forth.
+            KeyCode::Char('s') => self.toggle_terminal(),
+            KeyCode::Char('t') if self.active.is_some() => self.toggle_terminal(),
+            KeyCode::Char('t') => self.spawn(&shell(), true),
             KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.cycle_focus(-1),
             KeyCode::Tab => self.cycle_focus(1),
             KeyCode::BackTab => self.cycle_focus(-1),
