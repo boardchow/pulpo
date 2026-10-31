@@ -1069,6 +1069,10 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        // A click or scroll can change what a second x would act on.
+        if matches!(mouse.kind, MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+            self.pending = None;
+        }
         if (self.help || self.new_menu) && matches!(mouse.kind, MouseEventKind::Down(_)) {
             self.help = false;
             self.new_menu = false;
@@ -1598,12 +1602,14 @@ impl App {
     /// The first x says what would be lost.
     fn remove_session(&mut self, pending: Option<char>) {
         let Some(session) = self.isolated_current().cloned() else { return };
-        if pending != Some('x') {
+        if pending != Some('x') || self.deleting.as_ref() != Some(&session.root) {
+            self.deleting = Some(session.root.clone());
             let lost = session::unsaved(&session);
             let lost = if lost.is_empty() { String::new() } else { format!(", losing {}", lost.join(" and ")) };
             self.confirm('x', format!("press x again to delete session {}: its copy, containers and database{lost}", session.name));
             return;
         }
+        self.deleting = None;
         let Ok(exe) = std::env::current_exe() else { return };
         let config = session::config(&session.repo).map(|(c, _)| c).unwrap_or_default();
         let script = session::teardown_script(&session, &config, &exe);
