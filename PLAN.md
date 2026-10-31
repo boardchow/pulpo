@@ -27,7 +27,9 @@ pulpo (one binary)
 ├── pty.rs      pseudo-terminals with libc: a master fd and a pid, nothing to rebuild
 ├── procs.rs    process trees and listening ports (`ps`, `lsof`)
 ├── session.rs  task sessions: clone, registry, ports, compose guess, setup and removal scripts
+├── layout.rs   where you were, and what was open, across restarts and reboots
 ├── viewer.rs   read-only file view (syntect), inline diffs, find in file
+├── editor.rs   editing a file, highlighted by the viewer's own code (identical by construction)
 ├── theme.rs    Linear Dark colors (UI, syntax, terminal palette)
 ├── tree.rs     lazy file tree, gitignore-aware (ignore crate)
 ├── git.rs      `git status --porcelain=v2`, `--numstat` and `log --graph` parsers
@@ -100,6 +102,8 @@ own version of the file.
 - [x] Terminals that keep running after quitting and across rebuilds (see below).
 - [x] Sessions: a repository's checkouts, each with its terminals, files, changes and graph.
 - [x] Task sessions (`n s`): a copy of the checkout with its own Docker project, ports and database (see below).
+- [x] Reopen where you were; after a reboot, reopen the terminals and resume their Claude sessions.
+- [x] A built-in editor that looks exactly like the viewer (micro is gone; `$PULPO_EDITOR` for your own).
 - [x] `pulpo hooks install | status | remove` instead of pasting the hooks config.
 - [x] Program status (OSC 7501, and OSC 9;4 progress until a program reports it): what a program says beats the heuristics.
 - [ ] Terminal: links, scrollback search. (Clipboard, OSC 52: done.)
@@ -148,8 +152,18 @@ for drawing and for encoding keys and the mouse.
 - A Pulpo started inside a Pulpo terminal uses its own server
   (`server-nested`), so it doesn't show itself.
 
-Not done: restoring which workspace and terminal were selected, and
-bringing agents back after a reboot (`claude --resume`).
+- **Where you were** is kept in `server/layout.json`, written whenever it
+  changes but only after the server has listed its terminals, so a slow
+  start never overwrites it: the session on screen, the session last used
+  in each repository, the terminal last on screen in each session (by its
+  `PULPO_TAB` tag, unique for the server's life), and every open terminal
+  with the Claude session alive in it (from the hooks' log).
+- **After a reboot** (or the server dying), the server comes back empty
+  while the layout still lists terminals: Pulpo opens each again in its
+  folder, as `$SHELL -l -c 'claude --resume <id>; exec $SHELL -l'` when
+  Claude was running there (the id is checked to be only letters, digits
+  and dashes), else a shell, and points the remembered tags at them. `Q`
+  writes an empty list, so stopping everything on purpose stays stopped.
 
 ## Task sessions
 

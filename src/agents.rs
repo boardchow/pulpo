@@ -346,6 +346,11 @@ impl Agents {
         agent.detail = detail;
     }
 
+    /// The Claude session alive in a Pulpo terminal, to resume it there.
+    pub fn session_for_tab(&self, tab: &str) -> Option<&str> {
+        self.sessions.iter().filter(|(_, a)| a.tab == tab).max_by_key(|(_, a)| a.ts).map(|(id, _)| id.as_str())
+    }
+
     /// The latest session reported from a Pulpo terminal.
     pub fn for_tab(&self, tab: &str) -> Option<&Agent> {
         self.sessions.values().filter(|a| a.tab == tab).max_by_key(|a| a.ts)

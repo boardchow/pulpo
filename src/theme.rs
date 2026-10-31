@@ -30,6 +30,8 @@ pub const ADDED_BG: Color = mix(0x4CB782, 0x101012, 0x26);
 pub const REMOVED_BG: Color = mix(0xEB5757, 0x101012, 0x26);
 pub const FIND_BG: Color = mix(0xFCC581, 0x101012, 0x55);
 pub const MARK_BG: Color = mix(0x5E6AD2, 0x101012, 0x4D);
+/// Selected text in the editor.
+pub const TEXT_SELECTION: Color = mix(0x5E6AD2, 0x101012, 0x70);
 
 /// terminal.ansi* colors, for programs running in the embedded terminals.
 pub const ANSI: [Color; 16] = [
