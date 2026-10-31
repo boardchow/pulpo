@@ -580,6 +580,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("w s c g f v", "Workspaces, Sessions, Changes, Graph, Files, Viewer (g: not from the viewer)"),
             ("t", "into the current terminal (opens a shell if there is none)"),
+            ("/", "search inside files (in the viewer: find in this file); tab switches to Files and back"),
             ("z / ctrl-f", "into the current shell, full height (hides the viewer)"),
             ("tab / shift-tab", "next / previous panel"),
         ],

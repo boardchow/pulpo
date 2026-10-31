@@ -69,7 +69,7 @@ pulpo
 
 Run it anywhere and you get your workspaces. Run it inside a git repo and it adds that one.
 
-The sidebar on the left has your repos, sessions, changes and graph. The right side is where you work: terminal tabs, the file viewer, the editor. Your files are one key away: `f` shows them as a tree, and typing filters it.
+The sidebar on the left has your repos, sessions, changes and graph. The right side is where you work: terminal tabs, the file viewer, the editor. Your files are one key away: `f` shows them as a tree, and typing filters it. `/` searches inside them.
 
 It's made for the keyboard (clicking works too). The bottom bar shows the keys that work right where you are, and `?` shows all of them.
 
@@ -81,7 +81,8 @@ Jump around:
 | `s` | Sessions: main and your task sessions |
 | `c` | Changes: what's modified |
 | `g` | Graph: the commits |
-| `f` | Files: a tree, type to filter it (`tab` searches inside files) |
+| `f` | Files: a tree, type to filter it |
+| `/` | search inside files (`tab` switches with Files; in the viewer, `/` finds in the file) |
 | `t` | the terminal of the current session (opens a shell if there's none) |
 
 Make and do things:

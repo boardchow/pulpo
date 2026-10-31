@@ -837,7 +837,7 @@ impl App {
             // In the viewer, g goes to the top instead.
             KeyCode::Char('g') if self.focus != Focus::Viewer => self.set_focus(Focus::Graph),
             KeyCode::Char('v') if self.viewer.is_open() => self.set_focus(Focus::Viewer),
-            // The files: a tree, filtered as you type; tab searches inside them.
+            // The files: a tree, filtered as you type; tab searches inside them, as / does.
             KeyCode::Char('f') if !ctrl => self.open_search(Mode::Files),
             // ctrl-s, as inside a terminal: back and forth.
             KeyCode::Char('s') => self.toggle_terminal(),
@@ -847,7 +847,9 @@ impl App {
             KeyCode::Tab => self.cycle_focus(1),
             KeyCode::BackTab => self.cycle_focus(-1),
 
+            // / finds in the file on screen, or else inside all the files.
             KeyCode::Char('/') if self.focus == Focus::Viewer => self.viewer.start_find(),
+            KeyCode::Char('/') => self.open_search(Mode::Text),
             // n / p: next, previous search match or change.
             KeyCode::Char('n') if self.focus == Focus::Viewer && (self.viewer.find.is_some() || self.viewer.is_diff()) => {
                 self.viewer.next(1)
