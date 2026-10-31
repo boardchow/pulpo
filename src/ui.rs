@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Clear, List, ListItem, Paragraph, Wrap};
 
 use crate::agents::State;
 use crate::app::{App, Focus};
@@ -652,19 +652,37 @@ fn draw_help(frame: &mut Frame, app: &App) {
     if !app.help {
         return;
     }
-    let mut lines = Vec::new();
-    for (section, keys) in HELP {
-        lines.push(Line::from(format!(" {section}")).bold());
-        for (key, text) in *keys {
-            lines.push(Line::from(vec![Span::from(format!("   {key:<16}")).fg(BLUE).bold(), Span::from(*text)]));
+    // Two columns when there's room, so it all fits on a laptop; long
+    // lines wrap.
+    let area = frame.area();
+    let columns: Vec<&[_]> = if area.width >= 160 { vec![&HELP[..3], &HELP[3..]] } else { vec![HELP] };
+    let width = area.width.min(100 * columns.len() as u16);
+    let column = (width.saturating_sub(2) / columns.len() as u16).max(1) as usize;
+    let mut texts = Vec::new();
+    for sections in &columns {
+        let mut lines = Vec::new();
+        for (section, keys) in *sections {
+            lines.push(Line::from(format!(" {section}")).bold());
+            for (key, text) in *keys {
+                lines.push(Line::from(vec![Span::from(format!("   {key:<16}")).fg(BLUE).bold(), Span::from(*text)]));
+            }
+            lines.push(Line::default());
         }
-        lines.push(Line::default());
+        texts.push(lines);
     }
-    let popup = centered(frame.area(), 100, lines.len() as u16 + 2);
+    // Rows once wrapped, give or take a word per row.
+    let rows = |lines: &Vec<Line>| lines.iter().map(|l| l.width().max(1).div_ceil(column.saturating_sub(8).max(1))).sum::<usize>();
+    let height = texts.iter().map(rows).max().unwrap_or(0) as u16 + 2;
+    let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
     frame.render_widget(Block::new().style(Style::new().fg(FG).bg(BG)), popup);
     let block = block("Keyboard shortcuts", true).title_bottom(Line::from(" any key to close ").fg(DIM));
-    frame.render_widget(Paragraph::new(lines).block(block), popup);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let areas = Layout::horizontal(vec![Constraint::Fill(1); texts.len()]).split(inner);
+    for (lines, area) in texts.into_iter().zip(areas.iter()) {
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), *area);
+    }
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
