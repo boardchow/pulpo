@@ -286,6 +286,10 @@ pub fn create(repo: &Path, name: &str, config: &Config) -> Result<Session> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
         bail!("a session name is lowercase letters, digits, - and _");
     }
+    // A .git file points at a folder the copy would share, and change.
+    if !repo.join(".git").is_dir() {
+        bail!("{}/.git isn't a folder, so a copy would share main's git", repo.display());
+    }
     let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
     let parent = repo.parent().context("the repository has no parent folder")?;
     let root = parent.join(format!("{repo_name}.sessions")).join(name);
