@@ -837,6 +837,8 @@ impl App {
             KeyCode::Char('c') => self.set_focus(Focus::Changes),
             // In the viewer, g goes to the top instead.
             KeyCode::Char('g') if self.focus != Focus::Viewer => self.set_focus(Focus::Graph),
+            // The editor, when open, is drawn where the viewer is.
+            KeyCode::Char('v') if self.editor.is_some() => self.set_focus(Focus::Editor),
             KeyCode::Char('v') if self.viewer.is_open() => self.set_focus(Focus::Viewer),
             // The files: a tree, filtered as you type; tab searches inside them, as / does.
             KeyCode::Char('f') if !ctrl => self.open_search(Mode::Files),
@@ -1394,7 +1396,9 @@ impl App {
 
     fn cycle_focus(&mut self, dir: isize) {
         let mut order = vec![Focus::Workspaces, Focus::Sessions, Focus::Changes, Focus::Graph];
-        if self.viewer.is_open() {
+        if self.editor.is_some() {
+            order.push(Focus::Editor);
+        } else if self.viewer.is_open() {
             order.push(Focus::Viewer);
         }
         let i = order.iter().position(|f| *f == self.focus).unwrap_or(0) as isize;
