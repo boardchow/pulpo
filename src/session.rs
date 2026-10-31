@@ -13,7 +13,7 @@
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -348,18 +348,41 @@ pub fn env(session: &Session) -> Vec<(String, String)> {
 /// are on no remote and not in main either (main's own unpushed commits
 /// were copied with it, and stay in main). Read-only git.
 pub fn unsaved(session: &Session) -> Vec<String> {
-    let git = |dir: &Path, args: &[&str]| {
-        std::process::Command::new("git").arg("-C").arg(dir).args(args).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+    // Its output if it worked; `input` on its stdin.
+    let git = |dir: &Path, args: &[&str], input: String| -> Option<String> {
+        let mut child = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut stdin = child.stdin.take()?;
+        std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+        let out = child.wait_with_output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     };
     let mut lost = Vec::new();
-    match git(&session.root, &["status", "--porcelain"]).lines().count() {
-        0 => {}
-        n => lost.push(format!("{n} uncommitted change(s)")),
+    match git(&session.root, &["status", "--porcelain"], String::new()).map(|out| out.lines().count()) {
+        Some(0) => {}
+        Some(n) => lost.push(format!("{n} uncommitted change(s)")),
+        None => lost.push("changes git couldn't check".into()),
     }
-    let commits = git(&session.root, &["rev-list", "--branches", "--not", "--remotes"]);
-    let only_here = commits.lines().filter(|sha| git(&session.repo, &["cat-file", "-t", sha]).trim() != "commit").count();
-    if only_here > 0 {
-        lost.push(format!("{only_here} commit(s) not pushed"));
+    // HEAD too, when there is one: commits on a detached HEAD are on no branch.
+    let head = git(&session.root, &["rev-parse", "-q", "--verify", "HEAD"], String::new()).is_some();
+    let tips: &[&str] = if head { &["HEAD", "--branches"] } else { &["--branches"] };
+    let commits = git(&session.root, &[&["rev-list"], tips, &["--not", "--remotes"]].concat(), String::new());
+    let in_main = commits.and_then(|commits| git(&session.repo, &["cat-file", "--batch-check"], commits));
+    match in_main.map(|out| out.lines().filter(|line| line.ends_with(" missing")).count()) {
+        Some(0) => {}
+        Some(n) => lost.push(format!("{n} commit(s) not pushed")),
+        None => lost.push("commits git couldn't check".into()),
+    }
+    let stash = |dir: &Path| git(dir, &["rev-parse", "-q", "--verify", "refs/stash"], String::new());
+    if stash(&session.root).is_some_and(|s| Some(&s) != stash(&session.repo).as_ref()) {
+        lost.push("stashed changes".into());
     }
     lost
 }
@@ -610,6 +633,11 @@ mod tests {
             images: vec![],
         };
         assert_eq!(unsaved(&session), ["1 uncommitted change(s)", "1 commit(s) not pushed"]);
+        // A commit on a detached HEAD, and a stash, are lost too.
+        git("copy", &["checkout", "-q", "--detach"]);
+        git("copy", &["commit", "-q", "--allow-empty", "-m", "detached"]);
+        git("copy", &["stash", "-q", "-u"]);
+        assert_eq!(unsaved(&session), ["2 commit(s) not pushed", "stashed changes"]);
         fs::remove_dir_all(&t).unwrap();
     }
 }
