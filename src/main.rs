@@ -6,6 +6,7 @@ mod procs;
 mod proto;
 mod pty;
 mod server;
+mod session;
 mod term;
 mod theme;
 mod search;
@@ -59,6 +60,8 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("emit") => agents::emit(),
         Some("serve") => server::serve(&args[1..])?,
+        // The last step of removing a session, run by its removal script.
+        Some("forget-session") if args.len() == 2 => session::forget(std::path::Path::new(&args[1]))?,
         Some("hooks") => agents::hooks(&args[1..])?,
         Some("-h" | "--help") => println!("{USAGE}"),
         arg => {

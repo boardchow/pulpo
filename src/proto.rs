@@ -27,7 +27,18 @@ const INPUT: u8 = 2;
 pub enum ToServer {
     Hello { protocol: u32 },
     /// Start a terminal; `token` comes back in its `Attach`.
-    Spawn { token: u64, program: String, args: Vec<String>, cwd: PathBuf, rows: u16, cols: u16 },
+    Spawn {
+        token: u64,
+        program: String,
+        args: Vec<String>,
+        cwd: PathBuf,
+        rows: u16,
+        cols: u16,
+        /// Set in its environment, over the server's (an isolated
+        /// session's Compose project and ports).
+        #[serde(default)]
+        env: Vec<(String, String)>,
+    },
     Resize { id: u32, rows: u16, cols: u16 },
     /// You looked at it: nothing left to read.
     Seen { id: u32 },

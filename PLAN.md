@@ -8,8 +8,8 @@ Pulpo is a VS Code replacement in one Ghostty window: workspaces (your
 repositories), terminals (shells and Claude Code), changes, files, search.
 Terminals run in a background server, so quitting or rebuilding Pulpo
 leaves them running (see "Terminals that keep running"). It doesn't create
-or manage git worktrees (a repository that already has some lists them
-under it, read only).
+or manage git worktrees (a repository that already has some shows them as
+sessions, read only); task sessions are copies made without git.
 
 ## Architecture
 
@@ -26,6 +26,7 @@ pulpo (one binary)
 ├── proto.rs    the frames and messages between the two
 ├── pty.rs      pseudo-terminals with libc: a master fd and a pid, nothing to rebuild
 ├── procs.rs    process trees and listening ports (`ps`, `lsof`)
+├── session.rs  task sessions: clone, registry, ports, compose guess, setup and removal scripts
 ├── viewer.rs   read-only file view (syntect), inline diffs, find in file
 ├── theme.rs    Linear Dark colors (UI, syntax, terminal palette)
 ├── tree.rs     lazy file tree, gitignore-aware (ignore crate)
@@ -43,6 +44,18 @@ Event sources feeding the loop:
 | files          | `notify` watcher per workspace, throttled  | tree, git, viewer refresh   |
 | agents         | `notify` watcher on the event log          | agent status refresh        |
 | search         | background thread per query                | search results              |
+
+### Sessions
+
+The sidebar has repositories (Workspaces) and, under the selected one, its
+checkouts (Sessions): `main` and its git worktrees, each a `Workspace`.
+The current session decides what the right side and the panels show: its
+terminals, files, changes and graph. A terminal belongs to the checkout it
+was started in (`info.cwd`), so terminals that kept running fall back into
+their session on their own; one started outside every checkout shows in
+all of them. The app keeps the active terminal by id, remembered per
+session, and the session last used in each repository. A session's and a
+repository's mark is the most urgent state of their terminals.
 
 ### Agent status
 
@@ -85,6 +98,8 @@ own version of the file.
       commit unfolds into its files, read like Changes), terminal states
       (working, to read, quiet).
 - [x] Terminals that keep running after quitting and across rebuilds (see below).
+- [x] Sessions: a repository's checkouts, each with its terminals, files, changes and graph.
+- [x] Task sessions (`n s`): a copy of the checkout with its own Docker project, ports and database (see below).
 - [x] `pulpo hooks install | status | remove` instead of pasting the hooks config.
 - [x] Program status (OSC 7501, and OSC 9;4 progress until a program reports it): what a program says beats the heuristics.
 - [ ] Terminal: links, scrollback search. (Clipboard, OSC 52: done.)
@@ -135,3 +150,30 @@ for drawing and for encoding keys and the mouse.
 
 Not done: restoring which workspace and terminal were selected, and
 bringing agents back after a reboot (`claude --resume`).
+
+## Task sessions
+
+A task session is a copy of a main checkout made with `clonefile` (APFS,
+copy-on-write, the whole folder in one call) into `<repo>.sessions/<name>`,
+recorded in `~/.local/state/pulpo/sessions.json` (written under a `flock`).
+It is chosen over a git worktree because a worktree starts from the last
+commit: `.env`, hand-made settings and dependencies would have to be set up
+again. Its `.git/worktrees` is removed, since those are main's.
+
+Isolation is the environment of its terminals: `COMPOSE_PROJECT_NAME`
+(`<main project>-<name>`) and each port variable of the compose file, in
+blocks of ten from 20000 (free ports, none held by another session).
+`Spawn` carries that environment to the server. The compose file is read
+with a line scan (`session::guess`): port variables, services built
+locally (their images are tagged for the session instead of rebuilt), the
+database service and engine, and what can't be isolated. The result is
+written once to `~/.config/pulpo/repos/<repo>.toml` for you to adjust.
+
+Setting up and removing are shell scripts run in a terminal, so they
+survive Pulpo quitting and you see them work. Setup copies main's database
+by streaming a dump between the two containers (`mysqldump` or
+`pg_dumpall`), consistent without stopping main. Removal runs from main:
+the teardown command, `docker compose down -v`, untagging, then deleting
+the copy (only ever a folder inside a `.sessions` directory). Then
+`pulpo forget-session` takes it off the registry. If Docker fails, nothing
+more is deleted and the terminal stays open.
