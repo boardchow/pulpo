@@ -418,6 +418,9 @@ impl Content {
 }
 
 fn load_file(path: &Path) -> Content {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > MAX_BYTES as u64) {
+        return Content::note("file too large to preview");
+    }
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) => return Content::note(&format!("cannot read file: {e}")),

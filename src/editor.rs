@@ -76,6 +76,9 @@ pub struct Editor {
 impl Editor {
     /// Open `path`, with the cursor on `line` (from 1).
     pub fn open(path: PathBuf, line: Option<usize>) -> Result<Editor, String> {
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_BYTES as u64) {
+            return Err("this file is too large to edit here".into());
+        }
         let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         if bytes.len() > MAX_BYTES {
             return Err("this file is too large to edit here".into());
