@@ -372,7 +372,7 @@ fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
                 Line::default(),
                 Line::from("  No terminals in this session.").bold(),
                 Line::default(),
-                key("s", "open a shell in it (then type claude for an agent)"),
+                key("t", "open a shell in it (then type claude for an agent)"),
             ];
             frame.render_widget(Paragraph::new(hint), inner);
         }
@@ -555,8 +555,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let global: &[(&str, &str)] = match app.focus {
         Focus::Terminal | Focus::Editor => &[],
         // In the viewer, / finds in the file instead.
-        Focus::Viewer => &[("w t c f s", "go to panel"), ("?", "all keys"), ("q", "quit")],
-        _ => &[("w t c g f s", "go to panel"), ("n", "new"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
+        Focus::Viewer => &[("w s c f t", "go to panel"), ("?", "all keys"), ("q", "quit")],
+        _ => &[("w s c g f t", "go to panel"), ("n", "new"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
     };
     let color = if app.focus == Focus::Terminal { YELLOW } else { ACCENT };
     frame.render_widget(Line::from(footer_spans(badge, color, keys, global)), area);
@@ -582,8 +582,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Go to a panel",
         &[
-            ("w t c g f v", "Workspaces, Sessions, Changes, Graph, Files, Viewer (g: not from the viewer)"),
-            ("s", "into the current shell (opens one if there is none)"),
+            ("w s c g f v", "Workspaces, Sessions, Changes, Graph, Files, Viewer (g: not from the viewer)"),
+            ("t", "into the current terminal (opens a shell if there is none)"),
             ("z / ctrl-f", "into the current shell, full height (hides the viewer)"),
             ("tab / shift-tab", "next / previous panel"),
         ],
@@ -608,7 +608,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Inside a terminal",
         &[
-            ("ctrl-s", "back to the sidebar (ctrl-s or s to come back)"),
+            ("ctrl-s", "back to the sidebar (ctrl-s or t to come back)"),
             ("ctrl-n", "new shell in this session"),
             ("ctrl-q", "close this shell (asks again if something is running in it)"),
             ("ctrl-[ ]  ctrl-1-9", "previous, next terminal of the session / terminal 1-9"),

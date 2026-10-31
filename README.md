@@ -74,11 +74,11 @@ Jump around the sidebar:
 | Key | Goes to |
 | --- | --- |
 | `w` | Workspaces: your repos |
-| `t` | Sessions: main and your task sessions |
+| `s` | Sessions: main and your task sessions |
 | `c` | Changes: what's modified |
 | `g` | Graph: the commits |
 | `f` | Files |
-| `s` | the shell of the current session (opens one if there's none) |
+| `t` | the terminal of the current session (opens a shell if there's none) |
 
 Make and do things:
 
