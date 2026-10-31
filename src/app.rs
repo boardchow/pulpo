@@ -238,7 +238,7 @@ impl App {
 
     /// Rebuild the list from the registry and git, keeping existing state.
     fn load_workspaces(&mut self) {
-        let current = self.workspaces.get(self.current).map(|w| w.root.clone());
+        let (current, repo) = self.workspaces.get(self.current).map(|w| (w.root.clone(), w.repo.clone())).unzip();
         let mut old = std::mem::take(&mut self.workspaces);
         let mut reuse = |root: PathBuf, repo: &Path| match old.iter().position(|w| w.root == root) {
             Some(i) => old.swap_remove(i),
@@ -263,7 +263,16 @@ impl App {
             let scratch = self.scratch.clone();
             self.workspaces.push(reuse(scratch.clone(), &scratch));
         }
-        self.current = current.and_then(|c| self.workspaces.iter().position(|w| w.root == c)).unwrap_or(0);
+        match current.as_ref().map(|c| self.workspaces.iter().position(|w| &w.root == c)) {
+            None => self.current = 0,
+            Some(Some(i)) => self.current = i,
+            // Gone: its repository's main checkout, or the first, as if picked.
+            Some(None) => {
+                let i = repo.and_then(|r| self.workspaces.iter().position(|w| w.repo == r)).unwrap_or(0);
+                self.current = usize::MAX;
+                self.set_current(i);
+            }
+        }
         self.sync_lists();
         self.sync_watches();
     }
