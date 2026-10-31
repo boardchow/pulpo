@@ -1,6 +1,6 @@
 //! Program status (OSC 7501): a program tells its terminal what it is doing,
 //! such as working, blocked on you, done or failed. Spec:
-//! https://www.superlogical.com/rex/docs/build/program-status
+//! https://mitchellh.com/writing/program-status-osc7501
 //!
 //! `ESC ] 7501 ; state=blocked:kind=permission:app=terraform:msg=<base64> ST`
 
