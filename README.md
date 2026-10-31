@@ -57,7 +57,7 @@ Building from a checkout? `make install`, then `pulpo hooks install` once.
 
 - A Mac. macOS only for now.
 - [Ghostty](https://ghostty.org). It's what Pulpo is built and tested on. kitty, WezTerm and iTerm2 prob work too, no promises.
-- [Claude Code](https://claude.com/claude-code). Other agents run fine inside, but Pulpo can't tell what they're doing unless they report it with [OSC 7501](https://www.superlogical.com/rex/docs/build/program-status).
+- [Claude Code](https://claude.com/claude-code). Other agents run fine inside, but Pulpo can't tell what they're doing unless they report it with [OSC 7501](https://mitchellh.com/writing/program-status-osc7501).
 
 It's v0.1. Beta. Things will break. Tell me when they do.
 
