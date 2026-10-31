@@ -1768,6 +1768,16 @@ impl App {
 
     /// Edit `path` in Pulpo, on the right, looking exactly like the viewer.
     fn edit_here(&mut self, path: PathBuf, line: Option<usize>) {
+        // Already open, or unsaved changes there: back to it instead.
+        if let Some(editor) = &self.editor
+            && (editor.path == path || editor.dirty)
+        {
+            if editor.path != path {
+                self.message = Some("unsaved changes in the editor: ctrl-s saves them, esc discards them".into());
+            }
+            self.set_focus(Focus::Editor);
+            return;
+        }
         match Editor::open(path, line) {
             Ok(editor) => {
                 self.editor_back = if matches!(self.focus, Focus::Terminal | Focus::Editor) { self.sidebar_focus } else { self.focus };
