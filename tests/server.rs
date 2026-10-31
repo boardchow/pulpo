@@ -165,6 +165,20 @@ fn keeps_terminals_across_an_upgrade_and_stops_them_on_close() {
     conn.until("exit");
     assert!(cleaned.exists(), "hung up before it cleaned up");
 
+    // Claude quits on a second ctrl-c, sent for it, rather than after the grace.
+    // A shell by the name of claude, which quits on its second ctrl-c.
+    let claude = state.join("claude");
+    std::os::unix::fs::symlink("/bin/sh", &claude).unwrap();
+    conn.send(json!({ "type": "spawn", "token": 11, "program": "/bin/sh", "args": [], "cwd": "/", "rows": 24, "cols": 80 }));
+    let agent = conn.until("attach")["info"]["id"].as_u64().unwrap();
+    let quits = "trap \"n=\\$((n+1)); [ \\$n = 2 ] && exit\" INT; while :; do sleep 0.1; done";
+    conn.input(agent, &format!("{} -c '{quits}'\n", claude.display()));
+    wait_for("claude to start", || running(&claude.display().to_string()));
+    let closed = Instant::now();
+    conn.send(json!({ "type": "close", "id": agent }));
+    conn.until("exit");
+    assert!(closed.elapsed() < Duration::from_secs(5), "claude waited out the grace");
+
     conn.send(json!({ "type": "close", "id": id }));
     conn.until("exit");
     wait_for("sleep to stop", || !running("sleep 1234.5"));

@@ -142,7 +142,8 @@ for drawing and for encoding keys and the mouse.
   killed on macOS.
 - **Stop.** Closing a terminal, or `Q`, sends Ctrl-C to the program in
   front and gives it up to 10 s (`docker compose up` stops its
-  containers), then hangs up every process group in the terminal, then
+  containers; Claude gets Ctrl-C again every half second, since it quits
+  on the second), then hangs up every process group in the terminal, then
   terminates, then kills them. The groups are taken from `ps` at once,
   since they move to launchd when the shell exits.
 - **Leaving.** The server exits a minute after it last had a terminal, a

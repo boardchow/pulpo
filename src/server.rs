@@ -87,6 +87,9 @@ struct Stopping {
     groups: Vec<i32>,
     stage: Stage,
     since: Instant,
+    /// Claude: when it was last sent ctrl-c. It quits on the second, as
+    /// when you press it, instead of waiting out the grace.
+    agent: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -106,6 +109,14 @@ impl Stopping {
             return false;
         }
         let front_alive = self.front.is_some_and(|g| self.groups.contains(&g));
+        if let (Some(group), Some(sent)) = (self.front, self.agent)
+            && front_alive
+            && self.stage == Stage::Interrupt
+            && sent.elapsed() >= Duration::from_millis(500)
+        {
+            unsafe { libc::kill(-group, libc::SIGINT) };
+            self.agent = Some(Instant::now());
+        }
         let next = match self.stage {
             // Give the program its time to clean up (containers stopping).
             Stage::Interrupt if front_alive && self.since.elapsed() < Duration::from_secs(10) => return true,
@@ -605,7 +616,8 @@ impl Server {
                     groups.dedup();
                     // A shell at its prompt has nothing to interrupt.
                     let front = front.filter(|&g| g != shell && groups.contains(&g));
-                    let mut stopping = Stopping { front, groups, stage: Stage::Interrupt, since: Instant::now() };
+                    let agent = front.and_then(|g| term::process_name(g as u32)).filter(|name| name == "claude").map(|_| Instant::now());
+                    let mut stopping = Stopping { front, groups, stage: Stage::Interrupt, since: Instant::now(), agent };
                     stopping.signal(if front.is_some() { Stage::Interrupt } else { Stage::HangUp });
                     // With a program to interrupt, the shell is hung up after
                     // the grace, with the rest: now, it would pass the hang-up on.
