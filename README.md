@@ -38,7 +38,7 @@ It's a terminal multiplexer for coding agents. Think tmux, but it actually knows
 That's it. That's the app.
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="Pulpo: the sidebar with workspaces, sessions, changes, graph and files on the left, a terminal on the right">
+  <img src="assets/screenshot.png" alt="Pulpo: the sidebar with workspaces, sessions, changes and graph on the left, a terminal on the right">
 </p>
 
 ## Install
