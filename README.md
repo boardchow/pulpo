@@ -66,20 +66,39 @@ Run it anywhere and you get your workspaces. Run it inside a git repo and it add
 
 The sidebar on the left has your repos, sessions, changes, graph and files. The right side is where you work: terminal tabs, the file viewer, the editor.
 
-It's all keyboard. The bottom bar shows the keys that work right where you are, and `?` shows all of them.
+It's made for the keyboard (clicking works too). The bottom bar shows the keys that work right where you are, and `?` shows all of them.
+
+Jump around the sidebar:
+
+| Key | Goes to |
+| --- | --- |
+| `w` | Workspaces: your repos |
+| `t` | Sessions: main and your task sessions |
+| `c` | Changes: what's modified |
+| `g` | Graph: the commits |
+| `f` | Files |
+| `s` | the shell of the current session (opens one if there's none) |
+
+Make and do things:
 
 | Key | Does |
 | --- | --- |
-| `w` `t` `c` `g` `f` | go to Workspaces, Sessions, Changes, Graph, Files |
-| `n s` | new task session |
-| `n t` / `n w` | new terminal in this session (type `claude` in it) / new workspace |
-| `ctrl-n` | in a terminal: new shell in the same session |
-| `ctrl-[` `ctrl-]` | in a terminal: previous / next terminal |
-| `ctrl-s` | switch between the sidebar and the terminal |
-| `/` | find a file; `tab` searches inside files |
+| `n s` | new task session (its own copy of the repo) |
+| `n t` | new terminal in this session (type `claude` in it) |
+| `n w` | add a workspace (another repo) |
+| `/` | find a file (`tab` searches inside files) |
 | `e` | edit the selected file |
-| `q` | quit, terminals keep running |
-| `Q` | quit and stop every terminal |
+| `x x` | delete the selected session or file, drop a workspace from the list (files kept), or close the terminal |
+| `q q` | quit; terminals keep running |
+| `Q Q` | quit and stop every terminal |
+
+Inside a terminal:
+
+| Key | Does |
+| --- | --- |
+| `ctrl-s` | back to the sidebar |
+| `ctrl-n` | new shell in the same session |
+| `ctrl-[` `ctrl-]` | previous / next terminal |
 
 ## Sandboxes
 
@@ -101,13 +120,13 @@ Done with a task? `x x` deletes the session. It tells you first if you'd lose an
 
 ## Close it. They keep going.
 
-Hit `q` and go do something irl. Your agents, dev servers and long builds keep running.
+Hit `q` twice and go do something irl. Your agents, dev servers and long builds keep running.
 
 The terminals live in a tiny background server. It only listens on a private Unix socket, never on the network.
 
 Open Pulpo again and you're right where you left off. Reboot your Mac and Pulpo brings your terminals back and resumes your Claude sessions. Even updating Pulpo doesn't kill them.
 
-When you actually want everything stopped: `Q`. It does it the polite way: Ctrl-C first, so dev servers free their ports and `docker compose up` stops its containers.
+When you actually want everything stopped: `Q` twice. It does it the polite way: Ctrl-C first, so dev servers free their ports and `docker compose up` stops its containers.
 
 ## Who needs you
 
