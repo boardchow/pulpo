@@ -69,11 +69,11 @@ pulpo
 
 Run it anywhere and you get your workspaces. Run it inside a git repo and it adds that one.
 
-The sidebar on the left has your repos, sessions, changes, graph and files. The right side is where you work: terminal tabs, the file viewer, the editor.
+The sidebar on the left has your repos, sessions, changes and graph. The right side is where you work: terminal tabs, the file viewer, the editor. Your files are one key away: `f` shows them as a tree, and typing filters it.
 
 It's made for the keyboard (clicking works too). The bottom bar shows the keys that work right where you are, and `?` shows all of them.
 
-Jump around the sidebar:
+Jump around:
 
 | Key | Goes to |
 | --- | --- |
@@ -81,7 +81,7 @@ Jump around the sidebar:
 | `s` | Sessions: main and your task sessions |
 | `c` | Changes: what's modified |
 | `g` | Graph: the commits |
-| `f` | Files |
+| `f` | Files: a tree, type to filter it (`tab` searches inside files) |
 | `t` | the terminal of the current session (opens a shell if there's none) |
 
 Make and do things:
@@ -91,9 +91,8 @@ Make and do things:
 | `n s` | new task session (its own copy of the repo) |
 | `n t` | new terminal in this session (type `claude` in it) |
 | `n w` | add a workspace (another repo) |
-| `/` | find a file (`tab` searches inside files) |
-| `e` | edit the selected file |
-| `x x` | delete the selected session or file, drop a workspace from the list (files kept), or close the terminal |
+| `e` | edit the selected file (`ctrl-e` in the files) |
+| `x x` | delete the selected session, drop a workspace from the list (files kept), or close the terminal (`ctrl-x` twice deletes a file in the files) |
 | `q q` | quit; terminals keep running |
 | `Q Q` | quit and stop every terminal |
 

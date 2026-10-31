@@ -32,11 +32,18 @@ pub enum Focus {
     Sessions,
     Changes,
     Graph,
-    Files,
     Viewer,
     Terminal,
     /// The built-in editor (`editor.rs`).
     Editor,
+}
+
+/// Where you were before opening a file from the files popup: esc in the
+/// viewer comes back to it, terminal zoomed or file previewed alike.
+struct Back {
+    focus: Focus,
+    zoomed: bool,
+    viewer: Viewer,
 }
 
 /// A file or folder about to be made in `dir`; a name ending in / is a folder.
@@ -54,7 +61,6 @@ pub struct Areas {
     pub sessions: Rect,
     pub changes: Rect,
     pub graph: Rect,
-    pub files: Rect,
     pub terminal: Rect,
     pub viewer: Rect,
     /// The editor's text (inside its border).
@@ -124,6 +130,8 @@ pub struct App {
     /// A file being edited in Pulpo, and the panel to go back to after.
     pub editor: Option<Editor>,
     editor_back: Focus,
+    /// Set while a file opened from the files popup is in the viewer.
+    files_back: Option<Back>,
     /// What the pending x deletes, so the selection can't change under it.
     deleting: Option<PathBuf>,
     /// The terminal takes the whole right side; the viewer comes back when
@@ -159,8 +167,8 @@ impl App {
             current: 0,
             workspaces_state: ListState::default().with_selected(Some(0)),
             scratch,
-            focus: Focus::Files,
-            sidebar_focus: Focus::Files,
+            focus: Focus::Sessions,
+            sidebar_focus: Focus::Sessions,
             agents,
             terms: Vec::new(),
             active: None,
@@ -188,9 +196,10 @@ impl App {
             creating: None,
             editing: None,
             editor: None,
-            editor_back: Focus::Files,
+            editor_back: Focus::Sessions,
             removing: None,
             deleting: None,
+            files_back: None,
             zoomed: false,
             pending: None,
             fs_dirty: HashSet::new(),
@@ -827,8 +836,9 @@ impl App {
             KeyCode::Char('c') => self.set_focus(Focus::Changes),
             // In the viewer, g goes to the top instead.
             KeyCode::Char('g') if self.focus != Focus::Viewer => self.set_focus(Focus::Graph),
-            KeyCode::Char('f') if !ctrl => self.set_focus(Focus::Files),
             KeyCode::Char('v') if self.viewer.is_open() => self.set_focus(Focus::Viewer),
+            // The files: a tree, filtered as you type; tab searches inside them.
+            KeyCode::Char('f') if !ctrl => self.open_search(Mode::Files),
             // ctrl-s, as inside a terminal: back and forth.
             KeyCode::Char('s') => self.toggle_terminal(),
             KeyCode::Char('t') if self.active.is_some() => self.toggle_terminal(),
@@ -848,11 +858,9 @@ impl App {
                 self.viewer.next(-1)
             }
             KeyCode::Char('n') => self.new_menu = true,
-            // x acts on the panel: workspaces or files there, terminals elsewhere.
-            // File names first; tab in the popup searches inside files.
-            KeyCode::Char('/') => self.open_search(Mode::Files),
             // ctrl-f, or z for zoom: the current terminal, full height.
-            KeyCode::Char('f' | 'z') => self.zoom_terminal(),
+            KeyCode::Char('z') => self.zoom_terminal(),
+            KeyCode::Char('f') if ctrl => self.zoom_terminal(),
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('r') => self.refresh(),
             // Terminals keep running in the server; say which, and their ports.
@@ -901,7 +909,6 @@ impl App {
                     self.confirm('x', format!("press x again to remove {name} from the list (files are kept)"));
                 }
             }
-            KeyCode::Char('x') if self.focus == Focus::Files => self.delete(pending),
             KeyCode::Char('x') => self.close_terminal('x', "x", pending),
             KeyCode::Char('e') => self.edit(),
             KeyCode::Char('y') => self.copy_path(),
@@ -909,6 +916,7 @@ impl App {
             KeyCode::Char('[') => self.cycle_term(-1),
             KeyCode::Char(']') => self.cycle_term(1),
             KeyCode::Esc if self.focus == Focus::Viewer && self.viewer.find.is_some() => self.viewer.clear_find(),
+            KeyCode::Esc if self.focus == Focus::Viewer && self.files_back.is_some() => self.go_back(),
             KeyCode::Esc if self.focus == Focus::Viewer => self.set_focus(self.sidebar_focus),
             KeyCode::Esc => self.viewer.close(),
             _ if self.focus == Focus::Viewer => self.viewer_key(key),
@@ -1093,7 +1101,6 @@ impl App {
             (Focus::Sessions, areas.sessions),
             (Focus::Changes, areas.changes),
             (Focus::Graph, areas.graph),
-            (Focus::Files, areas.files),
         ]
         .into_iter()
         .find(|(_, area)| area.contains(pos))
@@ -1134,13 +1141,6 @@ impl App {
                 self.on_select();
                 match target {
                     Focus::Sessions if self.active.is_some() => self.set_focus(Focus::Terminal),
-                    Focus::Files => {
-                        if let Some(row) = self.ws().selected_row().filter(|r| r.is_dir) {
-                            let (path, open) = (row.path.clone(), !row.expanded);
-                            self.ws_mut().tree.set_expanded(&path, open);
-                            self.ws_mut().reselect(Some(path));
-                        }
-                    }
                     Focus::Graph => self.toggle_commit(),
                     _ => {}
                 }
@@ -1200,16 +1200,43 @@ impl App {
 
     fn search_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let Some(search) = &mut self.search else { return };
+        let pending = self.pending.take();
+        if pending.is_some() {
+            self.message = None;
+        }
+        let Some(search) = &self.search else { return };
+        let files = search.mode == Mode::Files;
+        // With nothing typed, the files are the workspace's own tree.
+        let in_tree = files && search.query.is_empty();
+        let on_file = matches!(self.file_row(), Some((_, false)));
         match key.code {
             KeyCode::Esc => self.search = None,
+            KeyCode::Enter if files => self.open_row(),
             KeyCode::Enter => self.open_hit(),
-            KeyCode::Up => search.step(-1),
-            KeyCode::Down => search.step(1),
-            KeyCode::Char('k' | 'p') if ctrl => search.step(-1),
-            KeyCode::Char('j' | 'n') if ctrl => search.step(1),
-            KeyCode::PageUp => search.step(-10),
-            KeyCode::PageDown => search.step(10),
+            KeyCode::Up => self.search_step(-1),
+            KeyCode::Down => self.search_step(1),
+            KeyCode::Char('k' | 'p') if ctrl => self.search_step(-1),
+            KeyCode::Char('j' | 'n') if ctrl => self.search_step(1),
+            KeyCode::PageUp => self.search_step(-10),
+            KeyCode::PageDown => self.search_step(10),
+            KeyCode::Right if in_tree => self.fold_tree(true),
+            KeyCode::Left if in_tree => self.fold_tree(false),
+            KeyCode::Char('e') if ctrl && files && on_file => {
+                self.edit();
+                self.search = None;
+            }
+            KeyCode::Char('e') if ctrl && files => self.message = Some("select a file to edit".into()),
+            KeyCode::Char('y') if ctrl && files => self.copy_path(),
+            KeyCode::Char('x') if ctrl && files => self.delete(pending),
+            _ => self.search_input(key),
+        }
+    }
+
+    /// Typing in the search popup, and tab between its two kinds of search.
+    fn search_input(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(search) = &mut self.search else { return };
+        match key.code {
             KeyCode::Tab | KeyCode::BackTab if search.mode != Mode::Repos => {
                 search.mode = if search.mode == Mode::Files { Mode::Text } else { Mode::Files };
                 search.update(&self.tx);
@@ -1233,8 +1260,92 @@ impl App {
             self.add_repo(&hit.rel);
             self.set_focus(Focus::Workspaces);
         } else {
-            self.viewer.open_at(search.root.join(&hit.rel), hit.line, &search.root);
+            let path = search.root.join(&hit.rel);
+            self.ws_mut().reveal(&path);
+            self.remember_back();
+            self.viewer.open_at(path, hit.line, &search.root);
             self.read_in_viewer();
+        }
+    }
+
+    /// The file or folder selected in the files (popup), and whether it is a folder.
+    fn file_row(&self) -> Option<(PathBuf, bool)> {
+        let search = self.search.as_ref().filter(|s| s.mode == Mode::Files)?;
+        let row = if search.query.is_empty() { self.ws().selected_row() } else { search.selected_row() }?;
+        Some((row.path.clone(), row.is_dir))
+    }
+
+    /// Move in the search popup: in the workspace's tree, or in the results.
+    fn search_step(&mut self, delta: isize) {
+        match &mut self.search {
+            Some(search) if search.mode == Mode::Files && search.query.is_empty() => {
+                let w = &mut self.workspaces[self.current];
+                let max = w.tree.rows.len().saturating_sub(1) as isize;
+                let next = (w.files_state.selected().unwrap_or(0) as isize + delta).clamp(0, max);
+                w.files_state.select(Some(next as usize));
+            }
+            Some(search) => search.step(delta),
+            None => {}
+        }
+    }
+
+    /// Enter in the files: open a file in the viewer, fold or unfold a
+    /// folder of the tree. A folder among matches is shown in the tree.
+    fn open_row(&mut self) {
+        let Some((path, is_dir)) = self.file_row() else { return };
+        let in_tree = self.search.as_ref().is_some_and(|s| s.query.is_empty());
+        if is_dir && in_tree {
+            let open = !self.ws().selected_row().is_some_and(|r| r.expanded);
+            return self.fold_tree(open);
+        }
+        // The tree follows, so it opens where you were next time.
+        self.ws_mut().reveal(&path);
+        if is_dir {
+            self.ws_mut().tree.set_expanded(&path, true);
+            if let Some(search) = &mut self.search {
+                search.query.clear();
+                search.update(&self.tx);
+            }
+            return;
+        }
+        self.search = None;
+        let root = self.ws().root.clone();
+        self.remember_back();
+        self.viewer.open_at(path, None, &root);
+        self.read_in_viewer();
+    }
+
+    /// Before a file from the popup takes the viewer: keep where you were,
+    /// unless already in a file opened that way.
+    fn remember_back(&mut self) {
+        if self.files_back.is_none() {
+            let viewer = std::mem::take(&mut self.viewer);
+            self.files_back = Some(Back { focus: self.focus, zoomed: self.zoomed, viewer });
+        }
+    }
+
+    /// Esc in a file opened from the popup: everything as it was before.
+    fn go_back(&mut self) {
+        let Some(back) = self.files_back.take() else { return };
+        self.viewer = back.viewer;
+        let root = self.ws().root.clone();
+        self.viewer.reload(&root);
+        // A terminal closed meanwhile can't take the focus back.
+        self.focus = if back.focus == Focus::Terminal && self.active.is_none() { self.sidebar_focus } else { back.focus };
+        self.zoomed = back.zoomed;
+    }
+
+    /// Unfold or fold the selected folder of the tree; on a folded one (or a
+    /// file), folding goes to its parent.
+    fn fold_tree(&mut self, open: bool) {
+        let w = self.ws_mut();
+        let Some(row) = w.selected_row() else { return };
+        let path = row.path.clone();
+        if row.is_dir && row.expanded != open {
+            w.tree.set_expanded(&path, open);
+            w.reselect(Some(path));
+        } else if !open && path.parent() != Some(&w.root) {
+            w.reselect(path.parent().map(Path::to_path_buf));
         }
     }
 
@@ -1259,19 +1370,23 @@ impl App {
 
     fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
+        // Gone elsewhere: esc no longer goes back to before the popup.
+        if focus != Focus::Viewer {
+            self.files_back = None;
+        }
         if focus == Focus::Viewer {
             self.zoomed = false;
         }
         if focus != Focus::Viewer {
             self.viewer.expanded = false;
         }
-        if matches!(focus, Focus::Workspaces | Focus::Sessions | Focus::Changes | Focus::Graph | Focus::Files) {
+        if matches!(focus, Focus::Workspaces | Focus::Sessions | Focus::Changes | Focus::Graph) {
             self.sidebar_focus = focus;
         }
     }
 
     fn cycle_focus(&mut self, dir: isize) {
-        let mut order = vec![Focus::Workspaces, Focus::Sessions, Focus::Changes, Focus::Graph, Focus::Files];
+        let mut order = vec![Focus::Workspaces, Focus::Sessions, Focus::Changes, Focus::Graph];
         if self.viewer.is_open() {
             order.push(Focus::Viewer);
         }
@@ -1326,7 +1441,6 @@ impl App {
                 let len = w.graph_len();
                 Some((&mut w.graph_state, len))
             }
-            Focus::Files => Some((&mut w.files_state, w.tree.rows.len())),
             _ => None,
         }
     }
@@ -1395,29 +1509,18 @@ impl App {
                     self.zoomed = false;
                 }
             }
-            Focus::Files => {
-                if let Some(path) = self.ws().selected_row().filter(|r| !r.is_dir).map(|r| r.path.clone()) {
-                    let root = self.ws().root.clone();
-                    self.viewer.open(Source::File(path), &root);
-                    self.zoomed = false;
-                }
-            }
             _ => {}
         }
     }
 
     fn activate(&mut self) {
         match self.focus {
-            Focus::Workspaces => self.set_focus(Focus::Files),
+            Focus::Workspaces => self.set_focus(Focus::Sessions),
             // Into the session's terminal, or a first shell in it.
             Focus::Sessions if self.active.is_some() => self.set_focus(Focus::Terminal),
             Focus::Sessions => self.spawn(&shell(), true),
-            Focus::Files if self.ws().selected_row().is_some_and(|r| r.is_dir) => {
-                let expanded = self.ws().selected_row().is_some_and(|r| r.expanded);
-                self.expand(!expanded);
-            }
             Focus::Graph if matches!(self.ws().selected_graph_item(), Some(GraphItem::Row(_))) => self.toggle_commit(),
-            Focus::Changes | Focus::Graph | Focus::Files => {
+            Focus::Changes | Focus::Graph => {
                 self.on_select();
                 if self.viewer.is_open() {
                     self.read_in_viewer();
@@ -1438,32 +1541,20 @@ impl App {
         }
     }
 
+    /// Unfold the selected commit in Graph to list its files, or fold it.
     fn expand(&mut self, open: bool) {
-        if self.focus == Focus::Graph {
-            let ws = self.ws();
-            let Some(hash) = ws.selected_commit().map(|c| c.hash.clone()) else { return };
-            match ws.selected_graph_item() {
-                // On a file, h goes back to its commit (and h again folds it).
-                Some(GraphItem::File(..)) if !open => self.ws_mut().set_commit_open(&hash, true),
-                Some(GraphItem::Row(_)) if ws.is_commit_open(&hash) != open => self.ws_mut().set_commit_open(&hash, open),
-                _ => return,
-            }
-            self.on_select();
+        if self.focus != Focus::Graph {
             return;
         }
-        if self.focus != Focus::Files {
-            return;
+        let ws = self.ws();
+        let Some(hash) = ws.selected_commit().map(|c| c.hash.clone()) else { return };
+        match ws.selected_graph_item() {
+            // On a file, h goes back to its commit (and h again folds it).
+            Some(GraphItem::File(..)) if !open => self.ws_mut().set_commit_open(&hash, true),
+            Some(GraphItem::Row(_)) if ws.is_commit_open(&hash) != open => self.ws_mut().set_commit_open(&hash, open),
+            _ => return,
         }
-        let w = self.ws_mut();
-        let Some(row) = w.selected_row() else { return };
-        let path = row.path.clone();
-        if row.is_dir && row.expanded != open {
-            w.tree.set_expanded(&path, open);
-            w.reselect(Some(path));
-        } else if !open && path.parent() != Some(&w.root) {
-            // Already collapsed (or a file): jump to the parent directory.
-            w.reselect(path.parent().map(Path::to_path_buf));
-        }
+        self.on_select();
     }
 }
 
@@ -1535,14 +1626,14 @@ impl App {
 
     // Files
 
-    /// Ask for a name, in the selected folder (or the selected file's).
+    /// Ask for a name, in the folder of the file on screen (or at the top).
     fn start_create(&mut self) {
-        let ws = self.ws();
-        let dir = match ws.selected_row().filter(|_| self.focus == Focus::Files) {
-            Some(row) if row.is_dir => row.path.clone(),
-            Some(row) => row.path.parent().unwrap_or(&ws.root).to_path_buf(),
-            None => ws.root.clone(),
+        let root = self.ws().root.clone();
+        let dir = match &self.viewer.source {
+            Some(Source::File(path) | Source::Diff { path, .. }) => path.parent().filter(|d| d.starts_with(&root)).map(Path::to_path_buf),
+            _ => None,
         };
+        let dir = dir.unwrap_or(root);
         self.creating = Some(Create { dir, name: String::new(), session: false });
     }
 
@@ -1577,14 +1668,8 @@ impl App {
             self.message = Some(format!("could not create {rel}: {e}"));
             return;
         }
-        // Unfold the folders down to it and select it.
-        let w = self.ws_mut();
-        for dir in path.ancestors().skip(1).take_while(|d| d.starts_with(&root) && *d != root) {
-            w.tree.set_expanded(dir, true);
-        }
-        w.tree.rebuild();
-        w.reselect(Some(path.clone()));
-        self.set_focus(Focus::Files);
+        // Where the files open next time.
+        self.ws_mut().reveal(&path);
         if folder {
             self.message = Some(format!("created {rel}/"));
         } else {
@@ -1592,11 +1677,10 @@ impl App {
         }
     }
 
-    /// Delete the selected file or folder, after a second x.
+    /// Delete the file or folder selected in the files, after a second ctrl-x.
     fn delete(&mut self, pending: Option<char>) {
+        let Some((path, is_dir)) = self.file_row() else { return };
         let ws = self.ws();
-        let Some(row) = ws.selected_row() else { return };
-        let (path, is_dir) = (row.path.clone(), row.is_dir);
         let rel = path.strip_prefix(&ws.root).unwrap_or(&path).display().to_string();
         if pending != Some('x') || self.deleting.as_ref() != Some(&path) {
             let what = if is_dir { format!("{rel}/ and everything in it") } else { rel };
@@ -1606,7 +1690,7 @@ impl App {
                 "not in git, it can't be recovered"
             };
             self.deleting = Some(path);
-            self.confirm('x', format!("press x again to delete {what} ({undo})"));
+            self.confirm('x', format!("press ctrl-x again to delete {what} ({undo})"));
             return;
         }
         self.deleting = None;
@@ -1621,13 +1705,16 @@ impl App {
                 let w = self.ws_mut();
                 w.tree.rebuild();
                 w.reselect(None);
+                if let Some(search) = &mut self.search {
+                    search.rescan(&self.tx);
+                }
                 self.message = Some(format!("deleted {rel}"));
             }
             Err(e) => self.message = Some(format!("could not delete {rel}: {e}")),
         }
     }
 
-    /// Edit the file in the viewer, or the one selected in Files or Changes.
+    /// Edit the file in the viewer, or the one selected in the files or Changes.
     fn edit(&mut self) {
         match self.selected_path() {
             Some((path, line)) if path.is_file() && external_editor().is_some() => self.open_editor(path, line),
@@ -1638,9 +1725,12 @@ impl App {
         }
     }
 
-    /// The file (or folder, in Files) the panel is on, and in the viewer the
+    /// The file (or folder, in the files) selected, and in the viewer the
     /// line on screen.
     fn selected_path(&self) -> Option<(PathBuf, Option<usize>)> {
+        if self.search.is_some() {
+            return self.file_row().map(|(path, _)| (path, None));
+        }
         let ws = self.ws();
         match self.focus {
             Focus::Viewer => match &self.viewer.source {
@@ -1648,7 +1738,6 @@ impl App {
                 Some(Source::Diff { path, .. } | Source::CommitFile { path, .. }) => Some((path.clone(), None)),
                 _ => None,
             },
-            Focus::Files => ws.selected_row().map(|r| (r.path.clone(), None)),
             Focus::Changes => ws.selected_change().map(|(path, _)| (path, None)),
             Focus::Graph => match ws.selected_graph_item() {
                 Some(GraphItem::File(_, change)) => Some((ws.root.join(&change.path), None)),
