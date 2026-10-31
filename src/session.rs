@@ -425,7 +425,8 @@ pub fn setup_script(session: &Session, config: &Config, warnings: &[String]) -> 
     if !config.setup.is_empty() {
         s += &format!("step 'Setup'\n{}\n", config.setup);
     }
-    s += ")\nif setup; then\nstep 'Ready.'\n";
+    // Called on its own: in an `if`, the shell would ignore its `set -e`.
+    s += ")\nsetup\nif [ $? = 0 ]; then\nstep 'Ready.'\n";
     for (var, port) in &session.ports {
         s += &format!("echo {}\n", quote(&format!("  {var}: localhost:{port}")));
     }
@@ -455,7 +456,7 @@ pub fn teardown_script(session: &Session, config: &Config, exe: &Path) -> String
     }
     s += &format!("cd / && rm -rf {root}\n{} forget-session {root}\n)\n", quote(&exe.to_string_lossy()));
     s += &format!(
-        "if remove; then echo {}; else printf '\\n\\033[31mStopped before deleting anything that was left (see above).\\033[0m\\n'; exec \"${{SHELL:-/bin/zsh}}\" -l; fi\n",
+        "remove\nif [ $? = 0 ]; then echo {}; else printf '\\n\\033[31mStopped before deleting anything that was left (see above).\\033[0m\\n'; exec \"${{SHELL:-/bin/zsh}}\" -l; fi\n",
         quote(&format!("Session {} removed.", session.name))
     );
     s
@@ -548,6 +549,33 @@ mod tests {
         // Never anything but a session copy.
         let elsewhere = Session { root: "/code/backbone".into(), ..session };
         assert!(!teardown_script(&elsewhere, &config, Path::new("/bin/pulpo")).contains("rm -rf"));
+    }
+
+    #[test]
+    fn removal_stops_when_a_step_fails() {
+        let t = std::env::temp_dir().join(format!("pulpo-teardown-{}", std::process::id()));
+        let root = t.join("r.sessions").join("a");
+        let session = Session {
+            name: "a".into(),
+            repo: t.join("r"),
+            root: root.clone(),
+            project: "r-a".into(),
+            main_project: "r".into(),
+            ports: Vec::new(),
+            images: Vec::new(),
+        };
+        let run = |teardown: &str| {
+            fs::create_dir_all(&root).unwrap();
+            let config = Config { teardown: teardown.into(), ..Config::default() };
+            let script = teardown_script(&session, &config, Path::new("/usr/bin/true"));
+            // SHELL: the shell it leaves open when it stops.
+            std::process::Command::new("sh").args(["-c", &script]).env("SHELL", "/usr/bin/true").output().unwrap();
+        };
+        run("false");
+        assert!(root.is_dir());
+        run("true");
+        assert!(!root.exists());
+        let _ = fs::remove_dir_all(&t);
     }
 
     #[test]
