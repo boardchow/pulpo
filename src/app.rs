@@ -109,6 +109,8 @@ pub struct App {
     /// stopped), with this many terminals before; and when.
     reconnected: Option<usize>,
     last_reconnect: Option<Instant>,
+    /// The server stopped twice in a row, or couldn't start: tried again on r.
+    offline: bool,
     /// Rows and columns available to terminals, set when drawing.
     term_size: (u16, u16),
     pub viewer: Viewer,
@@ -184,6 +186,7 @@ impl App {
             upgrade_asked: false,
             reconnected: None,
             last_reconnect: None,
+            offline: false,
             term_size: (24, 80),
             viewer: Viewer::default(),
             sessions_state: ListState::default().with_selected(Some(0)),
@@ -387,6 +390,7 @@ impl App {
     }
 
     pub fn refresh(&mut self) {
+        self.retry_server();
         self.load_workspaces();
         for w in &mut self.workspaces {
             w.refresh();
@@ -595,7 +599,8 @@ impl App {
             self.set_focus(self.sidebar_focus);
         }
         if self.last_reconnect.is_some_and(|at| at.elapsed() < Duration::from_secs(2)) {
-            self.message = Some("the Pulpo server keeps stopping: see its log, ~/.local/state/pulpo/server/log".into());
+            self.offline = true;
+            self.message = Some("the Pulpo server keeps stopping (its log: ~/.local/state/pulpo/server/log); r tries again".into());
             return;
         }
         self.last_reconnect = Some(Instant::now());
@@ -604,7 +609,19 @@ impl App {
                 self.link = link;
                 self.reconnected = Some(had);
             }
-            Err(e) => self.message = Some(format!("{e:#}")),
+            Err(e) => {
+                self.offline = true;
+                self.message = Some(format!("{e:#}; r tries again"));
+            }
+        }
+    }
+
+    /// On r: if the server was given up on, try it again. Not on every
+    /// key: starting it can take seconds.
+    fn retry_server(&mut self) {
+        if std::mem::take(&mut self.offline) {
+            self.last_reconnect = None;
+            self.on_server_gone();
         }
     }
 
