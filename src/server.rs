@@ -41,6 +41,8 @@ const IDLE: Duration = Duration::from_secs(60);
 const TICK: Duration = Duration::from_millis(250);
 /// Frames waiting for a slow Pulpo before it is dropped (it reconnects).
 const BACKLOG: usize = 4096;
+/// Input waiting for a program that doesn't read it; more is dropped.
+const INPUT: usize = 256;
 
 const BUSY_FOR: Duration = Duration::from_millis(1500);
 /// Output this soon after you type, paste, click, scroll or resize is the
@@ -152,6 +154,9 @@ struct Terminal {
     running: Option<String>,
     unread: bool,
     pty: Pty,
+    /// What's typed, written by a thread of its own: a program that doesn't
+    /// read would otherwise hold up every terminal.
+    input: SyncSender<Vec<u8>>,
     parser: vt100::Parser<Events>,
     /// Last output the program made on its own, since when it has been
     /// working without a pause, and the last thing sent to it.
@@ -205,7 +210,7 @@ impl Terminal {
         // The clipboard goes through to Pulpo with the output.
         events.host.clear();
         if !replies.is_empty() {
-            let _ = self.pty.master.write_all(&replies);
+            let _ = self.input.try_send(replies);
         }
         // It reports that it waits for you, failed or finished.
         if let Some((now, _)) = self.parser.callbacks().status.summary()
@@ -218,7 +223,7 @@ impl Terminal {
 
     fn input(&mut self, bytes: &[u8]) {
         self.last_input = Instant::now();
-        let _ = self.pty.master.write_all(bytes);
+        let _ = self.input.try_send(bytes.to_vec());
     }
 
     fn resize(&mut self, rows: u16, cols: u16) {
@@ -350,6 +355,7 @@ fn resume(file: &Path) -> Result<()> {
         parser.callbacks_mut().replies.clear();
         let pty = unsafe { Pty::from_raw(t.master, t.pid) };
         server.readers.push(reader(t.id, &pty.master, server.wake.0.as_raw_fd(), server.events.clone())?);
+        let input = writer(&pty.master)?;
         server.terminals.push(Terminal {
             id: t.id,
             tag: t.tag,
@@ -359,6 +365,7 @@ fn resume(file: &Path) -> Result<()> {
             running: None,
             unread: t.unread,
             pty,
+            input,
             parser,
             last_activity: Instant::now(),
             working_since: None,
@@ -397,6 +404,21 @@ fn reader(id: u32, master: &File, wake: RawFd, tx: Sender<Event>) -> io::Result<
             }
         }
     }))
+}
+
+/// Write what's typed to a terminal, for as long as it takes its program to
+/// read it.
+fn writer(master: &File) -> io::Result<SyncSender<Vec<u8>>> {
+    let mut master = master.try_clone()?;
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(INPUT);
+    std::thread::spawn(move || {
+        for bytes in rx {
+            if master.write_all(&bytes).is_err() {
+                return;
+            }
+        }
+    });
+    Ok(tx)
 }
 
 /// Wait until `fd` has something to read: true, or `wake` does: false.
@@ -600,6 +622,7 @@ impl Server {
         env.extend(extra.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         // Don't let programs assume Ghostty features this emulator lacks.
         let pty = pty::spawn(program, args, cwd, &env, &["TERM_PROGRAM", "TERM_PROGRAM_VERSION"], (rows, cols))?;
+        let input = writer(&pty.master)?;
         self.readers.push(reader(id, &pty.master, self.wake.0.as_raw_fd(), self.events.clone())?);
         self.next_terminal += 1;
         let name = Path::new(program).file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -612,6 +635,7 @@ impl Server {
             running: None,
             unread: false,
             pty,
+            input,
             parser: vt100::Parser::new_with_callbacks(nz(rows), nz(cols), SCROLLBACK, Events::default()),
             last_activity: Instant::now(),
             working_since: None,

@@ -129,6 +129,16 @@ fn keeps_terminals_across_an_upgrade_and_stops_them_on_close() {
     // Closing stops what runs in it, and then the idle server leaves.
     conn.input(id, "sleep 1234.5\n");
     wait_for("sleep to start", || running("sleep 1234.5"));
+
+    // A paste it doesn't read holds up nothing else.
+    conn.input(id, &"echo x\n".repeat(8 * 1024));
+    conn.send(json!({ "type": "spawn", "token": 8, "program": "/bin/sh", "args": [], "cwd": "/", "rows": 24, "cols": 80 }));
+    let other = conn.until("attach")["info"]["id"].as_u64().unwrap();
+    conn.input(other, "echo C$((2+2))\n");
+    conn.until_output("C4");
+    conn.input(other, "exit\n");
+    conn.until("exit");
+
     conn.send(json!({ "type": "close", "id": id }));
     conn.until("exit");
     wait_for("sleep to stop", || !running("sleep 1234.5"));
