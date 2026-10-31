@@ -1686,7 +1686,7 @@ impl App {
         if folder {
             self.message = Some(format!("created {rel}/"));
         } else {
-            self.open_editor(path, None);
+            self.edit_path(path, None);
         }
     }
 
@@ -1730,11 +1730,19 @@ impl App {
     /// Edit the file in the viewer, or the one selected in the files or Changes.
     fn edit(&mut self) {
         match self.selected_path() {
-            Some((path, line)) if path.is_file() && external_editor().is_some() => self.open_editor(path, line),
-            Some((path, line)) if path.is_file() => self.edit_here(path, line),
+            Some((path, line)) if path.is_file() => self.edit_path(path, line),
             Some((path, _)) if path.is_dir() => self.message = Some("select a file to edit".into()),
             Some(_) => self.message = Some("that file is not in the working tree".into()),
             None => self.message = Some("select a file to edit".into()),
+        }
+    }
+
+    /// Edit a file in your own editor ($PULPO_EDITOR), or else here.
+    fn edit_path(&mut self, path: PathBuf, line: Option<usize>) {
+        if external_editor().is_some() {
+            self.open_editor(path, line);
+        } else {
+            self.edit_here(path, line);
         }
     }
 
