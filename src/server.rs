@@ -503,7 +503,10 @@ impl Server {
             for event in rx.try_iter().collect::<Vec<_>>() {
                 self.handle(event);
             }
-            if let Some((client, exe)) = self.upgrade.take() {
+            // Not while terminals are being stopped: that would stop with it.
+            if self.stopping.is_empty()
+                && let Some((client, exe)) = self.upgrade.take()
+            {
                 // Only returns if the upgrade failed; then carry on as before.
                 let error = self.upgrade(&exe, rx);
                 eprintln!("upgrade to {} failed: {error:#}", exe.display());
