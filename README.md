@@ -169,6 +169,8 @@ make test   # unit tests, and the server's end-to-end test
 
 [PLAN.md](PLAN.md) explains how it's built and what's next. [web/](web) is [pulpo.sh](https://pulpo.sh) and the installer.
 
+Wanna help? [CONTRIBUTING.md](CONTRIBUTING.md) has the short version.
+
 ## License
 
 [MIT](LICENSE). Use it, fork it, ship it. Just keep the notice.
