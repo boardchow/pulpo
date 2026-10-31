@@ -20,7 +20,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -41,6 +41,9 @@ const IDLE: Duration = Duration::from_secs(60);
 const TICK: Duration = Duration::from_millis(250);
 /// Frames waiting for a slow Pulpo before it is dropped (it reconnects).
 const BACKLOG: usize = 4096;
+/// Output read but not yet shown, in chunks of up to 16 KB: when it's
+/// full, a program printing faster than that waits, as in any terminal.
+const OUTPUT: usize = 64;
 /// Input waiting for a program that doesn't read it; more is dropped.
 const INPUT: usize = 256;
 
@@ -265,7 +268,7 @@ struct Server {
     clients: Vec<Client>,
     next_terminal: u32,
     next_client: u64,
-    events: Sender<Event>,
+    events: SyncSender<Event>,
     idle_since: Instant,
     idle: Duration,
     /// Its own build, from when it started (the file may since be newer).
@@ -390,7 +393,7 @@ fn read_resume(file: &Path) -> Result<Resume> {
 
 /// Pass a terminal's output to the main loop until it ends, or until the
 /// server stops its readers to upgrade.
-fn reader(id: u32, master: &File, wake: RawFd, tx: Sender<Event>) -> io::Result<JoinHandle<()>> {
+fn reader(id: u32, master: &File, wake: RawFd, tx: SyncSender<Event>) -> io::Result<JoinHandle<()>> {
     let mut master = master.try_clone()?;
     Ok(std::thread::spawn(move || {
         let mut buf = [0u8; 16 * 1024];
@@ -452,7 +455,7 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 
 impl Server {
     fn new(lock: File, listener: UnixListener) -> Result<(Server, Receiver<Event>)> {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(OUTPUT);
         let fd = listener.as_raw_fd();
         let accept_tx = tx.clone();
         std::thread::spawn(move || {
@@ -653,15 +656,23 @@ impl Server {
         // Stop the readers, then take in what they read, so no output is
         // lost between this program and the next.
         let _ = File::from(self.wake.1.try_clone().expect("a duplicate")).write_all(b"x");
+        // A reader may be waiting for room in the channel: keep taking.
+        let mut later = Vec::new();
+        loop {
+            let stopped = self.readers.iter().all(JoinHandle::is_finished);
+            for event in rx.try_iter().collect::<Vec<_>>() {
+                match event {
+                    Event::Output(..) | Event::Eof(_) => self.handle(event),
+                    other => later.push(other),
+                }
+            }
+            if stopped {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         for reader in self.readers.drain(..) {
             let _ = reader.join();
-        }
-        let mut later = Vec::new();
-        for event in rx.try_iter().collect::<Vec<_>>() {
-            match event {
-                Event::Output(..) | Event::Eof(_) => self.handle(event),
-                other => later.push(other),
-            }
         }
         let Err(error) = self.hand_over(exe);
         // Still here: read on.

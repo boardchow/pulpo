@@ -139,6 +139,21 @@ fn keeps_terminals_across_an_upgrade_and_stops_them_on_close() {
     conn.input(other, "exit\n");
     conn.until("exit");
 
+    // A program printing as fast as it can waits for the server, which
+    // doesn't pile up its output.
+    let server_pid = pid.as_u64().unwrap().to_string();
+    conn.send(json!({ "type": "spawn", "token": 9, "program": "/usr/bin/yes", "args": [], "cwd": "/", "rows": 24, "cols": 80 }));
+    let yes = conn.until("attach")["info"]["id"].as_u64().unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    let rss = Command::new("ps").args(["-o", "rss=", "-p", &server_pid]).output().unwrap();
+    let kb: u64 = String::from_utf8_lossy(&rss.stdout).trim().parse().unwrap();
+    assert!(kb < 200 * 1024, "the server grew to {} MB", kb / 1024);
+    // Not read meanwhile, this connection was dropped as too slow.
+    drop(conn);
+    let mut conn = Conn::open(&sock);
+    conn.send(json!({ "type": "close", "id": yes }));
+    conn.until("exit");
+
     conn.send(json!({ "type": "close", "id": id }));
     conn.until("exit");
     wait_for("sleep to stop", || !running("sleep 1234.5"));
