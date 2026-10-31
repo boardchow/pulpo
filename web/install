@@ -1,0 +1,67 @@
+#!/bin/sh
+# Installs Pulpo, and what it needs to build, on a Mac:
+#   curl -fsSL https://pulpo.sh/install | sh
+# Run it again to update.
+set -eu
+
+REPO="https://github.com/boardchow/pulpo.git"
+RUST="1.88"
+
+say() { printf '\033[1;38;2;143;164;255m›\033[0m %s\n' "$1"; }
+fail() { printf '\033[1;31m✗\033[0m %s\n' "$1" >&2; exit 1; }
+
+# "1.88.0" → 1088, to compare versions.
+number() { echo "$1" | awk -F. '{ print $1 * 1000 + $2 }'; }
+
+# Everything runs from here, so a download cut short runs nothing.
+main() {
+  # The caller's PATH, before Rust's is added below: is pulpo on it?
+  caller_path="$PATH"
+
+  if [ "$(uname -s)" = "Darwin" ]; then
+    # The compiler's linker, and git, which Pulpo uses.
+    if ! xcode-select -p >/dev/null 2>&1; then
+      say "Installing the Xcode Command Line Tools: accept the dialog, then run this again once it finishes."
+      xcode-select --install >/dev/null 2>&1 || true
+      exit 1
+    fi
+  else
+    say "Pulpo is made for macOS; trying anyway."
+  fi
+
+  # Rust, through rustup, unless a recent enough one is here already.
+  [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+  if ! command -v cargo >/dev/null 2>&1; then
+    say "Installing Rust (rustup)…"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+    . "$HOME/.cargo/env"
+  fi
+  version="$(rustc --version | awk '{ print $2 }')"
+  if [ "$(number "$version")" -lt "$(number "$RUST")" ]; then
+    command -v rustup >/dev/null 2>&1 || fail "Pulpo needs Rust $RUST+, this one is $version. Update it, or install rustup: https://rustup.rs"
+    say "Updating Rust $version to the latest stable…"
+    rustup update stable
+    rustup default stable
+  fi
+
+  say "Building Pulpo (a minute or two)…"
+  # --force: replaces a Pulpo installed before, from here or from a checkout.
+  cargo install --git "$REPO" --locked --force
+
+  # Claude Code's hooks, so Pulpo knows when an agent works, waits or asks.
+  # Adds only Pulpo's own, and does nothing when they are there already;
+  # `pulpo hooks remove` takes them out.
+  if command -v claude >/dev/null 2>&1 || [ -d "$HOME/.claude" ]; then
+    say "Adding Pulpo's hooks to Claude Code…"
+    "${CARGO_HOME:-$HOME/.cargo}/bin/pulpo" hooks install
+  fi
+
+  say "Pulpo is installed in ~/.cargo/bin."
+  if (PATH="$caller_path"; command -v pulpo >/dev/null 2>&1); then
+    say "Run: pulpo"
+  else
+    say "Open a new terminal (or run: . \"\$HOME/.cargo/env\"), then run: pulpo"
+  fi
+}
+
+main "$@"

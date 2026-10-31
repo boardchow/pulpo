@@ -129,7 +129,7 @@ for drawing and for encoding keys and the mouse.
   once; the last resize wins. One that falls behind is dropped and
   reconnects.
 - **Upgrade.** The server reports its program's path and when it was
-  built. A Pulpo from the same path but built later (`make install`) asks
+  built. A Pulpo from the same path but built later (`make install`, or pulpo.sh/install) asks
   it to upgrade. The server stops its terminal readers (each waits with
   `select` on its terminal and a wake pipe, so no output is lost), writes
   every terminal down (master fd, pid, size, snapshot, status records) and
@@ -137,9 +137,9 @@ for drawing and for encoding keys and the mouse.
   it `execve`s `pulpo serve --resume`. The process, and so the programs'
   parent, and the open terminals stay the same. If the check or the exec
   fails, it carries on as it was. `Hello` and `Upgrade` never change, so
-  any two builds can do this. `make install` must keep installing by
-  rename (`cargo install`): overwriting the running binary in place gets
-  it killed on macOS.
+  any two builds can do this. Both must keep installing by rename
+  (`cargo install`): overwriting the running binary in place gets it
+  killed on macOS.
 - **Stop.** Closing a terminal, or `Q`, sends Ctrl-C to the program in
   front and gives it up to 10 s (`docker compose up` stops its
   containers), then hangs up every process group in the terminal, then
