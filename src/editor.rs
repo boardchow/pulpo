@@ -133,7 +133,18 @@ impl Editor {
         text
     }
 
+    /// Save; if the file changed on disk since (an agent), only when asked
+    /// twice.
     pub fn save(&mut self) -> Result<(), String> {
+        let modified = std::fs::metadata(&self.path).and_then(|m| m.modified()).ok();
+        if modified != self.modified && !self.dirty {
+            self.reload_if_changed();
+            return Err(format!("{} changed on disk: reloaded", self.path.display()));
+        }
+        if modified != self.modified {
+            self.modified = modified;
+            return Err(format!("{} changed on disk since: ctrl-s again overwrites it", self.path.display()));
+        }
         std::fs::write(&self.path, self.text()).map_err(|e| format!("cannot save {}: {e}", self.path.display()))?;
         self.dirty = false;
         self.modified = std::fs::metadata(&self.path).and_then(|m| m.modified()).ok();
@@ -741,6 +752,24 @@ mod tests {
         // It holds the text; the tests don't save.
         std::fs::remove_dir_all(&dir).unwrap();
         editor
+    }
+
+    #[test]
+    fn asks_before_overwriting_an_agents_change() {
+        let dir = std::env::temp_dir().join(format!("pulpo-editor-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("f.txt");
+        std::fs::write(&path, "mine\n").unwrap();
+        let mut e = Editor::open(path.clone(), None).unwrap();
+        e.insert("x");
+        // An agent writes it a moment later.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, "theirs\n").unwrap();
+        assert!(e.save().is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs\n");
+        assert!(e.save().is_ok());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "xmine\n");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
