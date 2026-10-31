@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulpo — Many arms. One brain.</title>
+<meta name="description" content="You orchestrate. Your agents execute. One terminal to coordinate work, review diffs, and manage every shell.">
+<meta property="og:title" content="Pulpo — Many arms. One brain.">
+<meta property="og:description" content="You orchestrate. Your agents execute. One terminal to coordinate work, review diffs, and manage every shell.">
+<meta property="og:url" content="https://pulpo.sh">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+  /* Colors from the Linear Dark theme, as in src/theme.rs. */
+  :root {
+    --bg: #090909;
+    --editor-bg: #101012;
+    --border: #232429;
+    --accent: #5E6AD2;
+    --fg: #E3E4E7;
+    --muted: #97979A;
+    --dim: #595A5C;
+    --blue: #8FA4FF;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --header: 64px;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  canvas {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+  /* Darkens the field behind the text so it stays readable when the pulpo swims by. */
+  .veil {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse 46% 38% at 50% 50%, rgba(9, 9, 9, 0.82), rgba(9, 9, 9, 0) 100%);
+  }
+  .page {
+    position: relative;
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding: 0 16px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 1080px;
+    height: var(--header);
+    margin: 0 auto;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  header .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--fg);
+    text-decoration: none;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    font-size: 15px;
+  }
+  header .brand img { width: 32px; height: 20px; }
+  a { color: inherit; }
+  header nav a { text-decoration: none; transition: color 0.15s; }
+  header nav a:hover { color: var(--fg); }
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    /* Centered in the whole window, not just below the header, then raised 25px: a touch above center reads as centered. */
+    margin-top: calc(-1 * var(--header));
+    padding: calc(var(--header) + 24px) 0 calc(var(--header) + 74px);
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    margin-bottom: 10px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg);
+    background: rgba(16, 16, 18, 0.88);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  .badge .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--blue);
+    box-shadow: 0 0 8px var(--blue);
+  }
+  h1 {
+    font-size: clamp(44px, 9vw, 96px);
+    font-weight: 600;
+    letter-spacing: -0.035em;
+    line-height: 1;
+    text-shadow: 0 0 40px var(--bg), 0 0 12px var(--bg);
+  }
+  .pitch {
+    max-width: 520px;
+    margin-top: 8px;
+    font-size: clamp(16px, 2.2vw, 18px);
+    line-height: 1.55;
+    color: var(--muted);
+    text-shadow: 0 0 16px var(--bg);
+  }
+  .install {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: 100%;
+    margin-top: 36px;
+    padding: 12px 12px 12px 16px;
+    background: rgba(16, 16, 18, 0.88);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: var(--mono);
+    font-size: 13px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  .install code {
+    overflow-x: auto;
+    white-space: nowrap;
+    text-align: left;
+    scrollbar-width: none;
+  }
+  .install code::-webkit-scrollbar { display: none; }
+  .install .prompt { color: var(--dim); user-select: none; }
+  .install button {
+    flex: none;
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 6px 10px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .install button:hover { color: var(--fg); border-color: var(--dim); }
+  @media (max-width: 560px) {
+    .install { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="field" aria-hidden="true"></canvas>
+<div class="veil"></div>
+<div class="page">
+  <header>
+    <a class="brand" href="/"><img src="favicon.svg" alt="">Pulpo</a>
+    <nav><a href="https://github.com/boardchow/pulpo" target="_blank" rel="noopener">GitHub</a></nav>
+  </header>
+  <main>
+    <p class="badge"><span class="dot"></span>v0.1</p>
+    <h1>Many arms.<br>One brain.</h1>
+    <p class="pitch">You orchestrate. Your agents execute. One terminal to coordinate work, review diffs, and manage every shell.</p>
+    <div class="install">
+      <code><span class="prompt">$ </span><span id="command">curl -fsSL https://pulpo.sh/install | sh</span></code>
+      <button id="copy" type="button">Copy</button>
+    </div>
+  </main>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById("field");
+  const ctx = canvas.getContext("2d");
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const GLYPHS = "abcdefghijklmnopqrstuvwxyz0123456789$#@%&*+=-_/\\|()[]{}<>?!;:.,'~^";
+  const FONT = 12;
+  const LINE = 15;
+  const BG = [0x09, 0x09, 0x09];
+  // Faint greys for the field, around the theme's BORDER and DIM.
+  const GREYS = ["#141416", "#19191c", "#1f2024", "#26272c", "#303136"];
+  // The pulpo: from a dim ACCENT up to BLUE, then a touch brighter for the shimmer.
+  const BLUES = ramp([[0x5E, 0x6A, 0xD2, 0.22], [0x5E, 0x6A, 0xD2, 0.6], [0x8F, 0xA4, 0xFF, 0.85], [0x8F, 0xA4, 0xFF, 1], [0xC4, 0xCF, 0xFF, 1]], 14);
+  const COLORS = [...GREYS, ...BLUES];
+
+  // The mascot from assets/pulpo.svg, one span [from, to) per row, in its 16×10 pixels.
+  const BODY = [
+    [[5, 11]],
+    [[3, 13]],
+    [[2, 14]],
+    [[1, 15]],
+    [[1, 3], [6, 10], [13, 15]],
+    [[1, 15]],
+    [[1, 15]],
+    [[2, 14]],
+    [[1, 3], [4, 6], [7, 9], [10, 12], [13, 15]],
+    [[0, 1], [3, 4], [6, 7], [9, 10], [12, 13], [15, 16]],
+  ];
+  const BLINK = [[1, 15]];
+
+  let dpr, cw, cols, rows, atlas, glyph, heat, text, ceiling, before = 0, mouseX = -1e4, mouseY = -1e4;
+
+  function ramp(stops, n) {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * (stops.length - 1);
+      const a = stops[Math.floor(x)], b = stops[Math.min(Math.ceil(x), stops.length - 1)], f = x - Math.floor(x);
+      const [r, g, bl, al] = a.map((v, k) => v + (b[k] - v) * f);
+      out.push(`rgb(${[r, g, bl].map((c, k) => Math.round(BG[k] + (c - BG[k]) * al)).join(",")})`);
+    }
+    return out;
+  }
+
+  // Every glyph in every color, drawn once; frames only copy from it.
+  function buildAtlas() {
+    atlas = document.createElement("canvas");
+    atlas.width = Math.ceil(cw * dpr) * GLYPHS.length;
+    atlas.height = LINE * dpr * COLORS.length;
+    const a = atlas.getContext("2d");
+    a.scale(dpr, dpr);
+    a.font = `${FONT}px ${getComputedStyle(document.body).getPropertyValue("--mono")}`;
+    a.textBaseline = "middle";
+    a.textAlign = "center";
+    const step = Math.ceil(cw * dpr) / dpr;
+    COLORS.forEach((color, c) => {
+      a.fillStyle = color;
+      for (let g = 0; g < GLYPHS.length; g++) a.fillText(GLYPHS[g], g * step + step / 2, c * LINE + LINE / 2);
+    });
+  }
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = innerWidth * dpr;
+    canvas.height = innerHeight * dpr;
+    ctx.font = `${FONT}px ${getComputedStyle(document.body).getPropertyValue("--mono")}`;
+    cw = Math.ceil(ctx.measureText("M").width * dpr) / dpr;
+    cols = Math.ceil(innerWidth / cw);
+    rows = Math.ceil(innerHeight / LINE);
+    // A quarter of the field stays blank, like the reference.
+    glyph = Int16Array.from({ length: cols * rows }, () => (Math.random() < 0.25 ? -1 : (Math.random() * GLYPHS.length) | 0));
+    heat = new Float32Array(cols * rows);
+    buildAtlas();
+    measure();
+  }
+
+  // Where the header ends, which the pulpo stays below, and where the hero
+  // text sits, so the pulpo can swim behind it without drowning it.
+  function measure() {
+    ceiling = document.querySelector("header").getBoundingClientRect().bottom;
+    const boxes = [...document.querySelectorAll("main > *")].map((el) => el.getBoundingClientRect());
+    text = {
+      x0: Math.min(...boxes.map((b) => b.left)),
+      y0: Math.min(...boxes.map((b) => b.top)),
+      x1: Math.max(...boxes.map((b) => b.right)),
+      y1: Math.max(...boxes.map((b) => b.bottom)),
+    };
+  }
+
+  // How much of the pixel at (u, v) the pulpo covers, tentacles swaying with time.
+  function inside(u, v, t, blinking) {
+    if (v < 0 || v >= 10) return false;
+    const row = Math.floor(v);
+    if (row >= 8) {
+      const leg = Math.min(4, Math.max(0, Math.round((u - 2) / 3)));
+      const k = Math.min(1, (v - 7.6) / 2.4);
+      u -= k * k * 1.1 * Math.sin(t * 3.2 + leg * 1.1);
+    }
+    const spans = row === 4 && blinking ? BLINK : BODY[row];
+    for (const [a, b] of spans) if (u >= a && u < b) return true;
+    return false;
+  }
+
+  function frame(ms) {
+    const t = ms / 1000;
+    const W = innerWidth, H = innerHeight;
+    const P = Math.max(15, Math.min(W / 40, H / 22));
+    // A slow figure eight across the screen, bobbing and tilting as it swims.
+    // Its head, tilted and bobbing, reaches 6.1 of its pixels above its center: keep that under the header.
+    const top = ceiling + 6.5 * P, bottom = Math.max(top, H * 0.78);
+    const cx = W * (0.5 + 0.36 * Math.sin(t * 0.11));
+    const cy = top + (bottom - top) * (0.5 + 0.5 * Math.sin(t * 0.22 + 0.8)) + Math.sin(t * 2.1) * P * 0.3;
+    const angle = 0.1 * Math.sin(t * 0.7);
+    const cos = Math.cos(-angle), sin = Math.sin(-angle);
+    const blinking = t % 4.3 < 0.16;
+
+    // The trail fades in about a quarter second, however often frames come; the body relights it below.
+    const fade = Math.exp(-Math.min(0.1, Math.max(0, t - before)) / 0.08);
+    before = t;
+    for (let i = 0; i < heat.length; i++) heat[i] *= fade;
+
+    const reach = P * 9.5;
+    const c0 = Math.max(0, Math.floor((cx - reach) / cw)), c1 = Math.min(cols - 1, Math.ceil((cx + reach) / cw));
+    const r0 = Math.max(0, Math.floor((cy - reach) / LINE)), r1 = Math.min(rows - 1, Math.ceil((cy + reach) / LINE));
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        let hits = 0;
+        for (let s = 0; s < 4; s++) {
+          const dx = (c + 0.25 + 0.5 * (s & 1)) * cw - cx;
+          const dy = (r + 0.25 + 0.5 * (s >> 1)) * LINE - cy;
+          if (inside((dx * cos - dy * sin) / P + 8, (dx * sin + dy * cos) / P + 5, t, blinking)) hits++;
+        }
+        const i = r * cols + c;
+        if (hits) heat[i] = Math.max(heat[i], hits / 4);
+      }
+    }
+
+    ctx.fillStyle = "#090909";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const gw = Math.ceil(cw * dpr), gh = LINE * dpr;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        const h = heat[i];
+        let g = glyph[i];
+        // The pulpo shimmers; the field churns slowly.
+        if (Math.random() < (h > 0.3 ? 0.18 : 0.006)) g = glyph[i] = h > 0.05 || Math.random() > 0.25 ? (Math.random() * GLYPHS.length) | 0 : -1;
+        let color;
+        if (h > 0.05) {
+          if (g < 0) g = glyph[i] = (Math.random() * GLYPHS.length) | 0;
+          // Dimmer behind the text, fading back within 60px of it.
+          const x = (c + 0.5) * cw, y = (r + 0.5) * LINE;
+          const away = Math.hypot(Math.max(text.x0 - x, 0, x - text.x1), Math.max(text.y0 - y, 0, y - text.y1));
+          const level = h * (0.3 + 0.7 * Math.min(1, away / 60));
+          color = GREYS.length + Math.min(BLUES.length - 1, Math.floor(level * (BLUES.length - 2) + Math.random() * 1.6));
+        } else {
+          if (g < 0) continue;
+          const x = c * cw, y = r * LINE;
+          // Slow swells of brightness, and a little glow around the cursor.
+          const swell = Math.sin(x * 0.006 + t * 0.4) * Math.sin(y * 0.009 - t * 0.3) + Math.sin((x + y) * 0.003 + t * 0.25);
+          const near = Math.max(0, 1 - Math.hypot(x - mouseX, y - mouseY) / 140);
+          color = Math.min(GREYS.length - 1, Math.max(0, Math.floor(1 + swell + near * 3)));
+        }
+        ctx.drawImage(atlas, g * gw, color * gh, gw, gh, c * gw, r * gh, gw, gh);
+      }
+    }
+  }
+
+  let last = 0;
+  function loop(ms) {
+    // About 30 frames a second is plenty for drifting characters.
+    if (ms - last > 33) {
+      last = ms;
+      frame(ms);
+    }
+    requestAnimationFrame(loop);
+  }
+
+  addEventListener("resize", () => {
+    resize();
+    frame(still ? 9000 : performance.now());
+  });
+  addEventListener("scroll", measure, { passive: true });
+  addEventListener("pointermove", (e) => {
+    mouseX = e.clientX;
+    mouseY = e.clientY;
+  });
+  document.fonts.ready.then(() => {
+    resize();
+    if (still) frame(9000);
+    else requestAnimationFrame(loop);
+  });
+
+  const copy = document.getElementById("copy");
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(document.getElementById("command").textContent);
+      copy.textContent = "Copied";
+    } catch {
+      copy.textContent = "Select it";
+    }
+    setTimeout(() => (copy.textContent = "Copy"), 1600);
+  });
+})();
+</script>
+</body>
+</html>

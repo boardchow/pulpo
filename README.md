@@ -7,21 +7,29 @@
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS-black?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/built%20with-Rust-black?style=flat-square" alt="Rust">
+  <img src="https://img.shields.io/badge/terminal-Ghostty-black?style=flat-square" alt="Ghostty">
+  <img src="https://img.shields.io/badge/agent-Claude%20Code-black?style=flat-square" alt="Claude Code">
 </p>
 
 <p align="center"><b>Many arms. One brain.</b><br>You orchestrate. Your agents execute. One terminal to coordinate work, review diffs, and manage every shell.</p>
 
+<p align="center"><a href="https://pulpo.sh">pulpo.sh</a></p>
+
 ## Install
 
-Requires [Rust](https://rustup.rs) 1.88+. Built and tested in [Ghostty](https://ghostty.org); other modern terminals (kitty, WezTerm, iTerm2) and Linux should work but are untested.
-
 ```sh
-git clone https://github.com/boardchow/pulpo.git
-cd pulpo
-make install
+curl -fsSL https://pulpo.sh/install | sh
 ```
 
-`make install` builds Pulpo and puts `pulpo` in `~/.cargo/bin`, which rustup already adds to your `PATH`. Run it again after pulling to update.
+On a Mac, that sets up everything: the Xcode Command Line Tools if they are missing, [Rust](https://rustup.rs) 1.88+ through rustup, then it builds Pulpo into `~/.cargo/bin` and adds its hooks to Claude Code. Run it again to update; terminals that are running keep running across the update. The script is [web/install](web/install).
+
+From a checkout instead: `make install`, then `pulpo hooks install` once.
+
+### What it works with
+
+- **Terminal:** a modern one. Pulpo is built and tested in [Ghostty](https://ghostty.org), which is the one to use; kitty, WezTerm and iTerm2 should work but are untested. Apple's Terminal lacks some of the characters it draws.
+- **Agent:** [Claude Code](https://claude.com/claude-code), for now. It is the agent Pulpo knows: its hooks say when Claude works, waits for you or is done, and Pulpo resumes its sessions after a reboot. Other agents run fine in Pulpo's terminals, but it can only tell what they are doing if they report it (see [OSC 7501](#claude-code-and-other-programs) below).
+- **System:** macOS. Linux should work but is untested.
 
 ## Usage
 
@@ -62,7 +70,7 @@ How sessions of a repository are set up is guessed from its compose file the fir
 
 `x x` on a session in Sessions removes it. It first says what would be lost (uncommitted changes, commits not pushed). Then it stops its terminals, removes its containers and volumes (its database) with the image tags made for it, and deletes the copy. Main and other sessions are left alone. What lives outside the copy and Docker is shared by all sessions: remote services, `~/.config` credentials, global caches. Claude asks to trust each new session's folder once.
 
-Terminals live in a small background process, `pulpo serve`, that Pulpo starts when it first needs it. Quitting Pulpo, or rebuilding it with `make install`, leaves Claude, dev servers and long jobs running; the next Pulpo shows them as they are. A rebuilt Pulpo hands the running terminals to its new build without restarting them.
+Terminals live in a small background process, `pulpo serve`, that Pulpo starts when it first needs it. Quitting Pulpo, or updating it, leaves Claude, dev servers and long jobs running; the next Pulpo shows them as they are. A rebuilt Pulpo hands the running terminals to its new build without restarting them.
 
 So nothing keeps running unnoticed:
 
@@ -73,7 +81,9 @@ So nothing keeps running unnoticed:
 - The server listens only on a Unix socket in `~/.local/state/pulpo/server/` that your account alone can open, never on a network port. It exits by itself a minute after its last terminal and Pulpo are gone.
 - Processes deliberately detached from the terminal (`docker run -d`, `nohup … &`) outlive it, as they do when you close any terminal window.
 
-To know exactly when Claude waits for you or is done, run `pulpo hooks install` once. It adds Pulpo's hooks to `~/.claude/settings.json` and leaves the rest of the file as it was; `pulpo hooks status` shows what is installed and `pulpo hooks remove` takes them out again. When an agent asks you something or finishes while you look elsewhere, Ghostty shows a notification saying what it asks. The sidebar itself only shows each terminal working or waiting.
+### Claude Code and other programs
+
+To know exactly when Claude waits for you or is done, Pulpo uses Claude Code's hooks. The install script adds them; from a checkout, or if you installed Claude Code after Pulpo, run `pulpo hooks install` once. It adds Pulpo's hooks to `~/.claude/settings.json` and leaves the rest of the file as it was; `pulpo hooks status` shows what is installed and `pulpo hooks remove` takes them out again. When an agent asks you something or finishes while you look elsewhere, Ghostty shows a notification saying what it asks. The sidebar itself only shows each terminal working or waiting.
 
 Any program can also say what it is doing with the [program status escape sequence](https://www.superlogical.com/rex/docs/build/program-status) (OSC 7501): Pulpo shows it working or waiting on you, and its message goes in the notification.
 
@@ -88,4 +98,4 @@ make run    # build and run from the checkout
 make test   # unit tests, and the server's end-to-end test
 ```
 
-[PLAN.md](PLAN.md) explains how it is built.
+[PLAN.md](PLAN.md) explains how it is built. [web/](web) is [pulpo.sh](https://pulpo.sh): one static page and the install script, served as they are.
