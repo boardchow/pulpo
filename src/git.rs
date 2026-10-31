@@ -83,16 +83,20 @@ pub fn worktrees(repo: &Path) -> Vec<PathBuf> {
 pub fn status(root: &Path) -> Status {
     // --no-optional-locks keeps git from rewriting the index, which would
     // wake our own file watcher in a loop.
-    let mut status = git(root, &["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z"])
+    let mut status = git(root, &["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"])
         .map(|out| parse(&out))
         .unwrap_or_default();
     let counts = git(root, &["--no-optional-locks", "diff", "--numstat", "-z", "HEAD"])
         .map(|out| parse_numstat(&out))
         .unwrap_or_default();
+    // Untracked files are counted by reading them: not thousands of them
+    // (a new folder of dependencies) on every refresh.
+    let mut reads = 0;
     for change in &mut status.changes {
         if let Some(&(added, removed)) = counts.get(&change.path) {
             (change.added, change.removed) = (added, removed);
-        } else if change.kind() == '?' {
+        } else if change.kind() == '?' && reads < 200 {
+            reads += 1;
             // Untracked: every line is new. Skip large files.
             let path = root.join(&change.path);
             if std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() < 1024 * 1024) {
