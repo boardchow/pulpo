@@ -114,12 +114,11 @@ impl Editor {
     }
 
     fn set_text(&mut self, text: &str) {
-        self.crlf = text.contains("\r\n");
+        // Most lines decide; saving gives back the same bytes otherwise.
+        self.crlf = text.matches("\r\n").count() * 2 > text.matches('\n').count();
         self.final_newline = text.is_empty() || text.ends_with('\n');
-        self.lines = text.lines().map(String::from).collect();
-        if self.lines.is_empty() || text.ends_with("\n\n") || (text.ends_with('\n') && text.lines().count() == 0) {
-            self.lines.push(String::new());
-        }
+        let body = text.strip_suffix('\n').unwrap_or(text);
+        self.lines = body.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l).to_string()).collect();
         self.indent = guess_indent(&self.lines);
         self.highlight.invalidate(0);
     }
@@ -752,6 +751,15 @@ mod tests {
         // It holds the text; the tests don't save.
         std::fs::remove_dir_all(&dir).unwrap();
         editor
+    }
+
+    #[test]
+    fn saves_the_bytes_it_read() {
+        for text in ["", "a", "a\n", "a\n\n", "\n\n", "a\r\n\r\n", "a\r\nb\r\n"] {
+            assert_eq!(editor(text).text(), text, "{text:?}");
+        }
+        // Mixed: the odd line takes the others' ending, and only it changes.
+        assert_eq!(editor("a\nb\nc\r\n").text(), "a\nb\nc\n");
     }
 
     #[test]
