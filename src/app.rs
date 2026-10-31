@@ -1005,16 +1005,18 @@ impl App {
         self.zoomed = self.focus == Focus::Terminal;
     }
 
-    /// Close the active terminal right away if its shell is idle; if a
-    /// program runs in it (Claude, a server…), ask for the key again first.
+    /// Close the active terminal once the key is pressed again: x always,
+    /// ctrl-q only if a program runs in it (Claude, a server…).
     fn close_terminal(&mut self, confirm_key: char, key_name: &str, pending: Option<char>) {
         let Some(term) = self.term() else { return };
+        if pending == Some(confirm_key) {
+            return self.close_active();
+        }
+        let n = self.session_terms().iter().position(|&i| self.terms[i].id == term.id).unwrap_or(0) + 1;
         match term.info.running.clone() {
-            Some(program) if pending != Some(confirm_key) => {
-                let n = self.session_terms().iter().position(|&i| self.terms[i].id == term.id).unwrap_or(0) + 1;
-                self.confirm(confirm_key, format!("{program} is running in terminal {n}: press {key_name} again to close it"));
-            }
-            _ => self.close_active(),
+            Some(program) => self.confirm(confirm_key, format!("{program} is running in terminal {n}: press {key_name} again to close it")),
+            None if confirm_key == 'x' => self.confirm('x', format!("press x again to close terminal {n}")),
+            None => self.close_active(),
         }
     }
 
