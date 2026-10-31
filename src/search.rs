@@ -1,5 +1,6 @@
-//! Go to file (fuzzy), search in files (plain text, background thread), and
-//! pick a repository to add (found by scanning the home directory).
+//! The files as a tree, filtered as you type (fuzzy), search in files (plain
+//! text, background thread), and pick a repository to add (found by
+//! scanning the home directory).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use nucleo_matcher::{Config, Matcher};
 use ratatui::widgets::ListState;
 
 use crate::Msg;
+use crate::tree::{self, Row};
 
 const MAX_FILES: usize = 100_000;
 const MAX_HITS: usize = 500;
@@ -35,6 +37,9 @@ pub struct Search {
     pub mode: Mode,
     pub query: String,
     pub hits: Vec<Hit>,
+    /// Files: the matches laid out as a tree, which `state` selects in. Empty
+    /// with nothing typed: the workspace's own tree shows instead.
+    pub tree: Vec<Row>,
     pub state: ListState,
     pub busy: bool,
     pub root: PathBuf,
@@ -61,6 +66,7 @@ impl Search {
             mode,
             query: String::new(),
             hits: Vec::new(),
+            tree: Vec::new(),
             state: ListState::default(),
             busy: false,
             files: Arc::new(files),
@@ -85,7 +91,9 @@ impl Search {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         self.state.select(Some(0));
         self.busy = self.scanning;
+        self.tree.clear();
         match self.mode {
+            Mode::Files if self.query.is_empty() => self.hits.clear(),
             Mode::Files | Mode::Repos => {
                 let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
                 let pattern = Pattern::parse(&self.query, CaseMatching::Smart, Normalization::Smart);
@@ -99,6 +107,12 @@ impl Search {
                 if self.mode == Mode::Repos && (self.query.starts_with('/') || self.query.starts_with('~')) {
                     let typed = Hit { rel: self.query.clone(), line: None, text: String::new() };
                     self.hits.insert(0, typed);
+                }
+                // On the best match, wherever the tree puts it.
+                if self.mode == Mode::Files {
+                    self.tree = tree::of_paths(&self.root, self.hits.iter().map(|hit| hit.rel.as_str()));
+                    let best = self.hits.first().map(|hit| self.root.join(&hit.rel));
+                    self.state.select(self.tree.iter().position(|row| Some(&row.path) == best.as_ref()));
                 }
             }
             Mode::Text => {
@@ -127,8 +141,26 @@ impl Search {
         }
     }
 
+    /// List the files again (one was deleted) and redo the search.
+    pub fn rescan(&mut self, tx: &Sender<Msg>) {
+        if self.mode != Mode::Repos {
+            self.files = Arc::new(list_files(&self.root));
+            self.update(tx);
+        }
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    /// The row selected in the filtered tree.
+    pub fn selected_row(&self) -> Option<&Row> {
+        self.tree.get(self.state.selected()?)
+    }
+
     pub fn step(&mut self, delta: isize) {
-        let max = self.hits.len().saturating_sub(1);
+        let len = if self.mode == Mode::Files { self.tree.len() } else { self.hits.len() };
+        let max = len.saturating_sub(1);
         let next = self.state.selected().unwrap_or(0).saturating_add_signed(delta).min(max);
         self.state.select(Some(next));
     }

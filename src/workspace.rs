@@ -82,6 +82,16 @@ impl Workspace {
         clamp(&mut self.files_state, self.tree.rows.len());
     }
 
+    /// Unfold the folders down to `path` and select it.
+    pub fn reveal(&mut self, path: &Path) {
+        let root = self.root.clone();
+        for dir in path.ancestors().skip(1).take_while(|d| d.starts_with(&root) && *d != root) {
+            self.tree.set_expanded(dir, true);
+        }
+        self.tree.rebuild();
+        self.reselect(Some(path.to_path_buf()));
+    }
+
     pub fn selected_row(&self) -> Option<&Row> {
         self.tree.rows.get(self.files_state.selected()?)
     }

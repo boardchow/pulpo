@@ -18,7 +18,7 @@ pulpo (one binary)
 ├── main.rs     terminal setup + event loop (one mpsc channel for everything)
 ├── app.rs      state: focus, selection, keys, mouse, terminal tabs
 ├── workspace.rs  repo registry + per-repository state (status, tree)
-├── search.rs   search files (nucleo fuzzy matcher), search inside files, workspace picker
+├── search.rs   the files popup: the tree, filtered as you type (nucleo fuzzy matcher), search inside files, workspace picker
 ├── ui.rs       ratatui rendering
 ├── term.rs     the terminal as Pulpo shows it: a vt100 mirror; snapshots, key and mouse encoding
 ├── server.rs   `pulpo serve`: owns every terminal (PTY + emulator + state), upgrades in place
@@ -31,7 +31,7 @@ pulpo (one binary)
 ├── viewer.rs   read-only file view (syntect), inline diffs, find in file
 ├── editor.rs   editing a file, highlighted by the viewer's own code (identical by construction)
 ├── theme.rs    Linear Dark colors (UI, syntax, terminal palette)
-├── tree.rs     lazy file tree, gitignore-aware (ignore crate)
+├── tree.rs     lazy file tree, gitignore-aware (ignore crate), and the tree of a search's matches
 ├── git.rs      `git status --porcelain=v2`, `--numstat` and `log --graph` parsers
 ├── status.rs   program status reports (OSC 7501)
 └── agents.rs   optional hook-based agent status (`pulpo emit`, `pulpo hooks`)

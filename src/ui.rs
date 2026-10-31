@@ -10,6 +10,7 @@ use crate::agents::State;
 use crate::app::{App, Focus};
 use crate::git::Change;
 use crate::search::Mode;
+use crate::tree::Row;
 use crate::workspace::GraphItem;
 use crate::theme::{ACCENT, BG, BLUE, BORDER, DIM, EDITOR_BG, FG, GREEN, HOVER, MAGENTA, MUTED, RED, SELECTION, SKY, WHITE, YELLOW};
 
@@ -82,26 +83,22 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let workspaces_height = app.repos().len().clamp(1, 8) as u16 + 2;
     let sessions_height = app.sessions().len().clamp(1, 6) as u16 + 2;
-    let changes_height = app.ws().status.changes.len().clamp(1, 8) as u16 + 2;
-    // Taller while you browse it, to see a commit's files.
-    let graph_max = if app.focus == Focus::Graph { 20 } else { 10 };
-    let graph_height = app.ws().graph_len().clamp(1, graph_max) as u16 + 2;
-    // Files last: it is the one panel that takes whatever height is left.
-    let [mascot, workspaces, sessions, changes, graph, files] = Layout::vertical([
+    // The last few commits; the rest scrolls inside.
+    let graph_height = app.ws().graph_len().clamp(1, 10) as u16 + 2;
+    // Changes take whatever height is left. The files are behind /.
+    let [mascot, workspaces, sessions, changes, graph] = Layout::vertical([
         // A blank line above and below the pulpo.
         Constraint::Length(PULPO.len() as u16 + 2),
         Constraint::Length(workspaces_height),
         Constraint::Length(sessions_height),
-        Constraint::Length(changes_height),
-        Constraint::Length(graph_height),
         Constraint::Min(3),
+        Constraint::Length(graph_height),
     ])
     .areas(area);
     app.areas.workspaces = workspaces;
     app.areas.sessions = sessions;
     app.areas.changes = changes;
     app.areas.graph = graph;
-    app.areas.files = files;
 
     draw_header(frame, app, mascot.inner(Margin::new(1, 1)));
 
@@ -233,13 +230,12 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Graph;
     let list = List::new(items).block(block("Graph", focused)).highlight_style(highlight(focused));
     frame.render_stateful_widget(list, graph, &mut ws.graph_state);
+}
 
-    // Files, colored by git status like VS Code.
-    let changed: Vec<(PathBuf, char)> = ws.status.changes.iter().map(|c| (ws.root.join(&c.path), c.kind())).collect();
-    let items: Vec<ListItem> = ws
-        .tree
-        .rows
-        .iter()
+/// Rows of a file tree, colored by git status like VS Code. Among matches,
+/// the folders are only the way to them, so they stay quiet.
+fn file_items(rows: &[Row], changed: &[(PathBuf, char)], quiet_folders: bool) -> Vec<ListItem<'static>> {
+    rows.iter()
         .map(|row| {
             let icon = match (row.is_dir, row.expanded) {
                 (true, true) => "▾ ",
@@ -250,16 +246,17 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 .iter()
                 .find(|(p, _)| if row.is_dir { p.starts_with(&row.path) } else { *p == row.path })
                 .map(|(_, k)| *k);
-            let style = kind.map_or(Style::default(), |k| Style::default().fg(kind_color(k)));
+            let style = match kind {
+                Some(k) => Style::default().fg(kind_color(k)),
+                None if row.is_dir && quiet_folders => Style::default().fg(MUTED),
+                None => Style::default(),
+            };
             ListItem::new(Line::from(vec![
                 Span::from(format!(" {}{icon}", "  ".repeat(row.depth))).fg(DIM),
                 Span::styled(row.name.clone(), style),
             ]))
         })
-        .collect();
-    let focused = app.focus == Focus::Files;
-    let list = List::new(items).block(block("Files", focused)).highlight_style(highlight(focused));
-    frame.render_stateful_widget(list, files, &mut ws.files_state);
+        .collect()
 }
 
 /// A changed file: its name in the color of the change, lines added and
@@ -544,7 +541,6 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Focus::Sessions => ("SESSIONS", &[("j/k", "switch"), ("⏎", "its terminal"), ("n t", "new terminal in it")]),
         Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff"), ("e", "edit"), ("y", "copy path")]),
         Focus::Graph => ("GRAPH", &[("j/k", "move"), ("⏎", "a commit's files / read a diff"), ("h/l", "fold")]),
-        Focus::Files => ("FILES", &[("j/k", "move"), ("⏎", "open"), ("h/l", "fold"), ("e", "edit"), ("y", "copy path"), ("x", "delete")]),
         Focus::Viewer => match (app.viewer.is_diff(), app.viewer.expanded) {
             (true, true) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "split view"), ("esc", "back")]),
             (true, false) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "full height"), ("esc", "back")]),
@@ -556,7 +552,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Focus::Terminal | Focus::Editor => &[],
         // In the viewer, / finds in the file instead.
         Focus::Viewer => &[("w s c f t", "go to panel"), ("?", "all keys"), ("q", "quit")],
-        _ => &[("w s c g f t", "go to panel"), ("n", "new"), ("/", "search"), ("?", "all keys"), ("q", "quit")],
+        _ => &[("w s c g f t", "go to panel"), ("n", "new"), ("?", "all keys"), ("q", "quit")],
     };
     let color = if app.focus == Focus::Terminal { YELLOW } else { ACCENT };
     frame.render_widget(Line::from(footer_spans(badge, color, keys, global)), area);
@@ -591,18 +587,28 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "In a panel",
         &[
-            ("n w  n t  n f", "new workspace / terminal in this session / file or folder (end the name with /)"),
+            ("n w  n t  n f", "new workspace / terminal in this session / file or folder, by the file on screen (end the name with /)"),
             ("n s", "new session, with its own copy, Docker, ports and database"),
             ("e", "edit the file here, looking just as in the viewer ($PULPO_EDITOR: your own editor instead)"),
             ("y", "copy the file's path, relative to the workspace"),
-            ("x x", "remove a workspace from the list (files kept) / delete a file or a task session / close the terminal"),
+            ("x x", "remove a workspace from the list (files kept) / delete a task session / close the terminal"),
             ("j k  ↑ ↓  ⏎", "move, open (a session's terminal, a file, a diff, a commit's files)"),
-            ("h l", "fold / unfold a folder, or a commit's files in Graph"),
+            ("h l", "fold / unfold a commit's files in Graph"),
             ("1-9  [ ]", "enter the session's terminal N / previous, next terminal"),
-            ("/  tab", "search files by name / tab: search inside files"),
             ("r", "refresh"),
             ("q q", "quit Pulpo; terminals keep running, and come back next time"),
             ("Q Q", "quit Pulpo and stop every terminal (ctrl-c, then hang up)"),
+        ],
+    ),
+    (
+        "Files (f)",
+        &[
+            ("↑ ↓  ← →  ⏎", "move / fold, unfold a folder / open a file, fold a folder"),
+            ("type", "filter the tree by name; ⏎ on a folder shows it in the tree"),
+            ("esc", "in a file opened from here: back to how things were (zoomed terminal, previewed file)"),
+            ("tab", "search inside files instead (and back)"),
+            ("ctrl-e  ctrl-y", "edit the file / copy its path, relative to the workspace"),
+            ("ctrl-x ctrl-x", "delete the file or folder"),
         ],
     ),
     (
@@ -673,7 +679,10 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Clear, popup);
     frame.render_widget(Block::new().style(Style::new().fg(FG).bg(BG)), popup);
     let (title, hint) = match search.mode {
-        Mode::Files => (" Search files ", " tab: search inside files · ↑↓ move · ⏎ open · esc close "),
+        Mode::Files => (
+            " Files ",
+            " tab: search inside files · ←→ fold · ⏎ open · ctrl-e edit · ctrl-y copy path · ctrl-x delete · esc close ",
+        ),
         Mode::Text => (" Search inside files ", " tab: search file names · ↑↓ move · ⏎ open · esc close "),
         Mode::Repos => (" Add a workspace ", " git repositories in your home folder · type to filter, or a path (~/…) · ⏎ add · esc close "),
     };
@@ -688,7 +697,9 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
         _ if search.busy => "searching…".to_string(),
         Mode::Repos => format!("{} found", search.hits.len()),
         Mode::Text if search.query.chars().count() < 2 => "type at least 2 characters".to_string(),
-        Mode::Files => format!("{} files", search.hits.len()),
+        Mode::Files if search.query.is_empty() => format!("{} files · type to filter", search.file_count()),
+        Mode::Files if search.hits.len() >= 500 => "500+ matches".to_string(),
+        Mode::Files => format!("{} matches", search.hits.len()),
         Mode::Text if search.hits.len() >= 500 => "500+ matches".to_string(),
         Mode::Text => format!("{} matches", search.hits.len()),
     };
@@ -701,6 +712,19 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
         ]),
         input,
     );
+
+    // The files: the workspace's tree, or the matches laid out as one.
+    if search.mode == Mode::Files {
+        let ws = &mut app.workspaces[app.current];
+        let changed: Vec<(PathBuf, char)> = ws.status.changes.iter().map(|c| (ws.root.join(&c.path), c.kind())).collect();
+        let list = |items| List::new(items).highlight_style(highlight(true));
+        if search.query.is_empty() {
+            frame.render_stateful_widget(list(file_items(&ws.tree.rows, &changed, false)), results, &mut ws.files_state);
+        } else {
+            frame.render_stateful_widget(list(file_items(&search.tree, &changed, true)), results, &mut search.state);
+        }
+        return;
+    }
 
     let items: Vec<ListItem> = search
         .hits

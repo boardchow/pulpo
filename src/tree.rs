@@ -53,6 +53,42 @@ impl Tree {
     }
 }
 
+/// A tree of only `paths` (relative to `root`) and the folders down to
+/// them, all unfolded; folders first at every level, like the full tree.
+pub fn of_paths<'a>(root: &Path, paths: impl IntoIterator<Item = &'a str>) -> Vec<Row> {
+    let mut seen = HashSet::new();
+    let mut entries: Vec<(PathBuf, bool)> = Vec::new();
+    for path in paths {
+        let rel = Path::new(path);
+        for dir in rel.ancestors().skip(1).filter(|d| !d.as_os_str().is_empty()) {
+            if seen.insert(dir.to_path_buf()) {
+                entries.push((dir.to_path_buf(), true));
+            }
+        }
+        if seen.insert(rel.to_path_buf()) {
+            entries.push((rel.to_path_buf(), false));
+        }
+    }
+    // A folder sorts by its path, so its contents come right after it.
+    entries.sort_by_cached_key(|(rel, is_dir)| {
+        let last = rel.components().count() - 1;
+        rel.components()
+            .enumerate()
+            .map(|(i, c)| (i == last && !is_dir, c.as_os_str().to_string_lossy().to_lowercase()))
+            .collect::<Vec<_>>()
+    });
+    entries
+        .into_iter()
+        .map(|(rel, is_dir)| Row {
+            name: rel.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+            depth: rel.components().count() - 1,
+            path: root.join(rel),
+            is_dir,
+            expanded: is_dir,
+        })
+        .collect()
+}
+
 /// Direct children of `dir`, gitignore-aware, directories first.
 fn list_dir(dir: &Path) -> Vec<(PathBuf, bool)> {
     let mut entries: Vec<(PathBuf, bool)> = WalkBuilder::new(dir)
@@ -68,4 +104,17 @@ fn list_dir(dir: &Path) -> Vec<(PathBuf, bool)> {
         (!is_dir, path.file_name().unwrap_or_default().to_string_lossy().to_lowercase())
     });
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lays_out_only_the_paths_and_their_folders() {
+        let rows = of_paths(Path::new("/r"), ["src/ui.rs", "README.md", "src/app.rs", "src/web/index.html"]);
+        let lines: Vec<String> = rows.iter().map(|r| format!("{}{}{}", "  ".repeat(r.depth), r.name, if r.is_dir { "/" } else { "" })).collect();
+        assert_eq!(lines, ["src/", "  web/", "    index.html", "  app.rs", "  ui.rs", "README.md"]);
+        assert_eq!(rows[3].path, Path::new("/r/src/app.rs"));
+    }
 }
