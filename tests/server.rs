@@ -154,6 +154,17 @@ fn keeps_terminals_across_an_upgrade_and_stops_them_on_close() {
     conn.send(json!({ "type": "close", "id": yes }));
     conn.until("exit");
 
+    // Closing interrupts the program first and gives it time to clean up.
+    let cleaned = state.join("cleaned");
+    conn.send(json!({ "type": "spawn", "token": 10, "program": "/bin/sh", "args": [], "cwd": "/", "rows": 24, "cols": 80 }));
+    let polite = conn.until("attach")["info"]["id"].as_u64().unwrap();
+    let job = format!("sh -c 'trap \"sleep 1; touch {}; exit\" INT; while :; do sleep 0.1; done'\n", cleaned.display());
+    conn.input(polite, &job);
+    wait_for("the job to start", || running(&format!("touch {}", cleaned.display())));
+    conn.send(json!({ "type": "close", "id": polite }));
+    conn.until("exit");
+    assert!(cleaned.exists(), "hung up before it cleaned up");
+
     conn.send(json!({ "type": "close", "id": id }));
     conn.until("exit");
     wait_for("sleep to stop", || !running("sleep 1234.5"));

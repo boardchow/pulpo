@@ -604,7 +604,11 @@ impl Server {
                     let front = front.filter(|&g| g != shell && groups.contains(&g));
                     let mut stopping = Stopping { front, groups, stage: Stage::Interrupt, since: Instant::now() };
                     stopping.signal(if front.is_some() { Stage::Interrupt } else { Stage::HangUp });
-                    terminal.pty.hang_up();
+                    // With a program to interrupt, the shell is hung up after
+                    // the grace, with the rest: now, it would pass the hang-up on.
+                    if front.is_none() {
+                        terminal.pty.hang_up();
+                    }
                     self.stopping.push(stopping);
                 }
             }
