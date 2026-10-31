@@ -282,8 +282,9 @@ fn port_free(port: u16) -> bool {
 /// Copy main into a new session and record it. Its setup runs next, in a
 /// terminal (`setup_script`).
 pub fn create(repo: &Path, name: &str, config: &Config) -> Result<Session> {
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        bail!("a session name is letters, digits, - and _");
+    // Lowercase: Compose project names are, and two sessions mustn't share one.
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+        bail!("a session name is lowercase letters, digits, - and _");
     }
     let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
     let parent = repo.parent().context("the repository has no parent folder")?;

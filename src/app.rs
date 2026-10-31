@@ -797,7 +797,8 @@ impl App {
                 KeyCode::Backspace => {
                     create.name.pop();
                 }
-                KeyCode::Char(c) if !ctrl => create.name.push(c),
+                // Session names are lowercase, like Compose projects.
+                KeyCode::Char(c) if !ctrl => create.name.push(if create.session { c.to_ascii_lowercase() } else { c }),
                 _ => {}
             }
             return false;
