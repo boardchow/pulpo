@@ -197,7 +197,10 @@ impl Divider {
 }
 
 /// Ways to lay out a tab's panes, `L` going from one to the next.
-pub const LAYOUTS: [&str; 4] = ["main pane left", "side by side", "one above the other", "grid"];
+pub const LAYOUTS: [&str; 5] = ["main pane left", "side by side", "one above the other", "grid", "review: what the agent edits, beside it"];
+
+/// The review layout: the file pane follows what the agents edit.
+pub const REVIEW: usize = 4;
 
 /// The panes, the first one the main one, laid out the `n`th way.
 pub fn arrange(panes: &[Pane], n: usize) -> Option<Node> {
@@ -208,9 +211,25 @@ pub fn arrange(panes: &[Pane], n: usize) -> Option<Node> {
         0 => Node::Leaf(first),
         1 => even(panes.iter().map(leaf).collect(), true),
         2 => even(panes.iter().map(leaf).collect(), false),
-        _ => {
+        3 => {
             let columns = (panes.len() as f64).sqrt().ceil() as usize;
             even(panes.chunks(columns).map(|row| even(row.iter().map(leaf).collect(), true)).collect(), false)
+        }
+        // The main terminal over the others on the left, the file on the right.
+        _ => {
+            let terms: Vec<Pane> = panes.iter().copied().filter(|&p| p != Pane::File).collect();
+            let left = match terms.split_first() {
+                Some((&main, [])) => Some(Node::Leaf(main)),
+                Some((&main, rest)) => {
+                    Some(Node::Split { beside: false, ratio: 70, a: Box::new(Node::Leaf(main)), b: Box::new(even(rest.iter().map(leaf).collect(), true)) })
+                }
+                None => None,
+            };
+            match (left, panes.contains(&Pane::File)) {
+                (Some(left), true) => Node::Split { beside: true, ratio: 55, a: Box::new(left), b: Box::new(Node::Leaf(Pane::File)) },
+                (Some(left), false) => left,
+                (None, _) => Node::Leaf(Pane::File),
+            }
         }
     })
 }
@@ -462,6 +481,11 @@ mod tests {
         let grid = arrange(&panes, 3).unwrap().layout(area);
         assert_eq!(grid.iter().map(|(_, r)| (r.x, r.y)).collect::<Vec<_>>(), vec![(0, 0), (50, 0), (0, 20), (50, 20)]);
         assert_eq!(arrange(&[T1], 0), Some(Node::Leaf(T1)));
+        // Review: the agent over the shell on the left, the file on the right.
+        let review = arrange(&[T1, Pane::File, T2], REVIEW).unwrap().layout(area);
+        assert_eq!(review[0], (T1, Rect::new(0, 0, 55, 28)));
+        assert_eq!(review[1].0, T2);
+        assert_eq!(review[2], (Pane::File, Rect::new(55, 0, 45, 40)));
     }
 
     #[test]

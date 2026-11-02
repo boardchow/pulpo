@@ -69,10 +69,10 @@ pub struct Areas {
     pub sessions: Rect,
     pub changes: Rect,
     pub graph: Rect,
-    /// The panes of the tab on screen, and the tabs in the top bar.
+    /// The panes of the tab on screen, and the tabs in the sidebar.
     pub panes: Vec<(Pane, Rect)>,
     pub tabs: Vec<(usize, Rect)>,
-    /// The top bar's counts: a click shows those terminals.
+    /// What the terminals are doing, by the pulpo: a click shows them.
     pub counts: Vec<(Show, Rect)>,
     /// The borders between the panes on screen, to drag.
     pub dividers: Vec<Divider>,
@@ -86,6 +86,10 @@ pub struct Areas {
 /// Scrolling back through a terminal, and finding in it.
 pub struct Scroll {
     pub id: usize,
+    /// The line you're on, and where a selection starts, counted from the
+    /// oldest line of the terminal's history.
+    pub cursor: usize,
+    pub anchor: Option<usize>,
     pub query: String,
     /// Typing what to find.
     pub typing: bool,
@@ -145,6 +149,10 @@ pub struct App {
     pub scrolling: Option<Scroll>,
     /// The border being dragged.
     dragging: Option<Divider>,
+    /// The link or file under the last right click in a terminal.
+    link_at: Option<(String, PathBuf)>,
+    /// The last edit a review pane went to.
+    followed: u64,
     /// The terminal (its tag) last on screen in each session, and the
     /// session last used in each repository.
     last_term: HashMap<PathBuf, String>,
@@ -255,6 +263,8 @@ impl App {
             swarm: None,
             scrolling: None,
             dragging: None,
+            link_at: None,
+            followed: 0,
             last_term: layout.terminals.clone().into_iter().collect(),
             last_session: layout.sessions.clone().into_iter().collect(),
             saved: layout.clone(),
@@ -820,6 +830,7 @@ impl App {
                 term.scroll_to(0);
             }
         }
+        self.follow_edits();
         let now = (self.ws().root.clone(), self.active);
         if self.here.as_ref() != Some(&now) {
             self.back = self.here.replace(now);
@@ -1600,6 +1611,11 @@ impl App {
             Action::Layout => self.next_layout(),
             Action::Scroll => self.start_scroll(),
             Action::Board => self.toggle_board(),
+            Action::OpenLink => {
+                if let Some((word, cwd)) = self.link_at.take() {
+                    self.open_link(&word, &cwd);
+                }
+            }
             Action::Swarm => self.swarm = Some(String::new()),
             Action::Zoom => self.zoom(),
             Action::ClosePane if self.focus == Focus::Editor => self.close_editor(pending),
@@ -1729,7 +1745,10 @@ impl App {
     /// Scroll back through the terminal you're in, and find in it.
     fn start_scroll(&mut self) {
         match self.active.filter(|_| self.focus == Focus::Terminal) {
-            Some(id) => self.scrolling = Some(Scroll { id, query: String::new(), typing: false, found: None }),
+            Some(id) => {
+                let cursor = self.term().map_or(0, Term::cursor_line);
+                self.scrolling = Some(Scroll { id, cursor, anchor: None, query: String::new(), typing: false, found: None });
+            }
             None => self.message = Some("go into a terminal first".into()),
         }
     }
@@ -1749,6 +1768,9 @@ impl App {
                 KeyCode::Enter => {
                     scroll.typing = false;
                     scroll.found = (!scroll.query.is_empty()).then(|| term.find(&scroll.query, true));
+                    if scroll.found == Some(true) {
+                        scroll.cursor = term.top_line();
+                    }
                 }
                 _ => {
                     input::edit(&mut scroll.query, key);
@@ -1756,26 +1778,132 @@ impl App {
             }
             return;
         }
-        let half = (term.rows() / 2).max(1) as isize;
+        let half = (term.rows() / 2).max(1) as usize;
+        let last = term.line_count().saturating_sub(1);
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => term.scroll(1),
-            KeyCode::Down | KeyCode::Char('j') => term.scroll(-1),
-            KeyCode::PageUp | KeyCode::Char('u' | 'b') => term.scroll(half),
-            KeyCode::PageDown | KeyCode::Char('d' | 'f' | ' ') => term.scroll(-half),
-            KeyCode::Home | KeyCode::Char('g') => term.scroll_to(usize::MAX),
-            KeyCode::End | KeyCode::Char('G') => term.scroll_to(0),
+            KeyCode::Up | KeyCode::Char('k') => scroll.cursor = scroll.cursor.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => scroll.cursor = (scroll.cursor + 1).min(last),
+            KeyCode::PageUp | KeyCode::Char('u' | 'b') => {
+                term.scroll(half as isize);
+                scroll.cursor = scroll.cursor.saturating_sub(half);
+            }
+            KeyCode::PageDown | KeyCode::Char('d' | 'f') => {
+                term.scroll(-(half as isize));
+                scroll.cursor = (scroll.cursor + half).min(last);
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                term.scroll_to(usize::MAX);
+                scroll.cursor = 0;
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                term.scroll_to(0);
+                scroll.cursor = term.cursor_line();
+            }
+            KeyCode::Char('v' | 'V' | ' ') => scroll.anchor = if scroll.anchor.is_some() { None } else { Some(scroll.cursor) },
             KeyCode::Char('/' | '?') => {
                 scroll.typing = true;
                 scroll.query.clear();
                 scroll.found = None;
             }
-            KeyCode::Char('n') if !scroll.query.is_empty() => scroll.found = Some(term.find(&scroll.query, true)),
-            KeyCode::Char('N') if !scroll.query.is_empty() => scroll.found = Some(term.find(&scroll.query, false)),
+            KeyCode::Char('n' | 'N') if !scroll.query.is_empty() => {
+                let found = term.find(&scroll.query, key.code == KeyCode::Char('n'));
+                scroll.found = Some(found);
+                if found {
+                    scroll.cursor = term.top_line();
+                }
+            }
+            // Copy the selected lines (or the one you're on) and go back.
+            KeyCode::Char('y') | KeyCode::Enter => {
+                let (from, to) = match scroll.anchor {
+                    Some(anchor) => (anchor.min(scroll.cursor), anchor.max(scroll.cursor)),
+                    None => (scroll.cursor, scroll.cursor),
+                };
+                let text = term.text(from, to);
+                term.scroll_to(0);
+                self.scrolling = None;
+                let n = text.lines().count().max(1);
+                self.message = Some(if set_clipboard(&text) { format!("copied {n} line(s)") } else { "could not copy (pbcopy failed)".into() });
+                return;
+            }
+            KeyCode::Esc if scroll.anchor.is_some() => scroll.anchor = None,
             KeyCode::Esc | KeyCode::Char('q') => {
                 term.scroll_to(0);
                 self.scrolling = None;
+                return;
             }
             _ => {}
+        }
+        // Keep the line you're on in view.
+        let (top, rows) = (term.top_line(), term.rows() as usize);
+        if scroll.cursor < top {
+            term.scroll((top - scroll.cursor) as isize);
+        } else if scroll.cursor >= top + rows {
+            term.scroll(-((scroll.cursor + 1 - top - rows) as isize));
+        }
+    }
+
+    /// A link opens in the browser; a path (with `:line`, as tools print
+    /// them) opens in the viewer, there.
+    fn open_link(&mut self, word: &str, cwd: &Path) {
+        if word.starts_with("http://") || word.starts_with("https://") {
+            let opened = std::process::Command::new("open").arg(word).status().is_ok_and(|s| s.success());
+            self.message = Some(if opened { format!("opened {word}") } else { format!("could not open {word}") });
+            return;
+        }
+        let mut parts = word.split(':');
+        let path = PathBuf::from(parts.next().unwrap_or_default());
+        let line = parts.next().and_then(|n| n.parse::<usize>().ok()).map(|n| n.saturating_sub(1));
+        let path = if path.is_absolute() { path } else { cwd.join(path) };
+        if !path.is_file() {
+            self.message = Some(format!("no link or file at {word:?}"));
+            return;
+        }
+        let root = self.ws().root.clone();
+        self.viewer.open_at(path, line, &root);
+        self.set_focus(Focus::Viewer);
+    }
+
+    /// In a tab laid out for review, the file pane shows the diff of the
+    /// file its agents last edited, unless you're reading or editing.
+    fn follow_edits(&mut self) {
+        let Some(tab) = self.tab().filter(|t| t.layout == Some(pane::REVIEW)) else { return };
+        if matches!(self.focus, Focus::Viewer | Focus::Editor) || self.editor.is_some() {
+            return;
+        }
+        let terms = tab.terms();
+        let newest = self
+            .terms
+            .iter()
+            .filter(|t| terms.contains(&t.id))
+            .filter_map(|t| self.agents.for_tab(&t.info.tag).and_then(|a| a.edited.clone()))
+            .max_by_key(|(seq, _)| *seq);
+        let Some((seq, path)) = newest.filter(|(seq, _)| *seq > self.followed) else { return };
+        self.followed = seq;
+        let root = self.ws().root.clone();
+        if !path.starts_with(&root) {
+            return;
+        }
+        // A file git doesn't know yet is all new.
+        let tracked = std::process::Command::new("git")
+            .args(["ls-files", "--error-unmatch", "--"])
+            .arg(&path)
+            .current_dir(&root)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        let had_file = self.viewer.is_open();
+        self.viewer.open(Source::Diff { path, untracked: !tracked }, &root);
+        // The first time, the file pane goes on the right.
+        if !had_file {
+            self.sync_tabs();
+            if let Some(tab) = self.tab_mut() {
+                let mut panes = tab.root.panes();
+                let main = tab.term.map(Pane::Term).unwrap_or(tab.focus);
+                panes.retain(|&p| p != main);
+                panes.insert(0, main);
+                if let Some(root) = pane::arrange(&panes, pane::REVIEW) {
+                    tab.root = root;
+                }
+            }
         }
     }
 
@@ -1845,6 +1973,21 @@ impl App {
                 target: Target::Action(action),
             })
             .collect();
+        let mut entries: Vec<Entry> = entries;
+        if let Some((word, _)) = self.link_at.as_ref().filter(|_| at.is_some()) {
+            let text = if word.starts_with("http") { format!("Open {word}") } else { format!("Show {word}") };
+            let open = Entry {
+                group: "HERE".into(),
+                text,
+                place: "ctrl-click".into(),
+                detail: String::new(),
+                age: String::new(),
+                state: None,
+                path: String::new(),
+                target: Target::Action(Action::OpenLink),
+            };
+            entries.insert(0, open);
+        }
         let mut picker = Picker::new(Kind::Menu, entries, Show::All, None);
         picker.at = at;
         self.picker = Some(picker);
@@ -2117,8 +2260,17 @@ impl App {
         // A right click: what can be done there, at the mouse.
         if mouse.kind == MouseEventKind::Down(MouseButton::Right) {
             let at = Some((pos.x, pos.y));
-            match areas.panes.iter().find(|(_, r)| r.contains(pos)).map(|&(p, _)| p) {
-                Some(pane) => {
+            match areas.panes.iter().find(|(_, r)| r.contains(pos)).map(|&(p, r)| (p, r)) {
+                Some((pane, rect)) => {
+                    // On a link or a path: opening it comes first.
+                    let inner = Block::bordered().inner(rect);
+                    self.link_at = match pane {
+                        Pane::Term(id) if inner.contains(pos) => self.terms.iter().find(|t| t.id == id).and_then(|t| {
+                            let word = t.word_at(pos.y - inner.y, pos.x - inner.x);
+                            (!word.is_empty()).then(|| (word, t.info.cwd.clone()))
+                        }),
+                        _ => None,
+                    };
                     self.focus_pane(pane);
                     self.open_menu(&[Group::Panes, Group::Tabs], at);
                 }
@@ -2144,6 +2296,14 @@ impl App {
         if let Some(&(Pane::Term(id), rect)) = areas.panes.iter().find(|(p, r)| matches!(p, Pane::Term(_)) && r.contains(pos)) {
             let inner = Block::bordered().inner(rect);
             let Some(term) = self.terms.iter_mut().find(|t| t.id == id) else { return };
+            // ctrl-click on a link or a path opens it.
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) && mouse.modifiers.contains(KeyModifiers::CONTROL) && inner.contains(pos) {
+                let (word, cwd) = (term.word_at(pos.y - inner.y, pos.x - inner.x), term.info.cwd.clone());
+                if !word.is_empty() {
+                    self.open_link(&word, &cwd);
+                }
+                return;
+            }
             if inner.contains(pos) && term.wants_mouse() {
                 term.mouse(mouse.kind, pos.x - inner.x + 1, pos.y - inner.y + 1, mouse.modifiers);
             } else if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {

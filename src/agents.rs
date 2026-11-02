@@ -43,6 +43,8 @@ pub fn emit() {
         "event": field("hook_event_name"),
         "tool": field("tool_name"),
         "message": field("message"),
+        // The file it edits or writes, so a review pane can follow it.
+        "file": payload.pointer("/tool_input/file_path").or_else(|| payload.pointer("/tool_input/notebook_path")).and_then(Value::as_str).unwrap_or(""),
         "tab": std::env::var("PULPO_TAB").unwrap_or_default(),
     });
 
@@ -278,6 +280,8 @@ pub struct Agent {
     pub state: State,
     pub detail: String,
     pub ts: u64,
+    /// The file it last edited, and when, in the order of all edits.
+    pub edited: Option<(u64, PathBuf)>,
 }
 
 #[derive(Deserialize, Default)]
@@ -289,12 +293,15 @@ struct Record {
     event: String,
     tool: String,
     message: String,
+    file: String,
 }
 
 #[derive(Default)]
 pub struct Agents {
     offset: u64,
     sessions: HashMap<String, Agent>,
+    /// Edits seen so far, to order them.
+    edits: u64,
 }
 
 impl Agents {
@@ -331,8 +338,13 @@ impl Agents {
             state: State::Idle,
             detail: String::new(),
             ts: r.ts,
+            edited: None,
         });
         agent.ts = r.ts;
+        if r.event == "PostToolUse" && !r.file.is_empty() && matches!(r.tool.as_str(), "Edit" | "Write" | "MultiEdit" | "NotebookEdit") {
+            self.edits += 1;
+            agent.edited = Some((self.edits, PathBuf::from(&r.file)));
+        }
         let (state, detail) = match r.event.as_str() {
             "SessionStart" => (State::Idle, String::new()),
             "UserPromptSubmit" => (State::Running, "thinking".into()),
@@ -374,6 +386,10 @@ mod tests {
         let agent = agents.for_tab("t1").unwrap();
         assert!(agent.state == State::Running);
         assert_eq!(agent.detail, "Bash");
+        let mut edit = record("a", "PostToolUse", "Edit");
+        edit.file = "/code/src/main.rs".into();
+        agents.apply(edit);
+        assert_eq!(agents.for_tab("t1").unwrap().edited, Some((1, PathBuf::from("/code/src/main.rs"))));
         agents.apply(record("a", "Stop", ""));
         assert!(agents.for_tab("t1").unwrap().state == State::Done);
         agents.apply(record("a", "SessionEnd", ""));

@@ -254,6 +254,62 @@ impl Term {
         self.parser.screen_mut().set_scrollback(rows);
     }
 
+    /// The line at the top of the view, counted from the oldest of its
+    /// history; and how many lines there are, history and screen.
+    pub fn top_line(&self) -> usize {
+        let screen = self.parser.screen();
+        screen.scrollback_len() - screen.scrollback()
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.parser.screen().scrollback_len() + self.rows() as usize
+    }
+
+    /// The line the cursor is on, counted the same way.
+    pub fn cursor_line(&self) -> usize {
+        let screen = self.parser.screen();
+        screen.scrollback_len() + screen.cursor_position().0 as usize
+    }
+
+    /// Lines `from` to `to`, counted from the oldest, as text. A line the
+    /// terminal wrapped comes back whole.
+    pub fn text(&mut self, from: usize, to: usize) -> String {
+        let screen = self.parser.screen_mut();
+        let (start, len, width) = (screen.scrollback(), screen.scrollback_len(), screen.size().1.get());
+        let mut text = String::new();
+        for n in from..=to {
+            // Bring it into view: at the top, or on the screen itself.
+            let (at, row) = if n < len { (len - n, 0) } else { (0, n - len) };
+            screen.set_scrollback(at);
+            let line = screen.rows(0, width).nth(row).unwrap_or_default();
+            if screen.row_wrapped(row as u16) {
+                text.push_str(&line);
+            } else {
+                text.push_str(line.trim_end());
+                if n < to {
+                    text.push('\n');
+                }
+            }
+        }
+        screen.set_scrollback(start);
+        text
+    }
+
+    /// The word under a cell of the screen as it shows now: a link, a
+    /// path, whatever stands between spaces and brackets.
+    pub fn word_at(&self, row: u16, col: u16) -> String {
+        let screen = self.parser.screen();
+        let line: Vec<char> = screen.rows(0, screen.size().1.get()).nth(row as usize).unwrap_or_default().chars().collect();
+        let col = col as usize;
+        if col >= line.len() || line[col].is_whitespace() {
+            return String::new();
+        }
+        let stop = |c: &char| c.is_whitespace() || "\"'`<>()[]{}│".contains(*c);
+        let start = line[..col].iter().rposition(stop).map_or(0, |i| i + 1);
+        let end = line[col..].iter().position(stop).map_or(line.len(), |i| col + i);
+        line[start..end].iter().collect::<String>().trim_end_matches(['.', ',', ';', ':']).to_string()
+    }
+
     /// Rows on screen.
     pub fn rows(&self) -> u16 {
         self.parser.screen().size().0.get()
