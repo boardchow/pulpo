@@ -111,7 +111,9 @@ This is the good part.
 
 `n s` makes a task session: a full copy of your repo, in about a second. It's an APFS clone, so it takes no extra disk until files change. Kinda magic.
 
-It has everything: your uncommitted work, your `.env`, your installed dependencies.
+It has your `.env` and your installed dependencies, and it starts from your last commit: uncommitted work stays where it was. Want to keep going on it instead? Make a branch right there.
+
+Each session is its own git repo on the same branch main was on. Make a branch in it for the task. That branch lives only in that session until you push it, and the other sessions catch up with `git fetch` once it's merged.
 
 Start `claude` in it. Give it a job. Do it again.
 
@@ -119,7 +121,7 @@ One Claude on the bug. One on the feature. One on the tests. None of them can me
 
 If you use Docker Compose, each session also gets its own containers, its own ports and its own copy of the database. No more port 3000 fights lol. (The setup for each repo lives in `~/.config/pulpo/repos/<repo>.toml` if you wanna tweak it.)
 
-Pulpo never runs git for you. The agents do the branches and commits, you just review.
+Besides starting a session clean, Pulpo never runs git for you. The agents do the branches and commits, you just review.
 
 Done with a task? `x x` deletes the session. It tells you first if you'd lose anything (uncommitted changes, unpushed commits).
 

@@ -55,6 +55,8 @@ pub enum Msg {
     ServerGone,
     Search(usize, Vec<search::Hit>),
     Repos(Vec<String>),
+    /// A session's removal ended: its copy, its log, and whether it worked.
+    Removed(PathBuf, PathBuf, bool),
 }
 
 fn main() -> Result<()> {
@@ -155,6 +157,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
                 Msg::ServerGone => app.on_server_gone(),
                 Msg::Search(generation, hits) => app.on_search(generation, hits),
                 Msg::Repos(repos) => app.on_repos(repos),
+                Msg::Removed(root, log, ok) => app.on_removed(root, log, ok),
             }
         }
         if app.fs_pending() && last_fs_refresh.elapsed() >= FS_THROTTLE {

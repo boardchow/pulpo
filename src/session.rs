@@ -4,8 +4,8 @@
 //!
 //! The copy is an APFS clone of the whole checkout (`clonefile`): instant,
 //! sharing disk blocks until they change, and exact, from `.env` and hand
-//! made settings to installed dependencies. Pulpo runs no git command for
-//! it. Docker gets its own Compose project and its own value for each port
+//! made settings to installed dependencies. Its setup then drops what main
+//! hadn't committed, so it starts from main's last commit. Docker gets its own Compose project and its own value for each port
 //! variable of the compose file, in the environment of the session's
 //! terminals. Setting it up (main's images, a copy of main's database) and
 //! removing it run as scripts in a terminal, where you see them work.
@@ -418,6 +418,10 @@ pub fn setup_script(session: &Session, config: &Config, warnings: &[String]) -> 
     for warning in warnings {
         s += &format!("echo {}\n", quote(&format!("  ! {warning}")));
     }
+    // From its last commit: main's uncommitted work stays in main. Ignored
+    // files (.env, dependencies) stay in the copy.
+    s += "if git rev-parse -q --verify HEAD >/dev/null && [ -n \"$(git status --porcelain)\" ]; then\n";
+    s += "step \"Leaving main's uncommitted changes in main\"\ngit reset -q --hard\ngit clean -qfd\nfi\n";
     if compose_file(&session.root).is_some() {
         if !session.images.is_empty() {
             s += "step \"Reusing main's images\"\n";
@@ -465,11 +469,12 @@ pub fn setup_script(session: &Session, config: &Config, warnings: &[String]) -> 
 
 /// The removal: its teardown, its containers and volumes (its database),
 /// the image tags made for it, then the copy. Nothing is deleted if Docker
-/// can't stop it. `exe` is Pulpo, to take it off the registry at the end.
+/// can't stop it, and it exits with an error. `exe` is Pulpo, to take it
+/// off the registry at the end.
 pub fn teardown_script(session: &Session, config: &Config, exe: &Path) -> String {
     // Only ever a copy Pulpo made: `<repo>.sessions/<name>`.
     if !is_copy(&session.root) {
-        return format!("echo {}\n", quote(&format!("Not removing {}: not a session copy", session.root.display())));
+        return format!("echo {}\nexit 1\n", quote(&format!("Not removing {}: not a session copy", session.root.display())));
     }
     let root = quote(&session.root.to_string_lossy());
     let mut s = format!("remove() (\nset -e\ncd {root}\n");
@@ -484,7 +489,7 @@ pub fn teardown_script(session: &Session, config: &Config, exe: &Path) -> String
     }
     s += &format!("cd / && rm -rf {root}\n{} forget-session {root}\n)\n", quote(&exe.to_string_lossy()));
     s += &format!(
-        "remove\nif [ $? = 0 ]; then echo {}; else printf '\\n\\033[31mStopped before deleting anything that was left (see above).\\033[0m\\n'; exec \"${{SHELL:-/bin/zsh}}\" -l; fi\n",
+        "remove\nif [ $? = 0 ]; then echo {}; else echo 'Stopped before deleting anything that was left (see above).'; exit 1; fi\n",
         quote(&format!("Session {} removed.", session.name))
     );
     s
@@ -604,6 +609,51 @@ mod tests {
         run("true");
         assert!(!root.exists());
         let _ = fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn setup_starts_from_the_last_commit() {
+        let t = std::env::temp_dir().join(format!("pulpo-setup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        fs::create_dir_all(t.join("main")).unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .current_dir(t.join("main"))
+                .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        fs::write(t.join("main/.gitignore"), ".env\n").unwrap();
+        fs::write(t.join("main/a.txt"), "committed").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "a"]);
+        fs::write(t.join("main/a.txt"), "edited").unwrap();
+        fs::write(t.join("main/new.txt"), "new").unwrap();
+        fs::write(t.join("main/.env"), "SECRET=1").unwrap();
+        clone(&t.join("main"), &t.join("copy")).unwrap();
+        let session = Session {
+            name: "c".into(),
+            repo: t.join("main"),
+            root: t.join("copy"),
+            project: String::new(),
+            main_project: String::new(),
+            ports: vec![],
+            images: vec![],
+        };
+        let script = setup_script(&session, &Config::default(), &[]);
+        std::process::Command::new("sh").args(["-c", &script]).env("SHELL", "/usr/bin/true").output().unwrap();
+        assert_eq!(fs::read_to_string(t.join("copy/a.txt")).unwrap(), "committed");
+        assert!(!t.join("copy/new.txt").exists());
+        assert!(t.join("copy/.env").exists());
+        // Main keeps its work.
+        assert_eq!(fs::read_to_string(t.join("main/a.txt")).unwrap(), "edited");
+        assert!(t.join("main/new.txt").exists());
+        fs::remove_dir_all(&t).unwrap();
     }
 
     #[test]
