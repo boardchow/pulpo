@@ -1,15 +1,16 @@
 use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::agents::State;
 use crate::app::{App, Focus};
 use crate::git::Change;
 use crate::keymap::{Action, Group, TABS};
+use crate::pane::Pane;
 use crate::search::Mode;
 use crate::tree::Row;
 use crate::workspace::GraphItem;
@@ -17,10 +18,16 @@ use crate::theme::{ACCENT, BG, BLUE, BORDER, DIM, EDITOR_BG, FG, GREEN, HOVER, M
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Block::new().style(Style::new().fg(FG).bg(BG)), frame.area());
-    let [main, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
-    let width = (main.width * 27 / 100).clamp(28, 42).min(main.width);
+    let [top, main, footer] = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
+    let width = if app.sidebar_hidden { 0 } else { (main.width * 27 / 100).clamp(28, 42).min(main.width) };
     let [sidebar, right] = Layout::horizontal([Constraint::Length(width), Constraint::Fill(1)]).areas(main);
-    draw_sidebar(frame, app, sidebar);
+    draw_topbar(frame, app, top);
+    if width > 0 {
+        draw_sidebar(frame, app, sidebar);
+    } else {
+        let areas = &mut app.areas;
+        (areas.workspaces, areas.sessions, areas.changes, areas.graph) = Default::default();
+    }
     draw_right(frame, app, right);
     draw_footer(frame, app, footer);
     draw_search(frame, app);
@@ -36,73 +43,131 @@ const PULPO: [&str; 3] = [
     "𜴁𜴄🮂𜴁𜴄🮂𜴁𜴄",
 ];
 
-/// The pulpo, and beside it the version, what the terminals are doing and
-/// where the current workspace lives.
-fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    let art_width = PULPO[0].chars().count() as u16;
-    let [art, text] = Layout::horizontal([Constraint::Length(art_width), Constraint::Fill(1)]).spacing(2).areas(area);
-    let lines: Vec<Line> = PULPO.iter().map(|row| Line::from(*row)).collect();
-    frame.render_widget(Paragraph::new(lines).fg(BLUE), art);
+/// The pulpo, its tentacles moving while something works.
+fn pulpo(wiggle: bool) -> Vec<String> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let mut rows: Vec<String> = PULPO.iter().map(|row| row.to_string()).collect();
+    if wiggle && (now.as_millis() / 300) % 2 == 1 {
+        let mut legs: Vec<char> = rows[2].chars().collect();
+        legs.rotate_right(1);
+        rows[2] = legs.into_iter().collect();
+    }
+    rows
+}
 
+/// One row: where you are, the session's tabs (each with how its
+/// terminals are doing), what all terminals are doing, and the modes on.
+fn draw_topbar(frame: &mut Frame, app: &mut App, area: Rect) {
+    let ws = app.ws();
+    let mut spans = vec![Span::from(" pulpo ").fg(BLUE).bold(), Span::from(format!(" {}", ws.name)).fg(MUTED)];
+    if app.sessions().first() != Some(&app.current) {
+        spans.push(Span::from(" › ").fg(DIM));
+        spans.push(Span::from(app.session_name(app.current).to_string()).fg(FG).bold());
+    }
+    if let Some(branch) = &ws.status.branch {
+        spans.push(Span::from(format!("  {branch}")).fg(DIM));
+    }
+    spans.push(Span::from("   "));
+
+    // The tabs, numbered as ⌥1-9 reaches them.
+    let mut x = area.x + spans.iter().map(Span::width).sum::<usize>() as u16;
+    let mut tabs = Vec::new();
+    if let Some(list) = app.tabs() {
+        for (n, tab) in list.list.iter().enumerate() {
+            let on = n == list.active;
+            let terms: Vec<&crate::term::Term> = tab.terms().into_iter().filter_map(|id| app.terms.iter().find(|t| t.id == id)).collect();
+            let state = terms.iter().map(|t| app.term_state(t)).max_by_key(|s| s.urgency()).unwrap_or(State::Idle);
+            let (icon, color) = state_icon(state);
+            let named = tab.term.and_then(|id| terms.iter().find(|t| t.id == id)).or(terms.first()).map(|t| t.label().to_string());
+            let label = tab.name.clone().or(named).unwrap_or_else(|| "file".into());
+            let more = tab.root.panes().len().saturating_sub(1);
+            let more = if more > 0 { format!(" +{more}") } else { String::new() };
+            let bg = if on { SELECTION } else { BG };
+            let name = Span::from(format!(" {label}")).fg(if on { FG } else { MUTED }).bg(bg);
+            let pieces = [
+                Span::from(format!(" {} ", n + 1)).fg(MUTED).bg(bg),
+                Span::from(icon).fg(color).bg(bg).bold(),
+                if on { name.bold() } else { name },
+                Span::from(format!("{more} ")).fg(DIM).bg(bg),
+            ];
+            let width = pieces.iter().map(Span::width).sum::<usize>() as u16;
+            tabs.push((n, Rect { x, y: area.y, width, height: 1 }));
+            x += width + 1;
+            spans.extend(pieces);
+            spans.push(Span::from(" "));
+        }
+    }
+    app.areas.tabs = tabs;
+
+    // On the right: who has something to read, who works, and the modes.
     let states: Vec<State> = app.terms.iter().map(|term| app.term_state(term)).collect();
     let count = |state: State| states.iter().filter(|&&s| s == state).count();
-    let busy: Vec<String> = [(count(State::Waiting), "to read"), (count(State::Running), "working")]
-        .into_iter()
-        .filter(|&(n, _)| n > 0)
-        .map(|(n, label)| format!("{n} {label}"))
-        .collect();
-    let activity = match states.len() {
-        _ if !busy.is_empty() => busy.join(" · "),
-        0 => "no terminals yet".to_string(),
-        1 => "1 terminal, all quiet".to_string(),
-        n => format!("{n} terminals, all quiet"),
-    };
+    let (waiting, working) = (count(State::Waiting) + count(State::Done), count(State::Running));
+    let mut right = Vec::new();
+    if waiting > 0 {
+        right.extend([Span::from(format!("◆ {waiting} to read")).fg(MAGENTA).bold(), Span::from("  ")]);
+    }
+    if working > 0 {
+        right.extend([Span::from(format!("{} {working} working", state_icon(State::Running).0)).fg(YELLOW), Span::from("  ")]);
+    }
+    if waiting + working == 0 {
+        let quiet = match states.len() {
+            0 => "no terminals".to_string(),
+            1 => "1 terminal, quiet".to_string(),
+            n => format!("{n} terminals, quiet"),
+        };
+        right.extend([Span::from(quiet).fg(DIM), Span::from("  ")]);
+    }
+    let badge = |text: &str| Span::from(format!(" {text} ")).fg(BG).bg(YELLOW).bold();
+    if app.prefix.is_some() {
+        right.extend([badge("PREFIX"), Span::from(" ")]);
+    }
+    if app.zoomed_pane().is_some() {
+        right.extend([badge("ZOOM"), Span::from(" ")]);
+    }
+    let right = Line::from(right);
+    let width = (right.width() as u16).min(area.width);
+    let [left_area, right_area] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(width)]).areas(area);
+    frame.render_widget(Line::from(spans), left_area);
+    frame.render_widget(right, right_area);
+}
 
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let root = &app.ws().root;
-    let path = match root.strip_prefix(&home) {
-        Ok(rest) => format!("~/{}", rest.display()),
-        Err(_) => root.display().to_string(),
-    };
-    // Too long for the sidebar: keep the end, which names the workspace.
-    let width = text.width as usize;
-    let length = path.chars().count();
-    let path = if length > width && width > 0 { format!("…{}", path.chars().skip(length - width + 1).collect::<String>()) } else { path };
-
-    let lines = vec![
-        Line::from(vec![Span::from("Pulpo").fg(FG).bold(), Span::from(concat!(" v", env!("CARGO_PKG_VERSION"))).fg(MUTED)]),
-        // Colored only when a terminal waits for you or works.
-        Line::from(activity).fg(match (count(State::Waiting), count(State::Running)) {
-            (0, 0) => MUTED,
-            (0, _) => YELLOW,
-            _ => MAGENTA,
-        }),
-        Line::from(path).fg(MUTED),
-    ];
-    frame.render_widget(Paragraph::new(lines), text);
+/// A list in the sidebar: its heading (and the key that goes there), then
+/// its rows.
+fn section(frame: &mut Frame, area: Rect, title: &str, key: &str, focused: bool, list: List, state: &mut ListState) {
+    let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    let heading = Line::from(vec![
+        Span::from(format!(" {title}")).fg(if focused { BLUE } else { MUTED }).bold(),
+        Span::from(format!("  {key}")).fg(DIM),
+    ]);
+    frame.render_widget(heading, head);
+    frame.render_stateful_widget(list.highlight_style(highlight(focused)), body, state);
 }
 
 fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
-    let workspaces_height = app.repos().len().clamp(1, 8) as u16 + 2;
-    let sessions_height = app.sessions().len().clamp(1, 6) as u16 + 2;
+    let in_sidebar = matches!(app.focus, Focus::Workspaces | Focus::Sessions | Focus::Changes | Focus::Graph);
+    let outer = Block::bordered().border_type(BorderType::Rounded).border_style(border(in_sidebar)).style(Style::new().bg(BG));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    let workspaces_height = app.repos().len().clamp(1, 8) as u16 + 1;
+    let sessions_height = app.sessions().len().clamp(1, 6) as u16 + 1;
     // The last few commits; the rest scrolls inside.
-    let graph_height = app.ws().graph_len().clamp(1, 10) as u16 + 2;
-    // Changes take whatever height is left. The files are behind /.
-    let [mascot, workspaces, sessions, changes, graph] = Layout::vertical([
-        // A blank line above and below the pulpo.
-        Constraint::Length(PULPO.len() as u16 + 2),
+    let graph_height = app.ws().graph_len().clamp(1, 10) as u16 + 1;
+    // Changes take whatever height is left. The files are behind f.
+    let [workspaces, _, sessions, _, changes, _, graph] = Layout::vertical([
         Constraint::Length(workspaces_height),
+        Constraint::Length(1),
         Constraint::Length(sessions_height),
-        Constraint::Min(3),
+        Constraint::Length(1),
+        Constraint::Min(2),
+        Constraint::Length(1),
         Constraint::Length(graph_height),
     ])
-    .areas(area);
+    .areas(inner);
     app.areas.workspaces = workspaces;
     app.areas.sessions = sessions;
     app.areas.changes = changes;
     app.areas.graph = graph;
-
-    draw_header(frame, app, mascot.inner(Margin::new(1, 1)));
 
     // Workspaces: the repositories, each with how its sessions are doing.
     let current_repo = app.ws().repo.clone();
@@ -125,8 +190,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let focused = app.focus == Focus::Workspaces;
-    let list = List::new(items).block(block("Workspaces", focused)).highlight_style(highlight(focused));
-    frame.render_stateful_widget(list, workspaces, &mut app.workspaces_state);
+    section(frame, workspaces, "WORKSPACES", "w", focused, List::new(items), &mut app.workspaces_state);
 
     // Sessions of this repository: the checkout itself, then its worktrees.
     // The current one holds the terminals, files and changes on screen.
@@ -167,8 +231,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             ListItem::new(Line::from(spans))
         })
         .collect();
-    let list = List::new(items).block(block("Sessions", focused)).highlight_style(highlight(focused));
-    frame.render_stateful_widget(list, sessions, &mut app.sessions_state);
+    section(frame, sessions, "SESSIONS", "s", focused, List::new(items), &mut app.sessions_state);
 
     let current = app.current;
     let ws = &mut app.workspaces[current];
@@ -186,9 +249,8 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let focused = app.focus == Focus::Changes;
-    let title = format!("Changes {}", ws.status.changes.len());
-    let list = List::new(items).block(block(&title, focused)).highlight_style(highlight(focused));
-    frame.render_stateful_widget(list, changes, &mut ws.changes_state);
+    let title = format!("CHANGES {}", ws.status.changes.len());
+    section(frame, changes, &title, "c", focused, List::new(items), &mut ws.changes_state);
 
     // History of the local branches, each lane of the graph in its own color,
     // and the files of the commit unfolded.
@@ -230,8 +292,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let focused = app.focus == Focus::Graph;
-    let list = List::new(items).block(block("Graph", focused)).highlight_style(highlight(focused));
-    frame.render_stateful_widget(list, graph, &mut ws.graph_state);
+    section(frame, graph, "GRAPH", "g", focused, List::new(items), &mut ws.graph_state);
 }
 
 /// Rows of a file tree, colored by git status like VS Code. Among matches,
@@ -293,88 +354,83 @@ fn state_icon(state: State) -> (&'static str, Color) {
 /// Colors of the graph's lanes, left to right, like `git log --graph --color`.
 const LANES: [Color; 5] = [BLUE, MAGENTA, GREEN, YELLOW, SKY];
 
-/// The current terminal on top, the file viewer below when something is open.
+/// The tab on screen: its panes as split, or the zoomed one alone.
 fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
     app.areas.editor = Rect::default();
-    // A file being edited takes the right side, unless you go into a terminal.
-    if app.editor.is_some() && app.focus != Focus::Terminal {
-        app.areas.terminal = Rect::default();
-        app.areas.viewer = Rect::default();
-        app.areas.ruler = Rect::default();
-        draw_editor(frame, app, area);
-        return;
-    }
-    if app.viewer.expanded && app.viewer.is_open() {
-        // Terminals keep running, unseen and at their current size.
-        app.areas.terminal = Rect::default();
-        draw_viewer(frame, app, area);
-        return;
-    }
-    // Zoomed: the terminal alone, the viewer stays open but hidden.
-    let viewer_shown = app.viewer.is_open() && !(app.zoomed && app.active.is_some());
-    let [top, bottom] = Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(area);
-    let term_area = if viewer_shown { top } else { area };
-    let inner = Block::bordered().inner(term_area);
-    app.resize_terms(inner.height, inner.width);
-
-    app.areas.terminal = Rect::default();
     app.areas.viewer = Rect::default();
     app.areas.ruler = Rect::default();
-    match (app.active.is_none(), viewer_shown) {
-        (true, true) => draw_viewer(frame, app, area),
-        (_, true) => {
-            draw_terminal(frame, app, top);
-            draw_viewer(frame, app, bottom);
+    app.areas.panes.clear();
+    app.set_term_size(area.height.saturating_sub(2), area.width.saturating_sub(2));
+    let Some(tab) = app.tab() else {
+        draw_empty(frame, app, area);
+        return;
+    };
+    let panes = match app.zoomed_pane() {
+        Some(pane) => vec![(pane, area)],
+        None => tab.root.layout(area),
+    };
+    for &(pane, rect) in &panes {
+        match pane {
+            Pane::Term(id) => draw_term_pane(frame, app, id, rect),
+            Pane::File if app.editor.is_some() => draw_editor(frame, app, rect),
+            Pane::File => draw_viewer(frame, app, rect),
         }
-        (_, false) => draw_terminal(frame, app, area),
+    }
+    app.areas.panes = panes;
+}
+
+/// A terminal in its pane, sized to it, its state in the title.
+fn draw_term_pane(frame: &mut Frame, app: &mut App, id: usize, area: Rect) {
+    let focused = app.focus == Focus::Terminal && app.active == Some(id);
+    let Some(term) = app.terms.iter().find(|t| t.id == id) else { return };
+    let state = app.term_state(term);
+    let (icon, color) = state_icon(state);
+    let label = Span::from(term.label().to_string());
+    let mut title = vec![Span::from(" "), Span::from(format!("{icon} ")).fg(color).bold(), if focused { label.fg(FG).bold() } else { label.fg(MUTED) }];
+    if matches!(state, State::Waiting | State::Done) {
+        title.push(Span::from(" to read").fg(MAGENTA));
+    }
+    title.push(Span::from(" "));
+    let block = Block::bordered().border_type(BorderType::Rounded).title(Line::from(title)).border_style(border(focused)).style(Style::new().bg(BG));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let Some(term) = app.terms.iter_mut().find(|t| t.id == id) else { return };
+    term.resize(inner.height.max(1), inner.width.max(1));
+    if let Some(cursor) = term.render(inner, frame.buffer_mut())
+        && focused
+    {
+        frame.set_cursor_position(cursor);
     }
 }
 
-fn draw_terminal(frame: &mut Frame, app: &mut App, area: Rect) {
-    let focused = app.focus == Focus::Terminal;
-    // The session's terminals as tabs: the one on screen stands out.
-    let mut spans = Vec::new();
-    for (n, i) in app.session_terms().into_iter().enumerate() {
-        let term = &app.terms[i];
-        let (icon, color) = state_icon(app.term_state(term));
-        let shown = app.active == Some(term.id);
-        if n > 0 {
-            spans.push(Span::from(" ·").fg(DIM));
-        }
-        spans.push(Span::from(format!(" {} ", n + 1)).fg(MUTED));
-        spans.push(Span::from(format!("{icon} ")).fg(color).bold());
-        let label = Span::from(term.label().to_string());
-        spans.push(if shown { label.fg(FG).bold() } else { label.fg(MUTED) });
-    }
-    let title = if spans.is_empty() {
-        Line::from(" Terminal ").fg(MUTED)
-    } else {
-        spans.push(Span::from(format!(" · {} ", app.session_name(app.current))).fg(DIM));
-        Line::from(spans)
-    };
-    let block = Block::bordered().title(title).border_style(border(focused)).style(Style::new().bg(BG));
+/// No tab in this session: the pulpo, and how to start.
+fn draw_empty(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border(false)).style(Style::new().bg(BG));
     let inner = block.inner(area);
-    app.areas.terminal = area;
     frame.render_widget(block, area);
-
-    match app.term() {
-        Some(term) => {
-            if let Some(cursor) = term.render(inner, frame.buffer_mut())
-                && focused
-            {
-                frame.set_cursor_position(cursor);
-            }
+    let working = app.terms.iter().any(|t| app.term_state(t) == State::Running);
+    let keymap = &app.keymap;
+    let key = |k: String, text: &str| Line::from(vec![Span::from(format!("{k:<10}")).fg(BLUE).bold(), Span::from(text.to_string()).fg(MUTED)]);
+    let mut lines: Vec<Line> = pulpo(working).into_iter().map(|row| Line::from(row).fg(BLUE)).collect();
+    lines.extend([
+        Line::default(),
+        Line::from("No terminals in this session").bold(),
+        Line::default(),
+        key("t".into(), "a shell here, then type claude"),
+        key(keymap.hint(&[Action::NewTab]), "the same, from anywhere"),
+        key(keymap.hint(&[Action::Help]), "every key"),
+    ]);
+    let height = lines.len() as u16;
+    let width = 44.min(inner.width);
+    let spot = Rect { x: inner.x + inner.width.saturating_sub(width) / 2, y: inner.y + inner.height.saturating_sub(height) / 3, width, height: height.min(inner.height) };
+    // The pulpo and the heading centered, the keys under them.
+    for (i, line) in lines.into_iter().enumerate() {
+        let row = Rect { y: spot.y + i as u16, height: 1, ..spot };
+        if row.y >= inner.bottom() {
+            break;
         }
-        None => {
-            let key = |k: &str, text: &str| Line::from(vec![Span::from(format!("  {k:<12}")).fg(BLUE).bold(), Span::from(text.to_string())]);
-            let hint = vec![
-                Line::default(),
-                Line::from("  No terminals in this session.").bold(),
-                Line::default(),
-                key("t", "open a shell in it (then type claude for an agent)"),
-            ];
-            frame.render_widget(Paragraph::new(hint), inner);
-        }
+        let line = if i < 5 { line.centered() } else { line };
+        frame.render_widget(line, row);
     }
 }
 
@@ -473,6 +529,18 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(Line::from(spans), area);
         return;
     }
+    if let Some(name) = &app.renaming {
+        let mut spans = footer_spans("RENAME TAB", ACCENT, &[("⏎", "rename"), ("esc", "cancel")], &[]);
+        let input = vec![
+            Span::from("› ").fg(BLUE).bold(),
+            Span::from(name.clone()),
+            Span::from("█").fg(BLUE),
+            Span::from("   empty: named after its terminal   ").fg(MUTED),
+        ];
+        spans.splice(2..2, input);
+        frame.render_widget(Line::from(spans), area);
+        return;
+    }
     if let Some(message) = &app.message {
         frame.render_widget(Line::from(format!(" {message}")).fg(YELLOW).bold(), area);
         return;
@@ -511,25 +579,20 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(Line::from(spans), area);
         return;
     }
-    // In a terminal, the keys come from the keymap; the viewer's only
-    // when there is one to hide or show.
-    let zoom = match (app.viewer.is_open(), app.zoomed) {
-        (true, true) => Some("show viewer"),
-        (true, false) => Some("hide viewer"),
-        _ => None,
-    };
+    // In a terminal, the keys come from the keymap.
+    let focus = [Action::FocusLeft, Action::FocusUp, Action::FocusRight, Action::FocusDown];
     let terminal_keys: Vec<(String, &str)> = [
-        Some((keymap.prefix_label(), "prefix")),
-        Some((keymap.hint(&[Action::FocusLeft, Action::FocusRight]), "panels")),
-        Some((keymap.hint(&TABS), "terminals")),
-        Some((keymap.hint(&[Action::NewTab]), "new shell")),
-        Some((keymap.hint(&[Action::ClosePane]), "close")),
-        zoom.map(|label| (keymap.hint(&[Action::Zoom]), label)),
-        Some(("shift-⏎".to_string(), "new line")),
-        Some((keymap.hint(&[Action::Help]), "keys")),
+        (keymap.prefix_label(), "prefix"),
+        (keymap.hint(&focus), "panes"),
+        (keymap.hint(&TABS), "tabs"),
+        (keymap.hint(&[Action::SplitBeside, Action::SplitBelow]), "split"),
+        (keymap.hint(&[Action::NewTab]), "new tab"),
+        (keymap.hint(&[Action::ClosePane]), "close"),
+        (keymap.hint(&[Action::Zoom]), if app.zoomed { "unzoom" } else { "zoom" }),
+        ("shift-⏎".to_string(), "new line"),
+        (keymap.hint(&[Action::Help]), "keys"),
     ]
     .into_iter()
-    .flatten()
     .filter(|(key, _)| !key.trim().is_empty())
     .collect();
     let terminal_keys: Vec<(&str, &str)> = terminal_keys.iter().map(|(key, label)| (key.as_str(), *label)).collect();
@@ -878,6 +941,7 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
 
 fn block(title: &str, focused: bool) -> Block<'static> {
     Block::bordered()
+        .border_type(BorderType::Rounded)
         .title(format!(" {title} "))
         .title_style(Style::new().fg(if focused { FG } else { MUTED }).bold())
         .border_style(border(focused))

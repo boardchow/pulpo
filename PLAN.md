@@ -17,6 +17,7 @@ sessions, read only); task sessions are copies made without git.
 pulpo (one binary)
 ├── main.rs     terminal setup + event loop (one mpsc channel for everything)
 ├── app.rs      state: focus, selection, keys, mouse, terminal tabs
+├── pane.rs     tabs and panes: a tree of splits per tab, neighbors, resizing, saved by terminal tag
 ├── keymap.rs   the prefix (ctrl-space, ctrl-b) and its keys, the chords without it; footer, prefix panel and help read it
 ├── doctor.rs   `pulpo doctor`: whether ctrl-space and Ghostty's Option key reach Pulpo, and the hooks
 ├── workspace.rs  repo registry + per-repository state (status, tree)
@@ -56,10 +57,24 @@ checkouts (Sessions): `main` and its git worktrees, each a `Workspace`.
 The current session decides what the right side and the panels show: its
 terminals, files, changes and graph. A terminal belongs to the checkout it
 was started in (`info.cwd`), so terminals that kept running fall back into
-their session on their own; one started outside every checkout shows in
-all of them. The app keeps the active terminal by id, remembered per
-session, and the session last used in each repository. A session's and a
-repository's mark is the most urgent state of their terminals.
+their session on their own; one started outside every checkout goes to
+the session on screen. The app keeps the active terminal by id, remembered
+per session, and the session last used in each repository. A session's and
+a repository's mark is the most urgent state of their terminals.
+
+### Tabs and panes
+
+Each session has tabs; each tab is a tree of splits in two (`pane.rs`)
+whose leaves are terminals and at most one file pane: the viewer, or the
+editor in its place. `sync_tabs` keeps it true on every tick: a terminal
+that appears gets a tab of its own in its session (or the pane it was
+split from asked for it), one that's gone leaves its half to the other,
+and while a file is open the file pane sits in the tab on screen, under
+the terminal you were in. The terminal keys go to is the one last in focus
+in the tab on screen. Each terminal is sized to its pane. The tabs are
+written to `layout.json` by terminal tag (the file pane isn't kept), and
+come back once the server has shown its terminals, after reopened ones
+took their old tags' places.
 
 ### Agent status
 
@@ -111,7 +126,8 @@ own version of the file.
 - [ ] Terminal: links, scrollback search. (Clipboard, OSC 52: done.)
 - [x] Notification (OSC 9 to Ghostty) when an agent waits for input or finishes, at most one per terminal every 10 s.
 - [x] One key grammar (Omarchy's tmux one): a prefix that works inside terminals, chords without it, a prefix panel, a help you can filter, `keys.toml`. The old ctrl keys inside terminals go back to the programs next release.
-- [ ] Tabs and panes: each session's tabs, each a split of terminals, files and the editor (the UI plan's step 2).
+- [x] Tabs and panes: each session's tabs, each a tree of splits of terminals and the file pane, kept across restarts. A top bar (where you are, the tabs, who waits and works, PREFIX and ZOOM) and the sidebar in one box.
+- [ ] The rest of the UI plan: a picker for every agent, themes that follow Ghostty, layouts and Swarm, scrollback search.
 - [ ] Codex support.
 - [ ] Read the theme from the VS Code extension instead of copying it.
 

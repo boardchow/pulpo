@@ -15,6 +15,7 @@ use crate::editor::Editor;
 use crate::git;
 use crate::keymap::{Action, Key, Keymap};
 use crate::layout::{self, Layout};
+use crate::pane::{self, Dir, Node, Pane, SavedTab, Tab};
 use crate::procs;
 use crate::proto::{PROTOCOL, ToClient, ToServer};
 use crate::search::{Mode, Search};
@@ -60,19 +61,32 @@ pub struct Create {
 }
 
 /// Where each panel was drawn, for mouse hit-testing.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 pub struct Areas {
     pub workspaces: Rect,
     pub sessions: Rect,
     pub changes: Rect,
     pub graph: Rect,
-    pub terminal: Rect,
+    /// The panes of the tab on screen, and the tabs in the top bar.
+    pub panes: Vec<(Pane, Rect)>,
+    pub tabs: Vec<(usize, Rect)>,
     pub viewer: Rect,
     /// The editor's text (inside its border).
     pub editor: Rect,
     /// The viewer's overview ruler.
     pub ruler: Rect,
 }
+
+/// A session's tabs, and the one on screen.
+#[derive(Default)]
+pub struct Tabs {
+    pub list: Vec<Tab>,
+    pub active: usize,
+}
+
+/// A terminal asked of the server: whether to go into it, and the pane to
+/// split for it (and whether beside), else it gets a tab of its own.
+type Spawning = (bool, Option<(Pane, bool)>);
 
 pub struct App {
     pub workspaces: Vec<Workspace>,
@@ -86,14 +100,20 @@ pub struct App {
     pub focus: Focus,
     /// The sidebar list to return to when leaving the terminal or viewer.
     sidebar_focus: Focus,
-    /// The terminal, viewer or editor to go back to from the sidebar.
-    right_focus: Focus,
     pub agents: Agents,
     /// Every terminal, of every session; each belongs to the checkout it
     /// was started in.
     pub terms: Vec<Term>,
-    /// The id of the terminal on screen, one of the current session's.
+    /// The terminal the keys go to: the one last in focus in the tab on
+    /// screen.
     pub active: Option<usize>,
+    /// Each session's tabs (`pane.rs`), by its folder.
+    pub tabs: HashMap<PathBuf, Tabs>,
+    /// The tabs layout.json had are back; until then it keeps them.
+    tabs_restored: bool,
+    /// Naming the tab on screen.
+    pub renaming: Option<String>,
+    pub sidebar_hidden: bool,
     /// The terminal (its tag) last on screen in each session, and the
     /// session last used in each repository.
     last_term: HashMap<PathBuf, String>,
@@ -106,9 +126,9 @@ pub struct App {
     reopening: HashMap<u64, String>,
     /// The server that runs the terminals.
     link: Link,
-    /// Terminals asked of the server and not shown yet: whether to go into
-    /// each when it comes. Its token stands in for its id until then.
-    spawning: HashMap<u64, bool>,
+    /// Terminals asked of the server and not shown yet, and where they go.
+    /// Its token stands in for its id until then.
+    spawning: HashMap<u64, Spawning>,
     next_token: u64,
     /// Upgrading the server was asked once already.
     upgrade_asked: bool,
@@ -187,10 +207,13 @@ impl App {
             scratch,
             focus: Focus::Sessions,
             sidebar_focus: Focus::Sessions,
-            right_focus: Focus::Terminal,
             agents,
             terms: Vec::new(),
             active: None,
+            tabs: HashMap::new(),
+            tabs_restored: false,
+            renaming: None,
+            sidebar_hidden: false,
             last_term: layout.terminals.clone().into_iter().collect(),
             last_session: layout.sessions.clone().into_iter().collect(),
             saved: layout.clone(),
@@ -468,7 +491,7 @@ impl App {
         // An isolated session's terminals get its Compose project and ports.
         let env = self.isolated.iter().find(|s| s.root == cwd).map(session::env).unwrap_or_default();
         self.link.send(&ToServer::Spawn { token, program: program.into(), args: args.to_vec(), cwd, rows, cols, env });
-        self.spawning.insert(token, focus);
+        self.spawning.insert(token, (focus, None));
         token
     }
 
@@ -498,10 +521,24 @@ impl App {
             .iter()
             .map(|t| layout::Open { cwd: t.info.cwd.clone(), tag: t.info.tag.clone(), claude: self.agents.session_for_tab(&t.info.tag).map(String::from) })
             .collect();
+        let tabs = if self.tabs_restored {
+            let tag = |id: usize| self.terms.iter().find(|t| t.id == id).map(|t| t.info.tag.clone());
+            self.tabs
+                .iter()
+                .map(|(root, tabs)| {
+                    let saved = tabs.list.iter().filter_map(|tab| Some(SavedTab { root: tab.root.save(&tag)?, name: tab.name.clone() }));
+                    (root.clone(), saved.collect::<Vec<_>>())
+                })
+                .filter(|(_, saved)| !saved.is_empty())
+                .collect()
+        } else {
+            self.saved.tabs.clone()
+        };
         Layout {
             current: Some(self.ws().root.clone()),
             sessions: self.last_session.clone().into_iter().collect(),
             terminals: self.last_term.clone().into_iter().collect(),
+            tabs,
             open,
         }
     }
@@ -520,16 +557,21 @@ impl App {
                 // Brought back after a restart: it stands for the old one, and
                 // the session shows the one you had on screen.
                 if let Some(old) = token.and_then(|t| self.reopening.remove(&t)) {
+                    let new = self.terms[i].info.tag.clone();
                     for tag in self.last_term.values_mut().filter(|tag| **tag == old) {
-                        *tag = self.terms[i].info.tag.clone();
+                        *tag = new.clone();
+                    }
+                    for saved in self.saved.tabs.values_mut().flatten() {
+                        saved.root.rename(&old, &new);
                     }
                     self.spawning.remove(&token.unwrap_or_default());
-                    if session.is_none_or(|s| s == self.current) {
+                    // All back: their tabs too.
+                    if self.reopening.is_empty() || session.is_none_or(|s| s == self.current) {
                         self.restore_term();
                     }
                     return;
                 }
-                let Some(focus) = token.and_then(|t| self.spawning.remove(&t)) else {
+                let Some((focus, split)) = token.and_then(|t| self.spawning.remove(&t)) else {
                     // One that kept running is shown once all are in (`Ready`),
                     // the way you left it. Another Pulpo's, if this session has
                     // nothing on screen.
@@ -545,6 +587,14 @@ impl App {
                 {
                     *editing = id;
                 }
+                // Split off a pane, if that pane is still there.
+                if let Some((at, beside)) = split {
+                    let root = session.map_or_else(|| self.ws().root.clone(), |s| self.workspaces[s].root.clone());
+                    if let Some(tab) = self.tabs.get_mut(&root).and_then(|t| t.list.iter_mut().find(|tab| tab.root.contains(at))) {
+                        tab.root.split(at, Pane::Term(id), beside, 50);
+                    }
+                }
+                self.sync_tabs();
                 // Ours: show it, in its session (you may have moved on since).
                 if focus && let Some(session) = session {
                     self.set_current(session);
@@ -612,7 +662,13 @@ impl App {
     /// the terminals with it. Connect again; what comes back tells which.
     pub fn on_server_gone(&mut self) {
         let had = self.terms.len();
-        // Keep what was open on disk until the server says what it still has.
+        // Keep what was open on disk until the server says what it still has,
+        // and the tabs by their terminals' tags.
+        if self.tabs_restored {
+            self.saved.tabs = self.layout().tabs;
+        }
+        self.tabs.clear();
+        self.tabs_restored = false;
         self.ready = false;
         self.terms.clear();
         self.spawning.clear();
@@ -666,6 +722,8 @@ impl App {
     pub fn on_paste(&mut self, text: &str) {
         if let Some(create) = &mut self.creating {
             create.name.push_str(text.trim());
+        } else if let Some(name) = &mut self.renaming {
+            name.push_str(text.trim());
         } else if let Some(search) = &mut self.search {
             search.query.push_str(text.trim());
             search.update(&self.tx);
@@ -687,11 +745,9 @@ impl App {
         }
     }
 
-    pub fn resize_terms(&mut self, rows: u16, cols: u16) {
+    /// The size new terminals start at: the room on the right.
+    pub fn set_term_size(&mut self, rows: u16, cols: u16) {
         self.term_size = (rows.max(1), cols.max(1));
-        for term in &mut self.terms {
-            term.resize(rows.max(1), cols.max(1));
-        }
     }
 
     /// Working while the program prints on its own; then, until you look at
@@ -711,6 +767,7 @@ impl App {
     /// Before each draw: runs that ended and agents that stopped or asked
     /// leave something to read, unless you are in that terminal.
     pub fn tick(&mut self) {
+        self.sync_tabs();
         // Messages go after a while; a question stays until answered, and
         // the server being down until r.
         match &self.message {
@@ -807,35 +864,275 @@ impl App {
         self.active.and_then(|id| self.terms.iter_mut().find(|t| t.id == id))
     }
 
+    /// Make terminal `id` the one keys go to, and its tab the one on screen.
     fn select_term(&mut self, id: usize) {
         self.active = Some(id);
+        for tabs in self.tabs.values_mut() {
+            if let Some(i) = tabs.list.iter().position(|t| t.root.contains(Pane::Term(id))) {
+                tabs.active = i;
+                tabs.list[i].set_focus(Pane::Term(id));
+            }
+        }
         if let Some(term) = self.terms.iter().find(|t| t.id == id) {
             self.last_term.insert(self.ws().root.clone(), term.info.tag.clone());
         }
     }
 
-    /// Show the terminal this session last had on screen, or its first.
+    /// Show the tab with the terminal this session last had on screen.
     fn restore_term(&mut self) {
+        self.sync_tabs();
+        let root = self.ws().root.clone();
         let terms: Vec<&Term> = self.session_terms().into_iter().map(|i| &self.terms[i]).collect();
-        let last = self.last_term.get(&self.ws().root).and_then(|tag| terms.iter().find(|t| &t.info.tag == tag));
-        self.active = last.or(terms.first()).map(|t| t.id);
+        let last = self.last_term.get(&root).and_then(|tag| terms.iter().find(|t| &t.info.tag == tag)).map(|t| t.id);
+        if !self.tabs_restored {
+            self.active = last.or(terms.first().map(|t| t.id));
+            return;
+        }
+        let tabbed = |id: usize| self.tabs.get(&root).is_some_and(|t| t.list.iter().any(|tab| tab.root.contains(Pane::Term(id))));
+        match last.filter(|&id| tabbed(id)) {
+            Some(id) => self.select_term(id),
+            None => self.active = self.tab().and_then(|t| t.term),
+        }
     }
 
-    /// Take a terminal off the list. If it was on screen, its neighbor in
-    /// the session takes its place.
+    /// Take a terminal off the list. Another pane of its tab takes its
+    /// room, or else the next tab.
     fn remove_term(&mut self, id: usize) {
-        let ids: Vec<usize> = self.session_terms().into_iter().map(|i| self.terms[i].id).collect();
-        let at = ids.iter().position(|&t| t == id);
         self.terms.retain(|t| t.id != id);
         if self.active == Some(id) {
-            let rest: Vec<usize> = ids.into_iter().filter(|&t| t != id).collect();
-            self.active = at.and_then(|at| rest.get(at.min(rest.len().saturating_sub(1))).copied());
-            if let Some(next) = self.active {
-                self.select_term(next);
-            }
+            self.active = None;
+        }
+        self.sync_tabs();
+        if let Some(next) = self.active {
+            self.select_term(next);
         }
         if self.active.is_none() && self.focus == Focus::Terminal {
-            self.set_focus(self.sidebar_focus);
+            let file = self.tab().is_some_and(|t| t.root.contains(Pane::File));
+            if file { self.focus_pane(Pane::File) } else { self.set_focus(self.sidebar_focus) }
+        }
+    }
+
+    // Tabs and panes
+
+    /// The current session's tabs.
+    pub fn tabs(&self) -> Option<&Tabs> {
+        self.tabs.get(&self.ws().root)
+    }
+
+    /// The tab on screen.
+    pub fn tab(&self) -> Option<&Tab> {
+        self.tabs().and_then(|t| t.list.get(t.active))
+    }
+
+    fn tab_mut(&mut self) -> Option<&mut Tab> {
+        let root = self.ws().root.clone();
+        self.tabs.get_mut(&root).and_then(|t| t.list.get_mut(t.active))
+    }
+
+    /// The pane shown alone: the file pane when you read or edit it full
+    /// height, or the terminal you zoomed.
+    pub fn zoomed_pane(&self) -> Option<Pane> {
+        let tab = self.tab()?;
+        let in_file = matches!(self.focus, Focus::Viewer | Focus::Editor);
+        if in_file && self.viewer.expanded && tab.root.contains(Pane::File) {
+            return Some(Pane::File);
+        }
+        self.active.filter(|_| self.zoomed && !in_file).map(Pane::Term)
+    }
+
+    /// The pane keys go to, when they go to the right side.
+    pub fn focused_pane(&self) -> Option<Pane> {
+        match self.focus {
+            Focus::Terminal => self.active.map(Pane::Term),
+            Focus::Viewer | Focus::Editor => Some(Pane::File),
+            _ => None,
+        }
+    }
+
+    /// Every terminal in a tab of its session, and while a file is open,
+    /// the file pane in the tab on screen; the terminal keys go to is that
+    /// tab's. Waits until the server has shown what it has, so the tabs
+    /// you had come back as they were.
+    fn sync_tabs(&mut self) {
+        if !self.ready || !self.reopening.is_empty() {
+            return;
+        }
+        if !self.tabs_restored {
+            self.restore_tabs();
+        }
+        let ids: HashSet<usize> = self.terms.iter().map(|t| t.id).collect();
+        let current = self.ws().root.clone();
+        let file_open = self.viewer.is_open() || self.editor.is_some();
+
+        // What is gone, and empty tabs, go; the tab on screen stays where
+        // it was, or its neighbor takes its place.
+        for (root, tabs) in &mut self.tabs {
+            let (on_screen, mut active) = (tabs.active, tabs.active);
+            let mut kept = Vec::new();
+            for (i, mut tab) in std::mem::take(&mut tabs.list).into_iter().enumerate() {
+                let here = *root == current && i == on_screen;
+                let gone: Vec<Pane> = tab
+                    .root
+                    .panes()
+                    .into_iter()
+                    .filter(|&p| match p {
+                        Pane::Term(id) => !ids.contains(&id),
+                        Pane::File => !(file_open && here),
+                    })
+                    .collect();
+                if gone.into_iter().all(|pane| tab.remove(pane)) {
+                    kept.push(tab);
+                } else if i < on_screen {
+                    active -= 1;
+                }
+            }
+            tabs.active = active.min(kept.len().saturating_sub(1));
+            tabs.list = kept;
+        }
+        self.tabs.retain(|_, tabs| !tabs.list.is_empty());
+
+        // New terminals get a tab of their own, in their session.
+        let tabbed: HashSet<usize> = self.tabs.values().flat_map(|t| t.list.iter().flat_map(Tab::terms)).collect();
+        let new: Vec<(usize, PathBuf)> = self
+            .terms
+            .iter()
+            .filter(|t| !tabbed.contains(&t.id))
+            .map(|t| (t.id, self.session_of(t).map_or_else(|| current.clone(), |i| self.workspaces[i].root.clone())))
+            .collect();
+        for (id, root) in new {
+            let tabs = self.tabs.entry(root).or_default();
+            match tabs.list.get_mut(tabs.active) {
+                // A file open on its own: the terminal goes above it.
+                Some(tab) if tab.root == Node::Leaf(Pane::File) => {
+                    tab.root = Node::Split { beside: false, ratio: 55, a: Box::new(Node::Leaf(Pane::Term(id))), b: Box::new(Node::Leaf(Pane::File)) };
+                    tab.term = Some(id);
+                }
+                _ => tabs.list.push(Tab::new(Pane::Term(id))),
+            }
+        }
+
+        // The file pane, under the terminal you were in, as the viewer
+        // always was.
+        if file_open {
+            let tabs = self.tabs.entry(current).or_default();
+            match tabs.list.get_mut(tabs.active) {
+                Some(tab) if !tab.root.contains(Pane::File) => {
+                    let at = tab.term.map_or(tab.focus, Pane::Term);
+                    tab.root.split(at, Pane::File, false, 55);
+                }
+                Some(_) => {}
+                None => {
+                    tabs.list.push(Tab::new(Pane::File));
+                    tabs.active = tabs.list.len() - 1;
+                }
+            }
+        }
+        self.active = self.tab().and_then(|t| t.term);
+    }
+
+    /// The tabs layout.json had, with the terminals the server still has.
+    fn restore_tabs(&mut self) {
+        self.tabs_restored = true;
+        let ids: HashMap<String, usize> = self.terms.iter().map(|t| (t.info.tag.clone(), t.id)).collect();
+        let id = |tag: &str| ids.get(tag).copied();
+        for (root, saved) in &self.saved.tabs {
+            let list: Vec<Tab> = saved
+                .iter()
+                .filter_map(|saved| {
+                    let mut tab = Tab::new(Pane::File);
+                    tab.root = saved.root.load(&id)?;
+                    tab.name = saved.name.clone();
+                    tab.fix();
+                    Some(tab)
+                })
+                .collect();
+            if !list.is_empty() {
+                self.tabs.insert(root.clone(), Tabs { list, active: 0 });
+            }
+        }
+    }
+
+    /// Tab `n` (from 0) of the session on screen; with `enter`, or when
+    /// you were on the right side, into the pane you were last in there.
+    fn show_tab(&mut self, n: usize, enter: bool) {
+        let root = self.ws().root.clone();
+        let right = self.focused_pane().is_some();
+        let Some(tabs) = self.tabs.get_mut(&root).filter(|t| n < t.list.len()) else { return };
+        tabs.active = n;
+        // The file pane comes along.
+        self.sync_tabs();
+        if let Some(id) = self.active
+            && let Some(term) = self.terms.iter().find(|t| t.id == id)
+        {
+            self.last_term.insert(root, term.info.tag.clone());
+        }
+        if (enter || right)
+            && let Some(pane) = self.tab().map(|t| t.focus)
+        {
+            self.focus_pane(pane);
+        }
+    }
+
+    /// The next or previous tab, wrapping around.
+    fn cycle_tab(&mut self, dir: isize) {
+        let Some(tabs) = self.tabs().filter(|t| !t.list.is_empty()) else { return };
+        let n = (tabs.active as isize + dir).rem_euclid(tabs.list.len() as isize) as usize;
+        self.show_tab(n, false);
+    }
+
+    fn focus_pane(&mut self, pane: Pane) {
+        match pane {
+            Pane::Term(id) => {
+                self.select_term(id);
+                self.set_focus(Focus::Terminal);
+            }
+            Pane::File => self.set_focus(if self.editor.is_some() { Focus::Editor } else { Focus::Viewer }),
+        }
+    }
+
+    /// A shell next to the pane you're in: beside it, or under it.
+    fn split(&mut self, beside: bool) {
+        let at = self.focused_pane().or_else(|| self.tab().map(|t| t.focus));
+        let cwd = self.ws().root.clone();
+        let token = self.spawn_in(cwd, &shell(), &[], true);
+        if let (Some(at), Some(spawning)) = (at, self.spawning.get_mut(&token)) {
+            spawning.1 = Some((at, beside));
+        }
+    }
+
+    fn swap(&mut self, dir: Dir) {
+        let Some(from) = self.focused_pane() else { return };
+        let Some(to) = pane::neighbor(&self.areas.panes, from, dir) else { return };
+        if let Some(tab) = self.tab_mut() {
+            tab.root.swap(from, to);
+        }
+    }
+
+    fn resize_pane(&mut self, dir: Dir) {
+        let Some(at) = self.focused_pane() else { return };
+        if let Some(tab) = self.tab_mut() {
+            tab.root.resize(at, dir, 5);
+        }
+    }
+
+    /// Close every terminal of the tab on screen once `key_name` is
+    /// pressed again.
+    fn close_tab(&mut self, pending: Option<char>, key_name: &str) {
+        let Some(ids) = self.tab().map(Tab::terms) else { return };
+        if ids.is_empty() {
+            self.viewer.close();
+            self.editor = None;
+            return;
+        }
+        if pending != Some('k') {
+            let running: Vec<String> = self.terms.iter().filter(|t| ids.contains(&t.id)).filter_map(|t| t.info.running.clone()).collect();
+            let running = if running.is_empty() { String::new() } else { format!(", with {} running", running.join(", ")) };
+            self.confirm('k', format!("press {key_name} again to close this tab: {} terminal(s){running}", ids.len()));
+            return;
+        }
+        for id in ids {
+            self.link.send(&ToServer::Close { id: id as u32 });
+            self.remove_term(id);
         }
     }
 
@@ -878,6 +1175,23 @@ impl App {
                 }
                 // Session names are lowercase, like Compose projects.
                 KeyCode::Char(c) if !ctrl => create.name.push(if create.session { c.to_ascii_lowercase() } else { c }),
+                _ => {}
+            }
+            return false;
+        }
+        if let Some(name) = &mut self.renaming {
+            match key.code {
+                KeyCode::Esc => self.renaming = None,
+                KeyCode::Enter => {
+                    let name = self.renaming.take().unwrap_or_default().trim().to_string();
+                    if let Some(tab) = self.tab_mut() {
+                        tab.name = (!name.is_empty()).then_some(name);
+                    }
+                }
+                KeyCode::Backspace => {
+                    name.pop();
+                }
+                KeyCode::Char(c) if !ctrl => name.push(c),
                 _ => {}
             }
             return false;
@@ -988,7 +1302,7 @@ impl App {
                         self.link.send(&ToServer::Close { id: term.info.id });
                     }
                     // Stopped on purpose: nothing to bring back next time.
-                    layout::save(&Layout { open: Vec::new(), ..self.layout() });
+                    layout::save(&Layout { open: Vec::new(), tabs: Default::default(), ..self.layout() });
                     return true;
                 }
                 let n = self.terms.len();
@@ -1006,9 +1320,9 @@ impl App {
             KeyCode::Char('x') => self.close_terminal('x', "x", pending),
             KeyCode::Char('e') => self.edit(),
             KeyCode::Char('y') => self.copy_path(),
-            KeyCode::Char(d @ '1'..='9') => self.enter_term(d as usize - '1' as usize),
-            KeyCode::Char('[') => self.cycle_term(-1),
-            KeyCode::Char(']') => self.cycle_term(1),
+            KeyCode::Char(d @ '1'..='9') => self.show_tab_entering(d as usize - '1' as usize),
+            KeyCode::Char('[') => self.cycle_tab(-1),
+            KeyCode::Char(']') => self.cycle_tab(1),
             KeyCode::Esc if self.focus == Focus::Viewer && self.viewer.find.is_some() => self.viewer.clear_find(),
             KeyCode::Esc if self.focus == Focus::Viewer && self.files_back.is_some() => self.go_back(),
             KeyCode::Esc if self.focus == Focus::Viewer => self.set_focus(self.sidebar_focus),
@@ -1058,16 +1372,16 @@ impl App {
                 self.close_terminal('Q', "ctrl-q", pending);
             }
             KeyCode::Char(d @ '1'..='9') if legacy => {
-                self.legacy_hint('1', &crate::keymap::TABS, "goes to a terminal");
-                self.enter_term(d as usize - '1' as usize);
+                self.legacy_hint('1', &crate::keymap::TABS, "goes to a tab");
+                self.show_tab_entering(d as usize - '1' as usize);
             }
             KeyCode::Char('[') if legacy => {
-                self.legacy_hint('[', &[Action::PreviousTab, Action::NextTab], "switch terminals");
-                self.cycle_term(-1);
+                self.legacy_hint('[', &[Action::PreviousTab, Action::NextTab], "switch tabs");
+                self.cycle_tab(-1);
             }
             KeyCode::Char(']') if legacy => {
-                self.legacy_hint('[', &[Action::PreviousTab, Action::NextTab], "switch terminals");
-                self.cycle_term(1);
+                self.legacy_hint('[', &[Action::PreviousTab, Action::NextTab], "switch tabs");
+                self.cycle_tab(1);
             }
             _ => {
                 if let Some(term) = self.term_mut() {
@@ -1098,10 +1412,10 @@ impl App {
         if pending == Some(confirm_key) {
             return self.close_active();
         }
-        let n = self.session_terms().iter().position(|&i| self.terms[i].id == term.id).unwrap_or(0) + 1;
+        let label = term.label().to_string();
         match term.info.running.clone() {
-            Some(program) => self.confirm(confirm_key, format!("{program} is running in terminal {n}: press {key_name} again to close it")),
-            None if confirm_key == 'x' => self.confirm('x', format!("press {key_name} again to close terminal {n}")),
+            Some(program) => self.confirm(confirm_key, format!("{program} is running in {label}: press {key_name} again to close it")),
+            None if confirm_key == 'x' => self.confirm('x', format!("press {key_name} again to close {label}")),
             None => self.close_active(),
         }
     }
@@ -1158,22 +1472,8 @@ impl App {
         sessions.join("; ")
     }
 
-    /// Go into the session's terminal number `n` (from 0).
-    fn enter_term(&mut self, n: usize) {
-        if let Some(&i) = self.session_terms().get(n) {
-            self.select_term(self.terms[i].id);
-            self.set_focus(Focus::Terminal);
-        }
-    }
-
-    /// The session's next or previous terminal, wrapping around.
-    fn cycle_term(&mut self, dir: isize) {
-        let ids: Vec<usize> = self.session_terms().into_iter().map(|i| self.terms[i].id).collect();
-        if ids.is_empty() {
-            return;
-        }
-        let at = self.active.and_then(|id| ids.iter().position(|&t| t == id)).unwrap_or(0) as isize;
-        self.select_term(ids[(at + dir).rem_euclid(ids.len() as isize) as usize]);
+    fn show_tab_entering(&mut self, n: usize) {
+        self.show_tab(n, true);
     }
 
     fn close_active(&mut self) {
@@ -1212,21 +1512,34 @@ impl App {
         self.message = None;
         let key_name = self.keymap.hint(&[action]);
         match action {
-            Action::FocusLeft => self.focus_toward(KeyCode::Left),
-            Action::FocusUp => self.focus_toward(KeyCode::Up),
-            Action::FocusRight => self.focus_toward(KeyCode::Right),
-            Action::FocusDown => self.focus_toward(KeyCode::Down),
+            Action::FocusLeft => self.focus_toward(Dir::Left),
+            Action::FocusUp => self.focus_toward(Dir::Up),
+            Action::FocusRight => self.focus_toward(Dir::Right),
+            Action::FocusDown => self.focus_toward(Dir::Down),
+            Action::SwapLeft => self.swap(Dir::Left),
+            Action::SwapUp => self.swap(Dir::Up),
+            Action::SwapRight => self.swap(Dir::Right),
+            Action::SwapDown => self.swap(Dir::Down),
+            Action::ResizeLeft => self.resize_pane(Dir::Left),
+            Action::ResizeUp => self.resize_pane(Dir::Up),
+            Action::ResizeRight => self.resize_pane(Dir::Right),
+            Action::ResizeDown => self.resize_pane(Dir::Down),
+            Action::SplitBeside => self.split(true),
+            Action::SplitBelow => self.split(false),
             Action::Zoom => self.zoom(),
             Action::ClosePane if self.focus == Focus::Editor => self.close_editor(pending),
             Action::ClosePane if self.focus == Focus::Viewer => {
                 self.viewer.close();
                 self.set_focus(self.sidebar_focus);
             }
-            Action::ClosePane | Action::CloseTab => self.close_terminal('x', &key_name, pending),
+            Action::ClosePane => self.close_terminal('x', &key_name, pending),
+            Action::CloseTab => self.close_tab(pending, &key_name),
+            Action::RenameTab if self.tab().is_some() => self.renaming = Some(self.tab().and_then(|t| t.name.clone()).unwrap_or_default()),
+            Action::RenameTab => {}
             Action::NewTab => self.spawn(&shell(), true),
-            Action::Tab(n) => self.enter_term(n as usize - 1),
-            Action::NextTab => self.cycle_term(1),
-            Action::PreviousTab => self.cycle_term(-1),
+            Action::Tab(n) => self.show_tab_entering(n as usize - 1),
+            Action::NextTab => self.cycle_tab(1),
+            Action::PreviousTab => self.cycle_tab(-1),
             Action::NewSession => self.creating = Some(Create { dir: self.ws().repo.clone(), name: String::new(), session: true }),
             Action::Sessions => self.set_focus(Focus::Sessions),
             Action::NextSession => self.step_session(1),
@@ -1240,54 +1553,41 @@ impl App {
             Action::Detach => return true,
             Action::Files => self.open_search(Mode::Files),
             Action::SearchFiles => self.open_search(Mode::Text),
+            Action::Sidebar => {
+                self.sidebar_hidden = !self.sidebar_hidden;
+                if self.sidebar_hidden && self.focused_pane().is_none() {
+                    match self.tab().map(|t| t.focus) {
+                        Some(pane) => self.focus_pane(pane),
+                        None => self.sidebar_hidden = false,
+                    }
+                }
+            }
             Action::Help => self.help = Some(String::new()),
         }
         false
     }
 
-    /// Go to the panel that way: the sidebar's lists are on the left, one
-    /// above the other; the terminal on the right, with the viewer or the
-    /// editor under it.
-    fn focus_toward(&mut self, dir: KeyCode) {
+    /// Go to the pane that way. The sidebar is left of every pane, its
+    /// lists one above the other.
+    fn focus_toward(&mut self, dir: Dir) {
         const SIDEBAR: [Focus; 4] = [Focus::Workspaces, Focus::Sessions, Focus::Changes, Focus::Graph];
         if let Some(i) = SIDEBAR.iter().position(|&f| f == self.focus) {
             match dir {
-                KeyCode::Up if i > 0 => self.set_focus(SIDEBAR[i - 1]),
-                KeyCode::Down if i + 1 < SIDEBAR.len() => self.set_focus(SIDEBAR[i + 1]),
-                KeyCode::Right => self.focus_right(),
+                Dir::Up if i > 0 => self.set_focus(SIDEBAR[i - 1]),
+                Dir::Down if i + 1 < SIDEBAR.len() => self.set_focus(SIDEBAR[i + 1]),
+                Dir::Right => match self.tab().map(|t| t.focus) {
+                    Some(pane) => self.focus_pane(pane),
+                    None => self.spawn(&shell(), true),
+                },
                 _ => {}
             }
             return;
         }
-        let below = if self.editor.is_some() {
-            Some(Focus::Editor)
-        } else {
-            self.viewer.is_open().then_some(Focus::Viewer)
-        };
-        match dir {
-            KeyCode::Left => self.set_focus(self.sidebar_focus),
-            KeyCode::Up if self.focus != Focus::Terminal && self.active.is_some() => self.set_focus(Focus::Terminal),
-            KeyCode::Down if self.focus == Focus::Terminal => {
-                if let Some(focus) = below {
-                    self.set_focus(focus);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// From the sidebar to the right side: where you were there, else
-    /// whatever is open, else a first shell.
-    fn focus_right(&mut self) {
-        let open = |focus: Focus| match focus {
-            Focus::Terminal => self.active.is_some(),
-            Focus::Editor => self.editor.is_some(),
-            Focus::Viewer => self.viewer.is_open(),
-            _ => false,
-        };
-        match [self.right_focus, Focus::Terminal, Focus::Editor, Focus::Viewer].into_iter().find(|&f| open(f)) {
-            Some(focus) => self.set_focus(focus),
-            None => self.spawn(&shell(), true),
+        let Some(from) = self.focused_pane() else { return };
+        match pane::neighbor(&self.areas.panes, from, dir) {
+            Some(pane) => self.focus_pane(pane),
+            None if dir == Dir::Left => self.set_focus(self.sidebar_focus),
+            None => {}
         }
     }
 
@@ -1346,11 +1646,32 @@ impl App {
             self.help = None;
             self.new_menu = false;
         }
-        if self.search.is_some() || self.creating.is_some() || self.help.is_some() || self.new_menu {
+        if self.search.is_some() || self.creating.is_some() || self.renaming.is_some() || self.help.is_some() || self.new_menu {
             return;
         }
         let pos = Position::new(mouse.column, mouse.row);
-        let areas = self.areas;
+        let areas = self.areas.clone();
+        if let Some(&(n, _)) = areas.tabs.iter().find(|(_, r)| r.contains(pos)) {
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.show_tab(n, true);
+            }
+            return;
+        }
+        // A terminal pane: a program that asked for the mouse gets it
+        // inside its text; else a click goes into it, the wheel scrolls it.
+        if let Some(&(Pane::Term(id), rect)) = areas.panes.iter().find(|(p, r)| matches!(p, Pane::Term(_)) && r.contains(pos)) {
+            let inner = Block::bordered().inner(rect);
+            let Some(term) = self.terms.iter_mut().find(|t| t.id == id) else { return };
+            if inner.contains(pos) && term.wants_mouse() {
+                term.mouse(mouse.kind, pos.x - inner.x + 1, pos.y - inner.y + 1, mouse.modifiers);
+            } else if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+                scroll_term(term, if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 });
+            }
+            if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                self.focus_pane(Pane::Term(id));
+            }
+            return;
+        }
         // In the editor: place the cursor, select by dragging, scroll.
         if areas.editor.contains(pos)
             && let Some(editor) = &mut self.editor
@@ -1371,7 +1692,6 @@ impl App {
             return;
         }
         let (target, area) = [
-            (Focus::Terminal, areas.terminal),
             (Focus::Viewer, areas.viewer),
             (Focus::Workspaces, areas.workspaces),
             (Focus::Sessions, areas.sessions),
@@ -1381,22 +1701,6 @@ impl App {
         .into_iter()
         .find(|(_, area)| area.contains(pos))
         .unwrap_or((self.focus, Rect::default()));
-
-        // Inside the terminal's text (not its border or title), a program
-        // that asked for the mouse gets the event itself.
-        let inner = Block::bordered().inner(area);
-        if target == Focus::Terminal
-            && inner.contains(pos)
-            && let Some(term) = self.term_mut()
-            && term.wants_mouse()
-        {
-            let (col, row) = (pos.x - inner.x + 1, pos.y - inner.y + 1);
-            term.mouse(mouse.kind, col, row, mouse.modifiers);
-            if matches!(mouse.kind, MouseEventKind::Down(_)) {
-                self.set_focus(Focus::Terminal);
-            }
-            return;
-        }
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -1424,20 +1728,6 @@ impl App {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let rows: isize = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                 match target {
-                    Focus::Terminal => {
-                        if let Some(term) = self.term_mut() {
-                            if term.alternate_screen() {
-                                // Like Ghostty: the wheel becomes arrow keys
-                                // for full-screen programs (less, man…).
-                                let arrow = if rows < 0 { KeyCode::Up } else { KeyCode::Down };
-                                for _ in 0..rows.abs() {
-                                    term.key(KeyEvent::new(arrow, KeyModifiers::NONE));
-                                }
-                            } else {
-                                term.scroll(-rows);
-                            }
-                        }
-                    }
                     // Shift + wheel scrolls sideways, like most editors.
                     Focus::Viewer if mouse.modifiers.contains(KeyModifiers::SHIFT) => self.viewer.scroll_sideways(rows * 2),
                     Focus::Viewer => self.viewer.scroll_by(rows),
@@ -1653,13 +1943,18 @@ impl App {
         if focus == Focus::Viewer {
             self.zoomed = false;
         }
-        if focus != Focus::Viewer {
+        if !matches!(focus, Focus::Viewer | Focus::Editor) {
             self.viewer.expanded = false;
         }
         if matches!(focus, Focus::Workspaces | Focus::Sessions | Focus::Changes | Focus::Graph) {
             self.sidebar_focus = focus;
-        } else {
-            self.right_focus = focus;
+            self.sidebar_hidden = false;
+        }
+        if let Some(pane) = self.focused_pane()
+            && let Some(tab) = self.tab_mut()
+            && tab.root.contains(pane)
+        {
+            tab.set_focus(pane);
         }
     }
 
@@ -2086,6 +2381,7 @@ impl App {
                 self.editor_back = if matches!(self.focus, Focus::Terminal | Focus::Editor) { self.sidebar_focus } else { self.focus };
                 self.editor = Some(editor);
                 self.set_focus(Focus::Editor);
+                self.viewer.expanded = true;
             }
             Err(e) => self.message = Some(e),
         }
@@ -2224,6 +2520,19 @@ impl App {
 
 /// A desktop notification from the terminal Pulpo runs in (OSC 9, which
 /// Ghostty shows as a macOS notification).
+/// The wheel over a terminal: its history, or, like Ghostty, arrow keys
+/// for full-screen programs (less, man…).
+fn scroll_term(term: &mut Term, rows: isize) {
+    if term.alternate_screen() {
+        let arrow = if rows < 0 { KeyCode::Up } else { KeyCode::Down };
+        for _ in 0..rows.abs() {
+            term.key(KeyEvent::new(arrow, KeyModifiers::NONE));
+        }
+    } else {
+        term.scroll(-rows);
+    }
+}
+
 fn notify(text: &str) {
     let text: String = text.chars().filter(|c| !c.is_control()).take(200).collect();
     crate::term::to_host(format!("\x1b]9;{text}\x07").as_bytes());

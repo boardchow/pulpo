@@ -141,6 +141,16 @@ pub enum Action {
     FocusUp,
     FocusRight,
     FocusDown,
+    SwapLeft,
+    SwapUp,
+    SwapRight,
+    SwapDown,
+    ResizeLeft,
+    ResizeUp,
+    ResizeRight,
+    ResizeDown,
+    SplitBeside,
+    SplitBelow,
     Zoom,
     ClosePane,
     NewTab,
@@ -148,6 +158,7 @@ pub enum Action {
     Tab(u8),
     NextTab,
     PreviousTab,
+    RenameTab,
     CloseTab,
     NewSession,
     Sessions,
@@ -158,6 +169,7 @@ pub enum Action {
     Detach,
     Files,
     SearchFiles,
+    Sidebar,
     Help,
 }
 
@@ -173,12 +185,23 @@ impl Action {
             FocusUp => "focus_up".into(),
             FocusRight => "focus_right".into(),
             FocusDown => "focus_down".into(),
+            SwapLeft => "swap_left".into(),
+            SwapUp => "swap_up".into(),
+            SwapRight => "swap_right".into(),
+            SwapDown => "swap_down".into(),
+            ResizeLeft => "resize_left".into(),
+            ResizeUp => "resize_up".into(),
+            ResizeRight => "resize_right".into(),
+            ResizeDown => "resize_down".into(),
+            SplitBeside => "split_beside".into(),
+            SplitBelow => "split_below".into(),
             Zoom => "zoom".into(),
             ClosePane => "close_pane".into(),
             NewTab => "new_tab".into(),
             Tab(n) => format!("tab_{n}"),
             NextTab => "next_tab".into(),
             PreviousTab => "previous_tab".into(),
+            RenameTab => "rename_tab".into(),
             CloseTab => "close_tab".into(),
             NewSession => "new_session".into(),
             Sessions => "sessions".into(),
@@ -189,6 +212,7 @@ impl Action {
             Detach => "detach".into(),
             Files => "files".into(),
             SearchFiles => "search_files".into(),
+            Sidebar => "sidebar".into(),
             Help => "help".into(),
         }
     }
@@ -212,7 +236,7 @@ impl Group {
     pub fn title(self) -> &'static str {
         match self {
             Group::Panes => "PANES",
-            Group::Tabs => "TERMINALS",
+            Group::Tabs => "TABS",
             Group::Sessions => "SESSIONS",
             Group::Go => "GO",
         }
@@ -226,15 +250,19 @@ pub struct Row {
     pub actions: &'static [Action],
 }
 
-/// Every action, in the order the panel and the help show them. A tab is a
-/// terminal of the session until tabs hold several panes.
+/// Every action, in the order the panel and the help show them.
 pub const ROWS: &[Row] = &[
     Row { group: Group::Panes, label: "focus that way", actions: &[FocusLeft, FocusUp, FocusRight, FocusDown] },
+    Row { group: Group::Panes, label: "swap that way", actions: &[SwapLeft, SwapUp, SwapRight, SwapDown] },
+    Row { group: Group::Panes, label: "resize", actions: &[ResizeLeft, ResizeUp, ResizeRight, ResizeDown] },
+    Row { group: Group::Panes, label: "split beside", actions: &[SplitBeside] },
+    Row { group: Group::Panes, label: "split below", actions: &[SplitBelow] },
     Row { group: Group::Panes, label: "zoom", actions: &[Zoom] },
     Row { group: Group::Panes, label: "close (asks first)", actions: &[ClosePane] },
-    Row { group: Group::Tabs, label: "new shell", actions: &[NewTab] },
-    Row { group: Group::Tabs, label: "go to terminal", actions: &TABS },
+    Row { group: Group::Tabs, label: "new tab, a shell", actions: &[NewTab] },
+    Row { group: Group::Tabs, label: "go to tab", actions: &TABS },
     Row { group: Group::Tabs, label: "previous / next", actions: &[PreviousTab, NextTab] },
+    Row { group: Group::Tabs, label: "rename", actions: &[RenameTab] },
     Row { group: Group::Tabs, label: "close (asks first)", actions: &[CloseTab] },
     Row { group: Group::Sessions, label: "new task session", actions: &[NewSession] },
     Row { group: Group::Sessions, label: "list sessions", actions: &[Sessions] },
@@ -244,6 +272,7 @@ pub const ROWS: &[Row] = &[
     Row { group: Group::Sessions, label: "detach (quit)", actions: &[Detach] },
     Row { group: Group::Go, label: "files", actions: &[Files] },
     Row { group: Group::Go, label: "search in files", actions: &[SearchFiles] },
+    Row { group: Group::Go, label: "hide / show sidebar", actions: &[Sidebar] },
     Row { group: Group::Go, label: "every key", actions: &[Help] },
 ];
 
@@ -254,11 +283,23 @@ fn default_keys() -> Vec<(Key, Action)> {
         ("up", FocusUp),
         ("right", FocusRight),
         ("down", FocusDown),
+        ("shift-left", SwapLeft),
+        ("shift-up", SwapUp),
+        ("shift-right", SwapRight),
+        ("shift-down", SwapDown),
+        ("alt-left", ResizeLeft),
+        ("alt-up", ResizeUp),
+        ("alt-right", ResizeRight),
+        ("alt-down", ResizeDown),
+        ("v", SplitBeside),
+        ("h", SplitBelow),
+        ("-", SplitBelow),
         ("z", Zoom),
         ("x", ClosePane),
         ("c", NewTab),
         ("n", NextTab),
         ("p", PreviousTab),
+        ("r", RenameTab),
         ("k", CloseTab),
         ("C", NewSession),
         ("s", Sessions),
@@ -269,6 +310,7 @@ fn default_keys() -> Vec<(Key, Action)> {
         ("d", Detach),
         ("f", Files),
         ("/", SearchFiles),
+        ("e", Sidebar),
         ("?", Help),
     ];
     let digits: Vec<String> = (1..=9).map(|n| n.to_string()).collect();
@@ -283,6 +325,10 @@ fn default_chords() -> Vec<(Key, Action)> {
         ("ctrl-alt-up".into(), FocusUp),
         ("ctrl-alt-right".into(), FocusRight),
         ("ctrl-alt-down".into(), FocusDown),
+        ("ctrl-alt-shift-left".into(), ResizeLeft),
+        ("ctrl-alt-shift-up".into(), ResizeUp),
+        ("ctrl-alt-shift-right".into(), ResizeRight),
+        ("ctrl-alt-shift-down".into(), ResizeDown),
         ("alt-up".into(), PreviousSession),
         ("alt-down".into(), NextSession),
     ];
