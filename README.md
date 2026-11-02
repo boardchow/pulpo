@@ -38,7 +38,7 @@ It's a terminal multiplexer for coding agents. Think tmux, but it actually knows
 That's it. That's the app.
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="Pulpo: the sidebar with workspaces, sessions, changes and graph on the left, a terminal on the right">
+  <img src="assets/screenshot.png" alt="Pulpo: the sidebar with workspaces, sessions, changes and graph on the left, a terminal on the right (before tabs and panes)">
 </p>
 
 ## Install
@@ -69,7 +69,7 @@ pulpo
 
 Run it anywhere and you get your workspaces. Run it inside a git repo and it adds that one.
 
-The sidebar on the left has your repos, sessions, changes and graph. The right side is where you work: terminal tabs, the file viewer, the editor. Your files are one key away: `f` shows them as a tree, and typing filters it. `/` searches inside them.
+The bar on top says where you are, shows the session's tabs and who's working or waiting. The sidebar on the left has your repos, sessions, changes and graph. The right side is where you work: tabs, each split into panes like tmux. A pane is a terminal, or the file pane (the viewer, or the editor in its place), which follows you to the tab you're on. Your files are one key away: `f` shows them as a tree, and typing filters it. `/` searches inside them.
 
 It's made for the keyboard (clicking works too). The bottom bar shows the keys that work right where you are, and `?` shows all of them.
 
@@ -90,7 +90,7 @@ Make and do things:
 | Key | Does |
 | --- | --- |
 | `n s` | new task session (its own copy of the repo) |
-| `n t` | new terminal in this session (type `claude` in it) |
+| `n t` | new tab with a shell in this session (type `claude` in it) |
 | `n w` | add a workspace (another repo) |
 | `e` | edit the selected file (`ctrl-e` in the files) |
 | `x x` | delete the selected session, drop a workspace from the list (files kept), or close the terminal (`ctrl-x` twice deletes a file in the files) |
@@ -101,11 +101,16 @@ From anywhere, terminals included, Pulpo has a prefix: `ctrl-space` or `ctrl-b`,
 
 | Prefix, then | Does |
 | --- | --- |
-| `←` `↑` `→` `↓` | go to the panel that way |
-| `z` | zoom: the terminal or the file alone |
-| `x` | close the terminal (press it twice) |
-| `c` | new shell in this session |
-| `1`-`9`, `p` `n` | terminal N, previous / next |
+| `←` `↑` `→` `↓` | go to the pane that way (the sidebar is left of them all) |
+| `shift` + arrows | swap with the pane that way |
+| `alt` + arrows | move the border |
+| `v` `h` | split: a shell beside or below |
+| `z` | zoom: the pane alone |
+| `x` | close the pane (press it twice) |
+| `c` | new tab with a shell |
+| `1`-`9`, `p` `n` | tab N, previous / next |
+| `r` `k` | rename the tab, close it (press it twice) |
+| `e` | hide or show the sidebar |
 | `C` | new task session |
 | `P` `N` | previous / next session |
 | `K` | delete the task session (press it twice) |
@@ -119,8 +124,9 @@ And a few without the prefix:
 
 | Key | Does |
 | --- | --- |
-| `ctrl-alt-←↑→↓` | go to the panel that way |
-| `alt-1`-`9` | terminal N |
+| `ctrl-alt-←↑→↓` | go to the pane that way |
+| `ctrl-alt-shift-←↑→↓` | move the border |
+| `alt-1`-`9` | tab N |
 | `alt-↑` `alt-↓` | previous / next session |
 
 On a Mac, two things can get in the way. macOS switches keyboard layouts on `ctrl-space` when you have more than one (use `ctrl-b`, or turn that shortcut off), and Ghostty types `¡™£` for `alt-1`-`3` unless the left Option key is Alt. `pulpo doctor` checks both, and `pulpo doctor --fix` sets up Ghostty.
