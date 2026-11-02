@@ -25,6 +25,8 @@ use crate::workspace::{self, GraphItem, Workspace};
 
 /// At most one desktop notification per terminal this often.
 const NOTICE_EVERY: Duration = Duration::from_secs(10);
+/// How long a message stays in the footer, unless it asks something.
+const MESSAGE_FOR: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -117,6 +119,8 @@ pub struct App {
     pub sessions_state: ListState,
     pub areas: Areas,
     pub message: Option<String>,
+    /// The message on screen, and since when.
+    message_since: Option<(String, Instant)>,
     pub search: Option<Search>,
     /// The full list of shortcuts is shown.
     pub help: bool,
@@ -127,8 +131,8 @@ pub struct App {
     /// The terminal editing a file: its id, the file, and the panel to go
     /// back to when the editor quits.
     editing: Option<(usize, PathBuf, Focus)>,
-    /// The terminal removing a session; the list is reloaded when it ends.
-    removing: Option<usize>,
+    /// Sessions being removed in the background, already off the list.
+    removing: HashSet<PathBuf>,
     /// A file being edited in Pulpo, and the panel to go back to after.
     pub editor: Option<Editor>,
     editor_back: Focus,
@@ -193,6 +197,7 @@ impl App {
             areas: Areas::default(),
             message: (!crate::agents::hooks_installed())
                 .then(|| "run `pulpo hooks install` to see what Claude runs and asks in each terminal".into()),
+            message_since: None,
             search: None,
             help: false,
             new_menu: false,
@@ -200,7 +205,7 @@ impl App {
             editing: None,
             editor: None,
             editor_back: Focus::Sessions,
-            removing: None,
+            removing: HashSet::new(),
             deleting: None,
             files_back: None,
             zoomed: false,
@@ -257,7 +262,7 @@ impl App {
             for root in roots {
                 self.workspaces.push(reuse(root, &repo));
             }
-            for s in isolated.iter().filter(|s| s.repo == repo && s.root.is_dir()) {
+            for s in isolated.iter().filter(|s| s.repo == repo && s.root.is_dir() && !self.removing.contains(&s.root)) {
                 self.workspaces.push(reuse(s.root.clone(), &repo));
                 self.isolated.push(s.clone());
             }
@@ -517,11 +522,10 @@ impl App {
                 };
                 // Ours: what waited for its id gets it.
                 let token = token.unwrap_or_default() as usize;
-                let waiting = [self.editing.as_mut().map(|e| &mut e.0), self.removing.as_mut()];
-                for waiting in waiting.into_iter().flatten() {
-                    if *waiting == token {
-                        *waiting = id;
-                    }
+                if let Some((editing, ..)) = &mut self.editing
+                    && *editing == token
+                {
+                    *editing = id;
                 }
                 // Ours: show it, in its session (you may have moved on since).
                 if focus && let Some(session) = session {
@@ -627,12 +631,6 @@ impl App {
 
     fn on_exit(&mut self, id: usize) {
         self.remove_term(id);
-        // A session was removed: off the list.
-        if self.removing == Some(id) {
-            self.removing = None;
-            self.load_workspaces();
-            self.restore_term();
-        }
         // The editor quit: show the file where you were.
         if self.editing.as_ref().is_some_and(|(e, ..)| *e == id)
             && let Some((_, path, back)) = self.editing.take()
@@ -695,6 +693,16 @@ impl App {
     /// Before each draw: runs that ended and agents that stopped or asked
     /// leave something to read, unless you are in that terminal.
     pub fn tick(&mut self) {
+        // Messages go after a while; a question stays until answered, and
+        // the server being down until r.
+        match &self.message {
+            None => self.message_since = None,
+            Some(m) if self.message_since.as_ref().is_none_or(|(shown, _)| shown != m) => self.message_since = Some((m.clone(), Instant::now())),
+            Some(_) if self.pending.is_none() && !self.offline && self.message_since.as_ref().is_some_and(|(_, at)| at.elapsed() >= MESSAGE_FOR) => {
+                self.message = None;
+            }
+            Some(_) => {}
+        }
         if self.ready {
             let layout = self.layout();
             if layout != self.saved {
@@ -728,6 +736,18 @@ impl App {
         for (label, cwd, detail) in notices {
             let place = self.place(&cwd).map(|place| format!(" in {place}")).unwrap_or_default();
             notify(&format!("{label}{place}: {detail}"));
+        }
+    }
+
+    /// A session's removal ended: if it failed, the session is back.
+    pub fn on_removed(&mut self, root: PathBuf, log: PathBuf, ok: bool) {
+        self.removing.remove(&root);
+        self.load_workspaces();
+        if ok {
+            let _ = std::fs::remove_file(&log);
+        } else {
+            let name = root.file_name().unwrap_or_default().to_string_lossy();
+            self.message = Some(format!("could not delete session {name}; see {}", log.display()));
         }
     }
 
@@ -1629,9 +1649,9 @@ impl App {
         self.run("sh", &["-c".into(), script], true);
     }
 
-    /// x x on an isolated session: stop its terminals, then in a terminal of
-    /// main remove its containers and volumes (its database) and the copy.
-    /// The first x says what would be lost.
+    /// x x on an isolated session: stop its terminals, take it off the list,
+    /// and in the background remove its containers and volumes (its
+    /// database) and the copy. The first x says what would be lost.
     fn remove_session(&mut self, pending: Option<char>) {
         let Some(session) = self.isolated_current().cloned() else { return };
         if pending != Some('x') || self.deleting.as_ref() != Some(&session.root) {
@@ -1651,18 +1671,40 @@ impl App {
             self.link.send(&ToServer::Close { id: id as u32 });
             self.remove_term(id);
         }
-        // Run from main, with the session's Compose project and ports.
-        let Some(main) = self.workspaces.iter().position(|w| w.root == session.repo) else { return };
-        self.set_current(main);
-        let token = self.next_token;
-        self.next_token += 1;
-        let (rows, cols) = self.term_size;
-        let env = session::env(&session);
-        let spawn = ToServer::Spawn { token, program: "sh".into(), args: vec!["-c".into(), script], cwd: session.repo.clone(), rows, cols, env };
-        self.link.send(&spawn);
-        self.spawning.insert(token, false);
-        self.removing = Some(token as usize);
-        self.message = Some(format!("removing session {}…", session.name));
+        // In the background, from main, with the session's Compose project
+        // and ports; its own process group, so it outlives Pulpo.
+        let log = crate::agents::state_dir().join(format!("remove-{}.log", session.project));
+        let started = std::fs::File::create(&log).and_then(|out| {
+            use std::os::unix::process::CommandExt;
+            std::process::Command::new("sh")
+                .args(["-c", &script])
+                .current_dir(&session.repo)
+                .envs(session::env(&session))
+                .stdin(std::process::Stdio::null())
+                .stdout(out.try_clone()?)
+                .stderr(out)
+                .process_group(0)
+                .spawn()
+        });
+        let mut child = match started {
+            Ok(child) => child,
+            Err(e) => {
+                self.message = Some(format!("could not delete session {}: {e}", session.name));
+                return;
+            }
+        };
+        let (tx, root) = (self.tx.clone(), session.root.clone());
+        std::thread::spawn(move || {
+            let ok = child.wait().is_ok_and(|status| status.success());
+            let _ = tx.send(Msg::Removed(root, log, ok));
+        });
+        // Off the list now, as if gone.
+        if let Some(main) = self.workspaces.iter().position(|w| w.root == session.repo) {
+            self.set_current(main);
+        }
+        self.removing.insert(session.root.clone());
+        self.load_workspaces();
+        self.message = Some(format!("session {} deleted", session.name));
     }
 
     // Files

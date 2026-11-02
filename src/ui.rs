@@ -538,6 +538,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
             },
         ),
         Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("x", "remove")]),
+        Focus::Sessions if app.isolated_current().is_some() => {
+            ("SESSIONS", &[("j/k", "switch"), ("⏎", "its terminal"), ("n t", "new terminal in it"), ("x x", "delete")])
+        }
         Focus::Sessions => ("SESSIONS", &[("j/k", "switch"), ("⏎", "its terminal"), ("n t", "new terminal in it")]),
         Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff"), ("e", "edit"), ("y", "copy path")]),
         Focus::Graph => ("GRAPH", &[("j/k", "move"), ("⏎", "a commit's files / read a diff"), ("h/l", "fold")]),
