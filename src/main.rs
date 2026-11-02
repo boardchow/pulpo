@@ -1,8 +1,10 @@
 mod agents;
 mod app;
 mod client;
+mod doctor;
 mod editor;
 mod git;
+mod keymap;
 mod layout;
 mod procs;
 mod proto;
@@ -39,6 +41,8 @@ const USAGE: &str = "usage:
   pulpo hooks install|status|remove [--dry-run]
                  add Pulpo's hooks to Claude Code, for what agents run and ask
   pulpo hooks    print those hooks instead
+  pulpo doctor [--fix]
+                 check that your keys reach Pulpo (⌃Space, Ghostty's Option key) and the hooks
   pulpo emit     record a hook event from stdin (called by the hooks)
   pulpo serve    run the server that keeps terminals running (Pulpo starts it)";
 
@@ -67,6 +71,7 @@ fn main() -> Result<()> {
         // The last step of removing a session, run by its removal script.
         Some("forget-session") if args.len() == 2 => session::forget(std::path::Path::new(&args[1]))?,
         Some("hooks") => agents::hooks(&args[1..])?,
+        Some("doctor") => doctor::doctor(&args[1..])?,
         Some("-h" | "--help") => println!("{USAGE}"),
         arg => {
             let start = arg.map(PathBuf::from).unwrap_or(std::env::current_dir()?).canonicalize()?;

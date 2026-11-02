@@ -13,6 +13,7 @@ use crate::agents::{Agents, State};
 use crate::client::{self, Link};
 use crate::editor::Editor;
 use crate::git;
+use crate::keymap::{Action, Key, Keymap};
 use crate::layout::{self, Layout};
 use crate::procs;
 use crate::proto::{PROTOCOL, ToClient, ToServer};
@@ -27,6 +28,8 @@ use crate::workspace::{self, GraphItem, Workspace};
 const NOTICE_EVERY: Duration = Duration::from_secs(10);
 /// How long a message stays in the footer, unless it asks something.
 const MESSAGE_FOR: Duration = Duration::from_secs(5);
+/// How long after the prefix its panel shows, so quick hands never see it.
+const PREFIX_PANEL_AFTER: Duration = Duration::from_millis(300);
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Focus {
@@ -83,6 +86,8 @@ pub struct App {
     pub focus: Focus,
     /// The sidebar list to return to when leaving the terminal or viewer.
     sidebar_focus: Focus,
+    /// The terminal, viewer or editor to go back to from the sidebar.
+    right_focus: Focus,
     pub agents: Agents,
     /// Every terminal, of every session; each belongs to the checkout it
     /// was started in.
@@ -122,8 +127,14 @@ pub struct App {
     /// The message on screen, and since when.
     message_since: Option<(String, Instant)>,
     pub search: Option<Search>,
-    /// The full list of shortcuts is shown.
-    pub help: bool,
+    /// The full list of shortcuts is shown, filtered by what you typed.
+    pub help: Option<String>,
+    /// Pulpo's keys beyond the panels' own (`keymap.rs`).
+    pub keymap: Keymap,
+    /// The prefix was pressed, at this time: the next key is Pulpo's.
+    pub prefix: Option<Instant>,
+    /// The old ctrl keys inside terminals already said what replaces them.
+    legacy_hinted: HashSet<char>,
     /// n was pressed: w, s or f next says what to make.
     pub new_menu: bool,
     /// Typing the name of a new file or folder.
@@ -167,6 +178,7 @@ impl App {
         let mut agents = Agents::default();
         agents.load();
         let layout = layout::load();
+        let (keymap, keys_error) = Keymap::load();
         let mut app = App {
             workspaces: Vec::new(),
             isolated: Vec::new(),
@@ -175,6 +187,7 @@ impl App {
             scratch,
             focus: Focus::Sessions,
             sidebar_focus: Focus::Sessions,
+            right_focus: Focus::Terminal,
             agents,
             terms: Vec::new(),
             active: None,
@@ -195,11 +208,16 @@ impl App {
             viewer: Viewer::default(),
             sessions_state: ListState::default().with_selected(Some(0)),
             areas: Areas::default(),
-            message: (!crate::agents::hooks_installed())
-                .then(|| "run `pulpo hooks install` to see what Claude runs and asks in each terminal".into()),
+            message: keys_error.or_else(|| {
+                (!crate::agents::hooks_installed())
+                    .then(|| "run `pulpo hooks install` to see what Claude runs and asks in each terminal".into())
+            }),
             message_since: None,
             search: None,
-            help: false,
+            help: None,
+            keymap,
+            prefix: None,
+            legacy_hinted: HashSet::new(),
             new_menu: false,
             creating: None,
             editing: None,
@@ -753,7 +771,13 @@ impl App {
 
     /// Something is working, so its spinner needs frequent redraws.
     pub fn animating(&self) -> bool {
-        self.terms.iter().any(|term| self.term_state(term) == State::Running)
+        // Or the prefix panel is about to show.
+        self.prefix.is_some() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
+    }
+
+    /// The prefix was pressed a moment ago and no key followed: show what can.
+    pub fn prefix_panel(&self) -> bool {
+        self.prefix.is_some_and(|at| at.elapsed() >= PREFIX_PANEL_AFTER)
     }
 
     /// The session a terminal belongs to: the checkout it started in.
@@ -820,8 +844,17 @@ impl App {
     /// Returns true when the app should quit.
     pub fn on_key(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        if self.help {
-            self.help = false;
+        if let Some(filter) = &mut self.help {
+            match key.code {
+                KeyCode::Esc => self.help = None,
+                KeyCode::Char('?') if filter.is_empty() => self.help = None,
+                KeyCode::Backspace => {
+                    filter.pop();
+                }
+                KeyCode::Char('u') if ctrl => filter.clear(),
+                KeyCode::Char(c) if !ctrl => filter.push(c),
+                _ => {}
+            }
             return false;
         }
         if self.new_menu {
@@ -864,6 +897,22 @@ impl App {
                 _ => {}
             }
             return false;
+        }
+        // The prefix, then the key that says what to do; or a chord.
+        let k = Key::of(key);
+        if self.prefix.take().is_some() {
+            return self.after_prefix(key, k);
+        }
+        if self.keymap.is_prefix(k) {
+            self.prefix = Some(Instant::now());
+            // Hints show the prefix you use.
+            self.keymap.prefix.retain(|&p| p != k);
+            self.keymap.prefix.insert(0, k);
+            return false;
+        }
+        if let Some(action) = self.keymap.chord(k) {
+            let pending = self.pending.take();
+            return self.act(action, pending);
         }
         let pending = self.pending.take();
         if self.focus == Focus::Terminal {
@@ -912,7 +961,7 @@ impl App {
             // ctrl-f, or z for zoom: the current terminal, full height.
             KeyCode::Char('z') => self.zoom_terminal(),
             KeyCode::Char('f') if ctrl => self.zoom_terminal(),
-            KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('?') => self.help = Some(String::new()),
             KeyCode::Char('r') => self.refresh(),
             // Terminals keep running in the server; say which, and their ports.
             KeyCode::Char('q' | 'Q') if self.editor.as_ref().is_some_and(|e| e.dirty) => {
@@ -945,13 +994,7 @@ impl App {
                 let n = self.terms.len();
                 self.confirm('Q', format!("press Q again to stop {n} terminal(s) and quit (ctrl-c first, then hang up)"));
             }
-            KeyCode::Char('x') if self.focus == Focus::Sessions && self.isolated_current().is_some() => self.remove_session(pending),
-            KeyCode::Char('x') if self.focus == Focus::Sessions && self.ws().is_worktree() => {
-                self.message = Some("this session is a git worktree; Pulpo leaves worktrees to git".into());
-            }
-            KeyCode::Char('x') if self.focus == Focus::Sessions => {
-                self.message = Some("this is the repository itself; x in Workspaces takes it off the list".into());
-            }
+            KeyCode::Char('x') if self.focus == Focus::Sessions => self.delete_session(pending, "x"),
             KeyCode::Char('x') if self.focus == Focus::Workspaces => {
                 if pending == Some('x') {
                     self.remove_workspace();
@@ -994,15 +1037,38 @@ impl App {
         if pending.is_some() {
             self.message = None;
         }
+        // The ctrl keys Pulpo used to take, until they go back to the
+        // programs; each says once what replaces it.
+        let legacy = ctrl && self.keymap.legacy;
         match key.code {
-            KeyCode::Char('s') if ctrl => self.toggle_terminal(),
-            KeyCode::Char('f') if ctrl => self.zoomed = !self.zoomed,
-            // Another shell in this session.
-            KeyCode::Char('n') if ctrl => self.spawn(&shell(), true),
-            KeyCode::Char('q') if ctrl => self.close_terminal('Q', "ctrl-q", pending),
-            KeyCode::Char(d @ '1'..='9') if ctrl => self.enter_term(d as usize - '1' as usize),
-            KeyCode::Char('[') if ctrl => self.cycle_term(-1),
-            KeyCode::Char(']') if ctrl => self.cycle_term(1),
+            KeyCode::Char('s') if legacy => {
+                self.legacy_hint('s', &[Action::FocusLeft], "goes to the sidebar");
+                self.toggle_terminal();
+            }
+            KeyCode::Char('f') if legacy => {
+                self.legacy_hint('f', &[Action::Zoom], "zooms");
+                self.zoomed = !self.zoomed;
+            }
+            KeyCode::Char('n') if legacy => {
+                self.legacy_hint('n', &[Action::NewTab], "opens a shell");
+                self.spawn(&shell(), true);
+            }
+            KeyCode::Char('q') if legacy => {
+                self.legacy_hint('q', &[Action::ClosePane], "closes it");
+                self.close_terminal('Q', "ctrl-q", pending);
+            }
+            KeyCode::Char(d @ '1'..='9') if legacy => {
+                self.legacy_hint('1', &crate::keymap::TABS, "goes to a terminal");
+                self.enter_term(d as usize - '1' as usize);
+            }
+            KeyCode::Char('[') if legacy => {
+                self.legacy_hint('[', &[Action::PreviousTab, Action::NextTab], "switch terminals");
+                self.cycle_term(-1);
+            }
+            KeyCode::Char(']') if legacy => {
+                self.legacy_hint('[', &[Action::PreviousTab, Action::NextTab], "switch terminals");
+                self.cycle_term(1);
+            }
             _ => {
                 if let Some(term) = self.term_mut() {
                     term.key(key);
@@ -1035,7 +1101,7 @@ impl App {
         let n = self.session_terms().iter().position(|&i| self.terms[i].id == term.id).unwrap_or(0) + 1;
         match term.info.running.clone() {
             Some(program) => self.confirm(confirm_key, format!("{program} is running in terminal {n}: press {key_name} again to close it")),
-            None if confirm_key == 'x' => self.confirm('x', format!("press x again to close terminal {n}")),
+            None if confirm_key == 'x' => self.confirm('x', format!("press {key_name} again to close terminal {n}")),
             None => self.close_active(),
         }
     }
@@ -1118,16 +1184,169 @@ impl App {
         self.remove_term(id);
     }
 
+    /// The key after the prefix: an action; the prefix again, which the
+    /// program in the terminal gets; or else what the key does on its own.
+    fn after_prefix(&mut self, key: KeyEvent, k: Key) -> bool {
+        if k.code == KeyCode::Esc {
+            return false;
+        }
+        if self.keymap.is_prefix(k) {
+            if self.focus == Focus::Terminal
+                && let Some(term) = self.term_mut()
+            {
+                term.key(key);
+            }
+            return false;
+        }
+        match self.keymap.after_prefix(k) {
+            Some(action) => {
+                let pending = self.pending.take();
+                self.act(action, pending)
+            }
+            None => self.on_key(key),
+        }
+    }
+
+    /// Do what a prefix key or a chord says. True to quit.
+    fn act(&mut self, action: Action, pending: Option<char>) -> bool {
+        self.message = None;
+        let key_name = self.keymap.hint(&[action]);
+        match action {
+            Action::FocusLeft => self.focus_toward(KeyCode::Left),
+            Action::FocusUp => self.focus_toward(KeyCode::Up),
+            Action::FocusRight => self.focus_toward(KeyCode::Right),
+            Action::FocusDown => self.focus_toward(KeyCode::Down),
+            Action::Zoom => self.zoom(),
+            Action::ClosePane if self.focus == Focus::Editor => self.close_editor(pending),
+            Action::ClosePane if self.focus == Focus::Viewer => {
+                self.viewer.close();
+                self.set_focus(self.sidebar_focus);
+            }
+            Action::ClosePane | Action::CloseTab => self.close_terminal('x', &key_name, pending),
+            Action::NewTab => self.spawn(&shell(), true),
+            Action::Tab(n) => self.enter_term(n as usize - 1),
+            Action::NextTab => self.cycle_term(1),
+            Action::PreviousTab => self.cycle_term(-1),
+            Action::NewSession => self.creating = Some(Create { dir: self.ws().repo.clone(), name: String::new(), session: true }),
+            Action::Sessions => self.set_focus(Focus::Sessions),
+            Action::NextSession => self.step_session(1),
+            Action::PreviousSession => self.step_session(-1),
+            Action::DeleteSession => self.delete_session(pending, &key_name),
+            Action::AddWorkspace => self.open_repo_picker(),
+            Action::Detach if self.editor.as_ref().is_some_and(|e| e.dirty) => {
+                self.message = Some("unsaved changes in the editor: ctrl-s saves them, esc there discards them".into());
+            }
+            // Terminals keep running in the server, as with q.
+            Action::Detach => return true,
+            Action::Files => self.open_search(Mode::Files),
+            Action::SearchFiles => self.open_search(Mode::Text),
+            Action::Help => self.help = Some(String::new()),
+        }
+        false
+    }
+
+    /// Go to the panel that way: the sidebar's lists are on the left, one
+    /// above the other; the terminal on the right, with the viewer or the
+    /// editor under it.
+    fn focus_toward(&mut self, dir: KeyCode) {
+        const SIDEBAR: [Focus; 4] = [Focus::Workspaces, Focus::Sessions, Focus::Changes, Focus::Graph];
+        if let Some(i) = SIDEBAR.iter().position(|&f| f == self.focus) {
+            match dir {
+                KeyCode::Up if i > 0 => self.set_focus(SIDEBAR[i - 1]),
+                KeyCode::Down if i + 1 < SIDEBAR.len() => self.set_focus(SIDEBAR[i + 1]),
+                KeyCode::Right => self.focus_right(),
+                _ => {}
+            }
+            return;
+        }
+        let below = if self.editor.is_some() {
+            Some(Focus::Editor)
+        } else {
+            self.viewer.is_open().then_some(Focus::Viewer)
+        };
+        match dir {
+            KeyCode::Left => self.set_focus(self.sidebar_focus),
+            KeyCode::Up if self.focus != Focus::Terminal && self.active.is_some() => self.set_focus(Focus::Terminal),
+            KeyCode::Down if self.focus == Focus::Terminal => {
+                if let Some(focus) = below {
+                    self.set_focus(focus);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// From the sidebar to the right side: where you were there, else
+    /// whatever is open, else a first shell.
+    fn focus_right(&mut self) {
+        let open = |focus: Focus| match focus {
+            Focus::Terminal => self.active.is_some(),
+            Focus::Editor => self.editor.is_some(),
+            Focus::Viewer => self.viewer.is_open(),
+            _ => false,
+        };
+        match [self.right_focus, Focus::Terminal, Focus::Editor, Focus::Viewer].into_iter().find(|&f| open(f)) {
+            Some(focus) => self.set_focus(focus),
+            None => self.spawn(&shell(), true),
+        }
+    }
+
+    /// The focused terminal or file alone, or back; from the sidebar, into
+    /// the terminal, full height.
+    fn zoom(&mut self) {
+        match self.focus {
+            Focus::Terminal => self.zoomed = !self.zoomed,
+            Focus::Viewer => self.viewer.expanded = !self.viewer.expanded,
+            _ => self.zoom_terminal(),
+        }
+    }
+
+    /// The previous or next session of this repository, wrapping around.
+    fn step_session(&mut self, delta: isize) {
+        let sessions = self.sessions();
+        if sessions.len() < 2 {
+            return;
+        }
+        let at = sessions.iter().position(|&i| i == self.current).unwrap_or(0) as isize;
+        let next = (at + delta).rem_euclid(sessions.len() as isize) as usize;
+        self.sessions_state.select(Some(next));
+        self.set_current(sessions[next]);
+        // No terminal there to be in.
+        if self.focus == Focus::Terminal && self.active.is_none() {
+            self.set_focus(Focus::Sessions);
+        }
+    }
+
+    /// Delete the current session once `key_name` is pressed again; only a
+    /// task session can be.
+    fn delete_session(&mut self, pending: Option<char>, key_name: &str) {
+        if self.isolated_current().is_some() {
+            self.remove_session(pending, key_name);
+        } else if self.ws().is_worktree() {
+            self.message = Some("this session is a git worktree; Pulpo leaves worktrees to git".into());
+        } else {
+            self.message = Some("this is the repository itself; x in Workspaces takes it off the list".into());
+        }
+    }
+
+    /// Say once what replaces one of the old ctrl keys in terminals.
+    fn legacy_hint(&mut self, c: char, actions: &[Action], what: &str) {
+        if self.legacy_hinted.insert(c) {
+            let instead = self.keymap.hint(actions);
+            self.message = Some(format!("ctrl-{c} goes back to the programs in the next release: {instead} {what}"));
+        }
+    }
+
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
         // A click or scroll can change what a second x would act on.
         if matches!(mouse.kind, MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
             self.pending = None;
         }
-        if (self.help || self.new_menu) && matches!(mouse.kind, MouseEventKind::Down(_)) {
-            self.help = false;
+        if (self.help.is_some() || self.new_menu) && matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.help = None;
             self.new_menu = false;
         }
-        if self.search.is_some() || self.creating.is_some() || self.help || self.new_menu {
+        if self.search.is_some() || self.creating.is_some() || self.help.is_some() || self.new_menu {
             return;
         }
         let pos = Position::new(mouse.column, mouse.row);
@@ -1439,6 +1658,8 @@ impl App {
         }
         if matches!(focus, Focus::Workspaces | Focus::Sessions | Focus::Changes | Focus::Graph) {
             self.sidebar_focus = focus;
+        } else {
+            self.right_focus = focus;
         }
     }
 
@@ -1652,13 +1873,13 @@ impl App {
     /// x x on an isolated session: stop its terminals, take it off the list,
     /// and in the background remove its containers and volumes (its
     /// database) and the copy. The first x says what would be lost.
-    fn remove_session(&mut self, pending: Option<char>) {
+    fn remove_session(&mut self, pending: Option<char>, key_name: &str) {
         let Some(session) = self.isolated_current().cloned() else { return };
         if pending != Some('x') || self.deleting.as_ref() != Some(&session.root) {
             self.deleting = Some(session.root.clone());
             let lost = session::unsaved(&session);
             let lost = if lost.is_empty() { String::new() } else { format!(", losing {}", lost.join(" and ")) };
-            self.confirm('x', format!("press x again to delete session {}: its copy, containers and database{lost}", session.name));
+            self.confirm('x', format!("press {key_name} again to delete session {}: its copy, containers and database{lost}", session.name));
             return;
         }
         self.deleting = None;

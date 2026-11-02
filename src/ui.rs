@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, Clear, List, ListItem, Paragraph, Wrap};
 use crate::agents::State;
 use crate::app::{App, Focus};
 use crate::git::Change;
+use crate::keymap::{Action, Group, TABS};
 use crate::search::Mode;
 use crate::tree::Row;
 use crate::workspace::GraphItem;
@@ -23,6 +24,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_right(frame, app, right);
     draw_footer(frame, app, footer);
     draw_search(frame, app);
+    draw_prefix(frame, app);
     draw_help(frame, app);
 }
 
@@ -426,6 +428,17 @@ fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
+    let keymap = &app.keymap;
+    if app.prefix.is_some() {
+        let again = format!("{} again", keymap.prefix_label());
+        let help = keymap.keys_label(&[Action::Help]);
+        let mut keys = vec![("esc", "cancel"), (help.as_str(), "every key")];
+        if app.focus == Focus::Terminal {
+            keys.push((again.as_str(), "sends it to the program"));
+        }
+        frame.render_widget(Line::from(footer_spans("PREFIX", YELLOW, &keys, &[])), area);
+        return;
+    }
     if app.new_menu {
         let keys = [("w", "workspace"), ("s", "session"), ("t", "terminal"), ("f", "file or folder"), ("esc", "cancel")];
         frame.render_widget(Line::from(footer_spans("NEW", ACCENT, &keys, &[])), area);
@@ -498,6 +511,29 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(Line::from(spans), area);
         return;
     }
+    // In a terminal, the keys come from the keymap; the viewer's only
+    // when there is one to hide or show.
+    let zoom = match (app.viewer.is_open(), app.zoomed) {
+        (true, true) => Some("show viewer"),
+        (true, false) => Some("hide viewer"),
+        _ => None,
+    };
+    let terminal_keys: Vec<(String, &str)> = [
+        Some((keymap.prefix_label(), "prefix")),
+        Some((keymap.hint(&[Action::FocusLeft, Action::FocusRight]), "panels")),
+        Some((keymap.hint(&TABS), "terminals")),
+        Some((keymap.hint(&[Action::NewTab]), "new shell")),
+        Some((keymap.hint(&[Action::ClosePane]), "close")),
+        zoom.map(|label| (keymap.hint(&[Action::Zoom]), label)),
+        Some(("shift-⏎".to_string(), "new line")),
+        Some((keymap.hint(&[Action::Help]), "keys")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|(key, _)| !key.trim().is_empty())
+    .collect();
+    let terminal_keys: Vec<(&str, &str)> = terminal_keys.iter().map(|(key, label)| (key.as_str(), *label)).collect();
+    let prefix = keymap.prefix_label();
     // Where you are, then the keys that work there, then the global ones.
     let (badge, keys): (&str, &[(&str, &str)]) = match app.focus {
         Focus::Editor => (
@@ -528,15 +564,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
                 _ => &[("quit the editor", "to come back to Pulpo")],
             },
         ),
-        Focus::Terminal => (
-            "TERMINAL",
-            // ctrl-f only matters when there is a viewer to hide or show.
-            match (app.viewer.is_open(), app.zoomed) {
-                (true, true) => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-[ ]", "switch"), ("ctrl-f", "show viewer"), ("shift-⏎", "new line")],
-                (true, false) => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-[ ]", "switch"), ("ctrl-f", "hide viewer"), ("shift-⏎", "new line")],
-                _ => &[("ctrl-s", "sidebar"), ("ctrl-n", "new shell"), ("ctrl-q", "close"), ("ctrl-[ ]", "switch"), ("shift-⏎", "new line")],
-            },
-        ),
+        Focus::Terminal => ("TERMINAL", &terminal_keys),
         Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("x", "remove")]),
         Focus::Sessions if app.isolated_current().is_some() => {
             ("SESSIONS", &[("j/k", "switch"), ("⏎", "its terminal"), ("n t", "new terminal in it"), ("x x", "delete")])
@@ -554,8 +582,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let global: &[(&str, &str)] = match app.focus {
         Focus::Terminal | Focus::Editor => &[],
         // In the viewer, / finds in the file instead.
-        Focus::Viewer => &[("w s c f t", "go to panel"), ("?", "all keys"), ("q", "quit")],
-        _ => &[("w s c g f t", "go to panel"), ("n", "new"), ("?", "all keys"), ("q", "quit")],
+        Focus::Viewer => &[("w s c f t", "go to panel"), (&prefix, "prefix"), ("?", "all keys"), ("q", "quit")],
+        _ => &[("w s c g f t", "go to panel"), ("n", "new"), (&prefix, "prefix"), ("?", "all keys"), ("q", "quit")],
     };
     let color = if app.focus == Focus::Terminal { YELLOW } else { ACCENT };
     frame.render_widget(Line::from(footer_spans(badge, color, keys, global)), area);
@@ -577,6 +605,8 @@ fn footer_spans(badge: &str, color: Color, keys: &[(&str, &str)], global: &[(&st
     spans
 }
 
+/// Each panel's own keys. The prefix layer and the chords come from the
+/// keymap (`help_sections`).
 const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Go to a panel",
@@ -616,18 +646,6 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
-        "Inside a terminal",
-        &[
-            ("ctrl-s", "back to the sidebar (ctrl-s or t to come back)"),
-            ("ctrl-n", "new shell in this session"),
-            ("ctrl-q", "close this shell (asks again if something is running in it)"),
-            ("ctrl-[ ]  ctrl-1-9", "previous, next terminal of the session / terminal 1-9"),
-            ("ctrl-f", "hide / show the viewer under the terminal"),
-            ("shift-⏎", "new line in a Claude prompt"),
-            ("claude", "type it in a shell to start an agent; the terminal is named after it"),
-        ],
-    ),
-    (
         "In the viewer",
         &[
             ("⏎ / esc", "full height or split view / back to where you were"),
@@ -651,41 +669,131 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
-fn draw_help(frame: &mut Frame, app: &App) {
-    if !app.help {
-        return;
+/// Every key, by where it works: the keymap's first, then the panels'.
+fn help_sections(app: &App) -> Vec<(String, Vec<(String, String)>)> {
+    let keymap = &app.keymap;
+    let prefix = keymap.prefix.iter().map(ToString::to_string).collect::<Vec<_>>().join(" or ");
+    let mut sections: Vec<(String, Vec<(String, String)>)> = Group::ALL
+        .iter()
+        .map(|&group| {
+            let rows = keymap.rows(group).into_iter().map(|(keys, label)| (keys, label.to_string())).collect();
+            (format!("{prefix}, then: {}", group.title().to_lowercase()), rows)
+        })
+        .collect();
+    sections.push(("Anywhere, without the prefix".into(), keymap.chord_rows()));
+    let mut terminal = vec![
+        ("shift-⏎".to_string(), "new line in a Claude prompt".to_string()),
+        (format!("{0} {0}", keymap.prefix_label()), "the prefix itself, for the program".to_string()),
+        ("claude".to_string(), "type it in a shell to start an agent; the terminal is named after it".to_string()),
+    ];
+    if keymap.legacy {
+        terminal.push((
+            "ctrl-s f n q [ ] 1-9".to_string(),
+            "the old keys (sidebar, viewer, shell, close, switch); they go back to the programs in the next release".to_string(),
+        ));
     }
-    // Two columns when there's room, so it all fits on a laptop; long
-    // lines wrap.
-    let area = frame.area();
-    let columns: Vec<&[_]> = if area.width >= 160 { vec![&HELP[..3], &HELP[3..]] } else { vec![HELP] };
-    let width = area.width.min(100 * columns.len() as u16);
-    let column = (width.saturating_sub(2) / columns.len() as u16).max(1) as usize;
-    let mut texts = Vec::new();
-    for sections in &columns {
+    sections.push(("Inside a terminal".into(), terminal));
+    sections.extend(HELP.iter().map(|(title, keys)| (title.to_string(), keys.iter().map(|(k, t)| (k.to_string(), t.to_string())).collect())));
+    sections
+}
+
+fn draw_help(frame: &mut Frame, app: &App) {
+    let Some(filter) = &app.help else { return };
+    // What you typed, in a key, its text or its section's title.
+    let needle = filter.to_lowercase();
+    let sections: Vec<(String, Vec<(String, String)>)> = help_sections(app)
+        .into_iter()
+        .filter_map(|(title, rows)| {
+            if title.to_lowercase().contains(&needle) {
+                return Some((title, rows));
+            }
+            let rows: Vec<_> = rows.into_iter().filter(|(k, t)| k.to_lowercase().contains(&needle) || t.to_lowercase().contains(&needle)).collect();
+            (!rows.is_empty()).then_some((title, rows))
+        })
+        .collect();
+    let to_lines = |sections: &[(String, Vec<(String, String)>)]| -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        for (section, keys) in *sections {
-            lines.push(Line::from(format!(" {section}")).bold());
-            for (key, text) in *keys {
-                lines.push(Line::from(vec![Span::from(format!("   {key:<16}")).fg(BLUE).bold(), Span::from(*text)]));
+        for (title, keys) in sections {
+            lines.push(Line::from(format!(" {title}")).bold());
+            for (key, text) in keys {
+                lines.push(Line::from(vec![Span::from(format!("   {key:<16}")).fg(BLUE).bold(), Span::from(text.clone())]));
             }
             lines.push(Line::default());
         }
-        texts.push(lines);
+        lines
+    };
+    // Two columns when there's room, so it all fits on a laptop, split
+    // where the lines are about even; long lines wrap.
+    let area = frame.area();
+    let total: usize = sections.iter().map(|(_, rows)| rows.len() + 2).sum();
+    let mut split = sections.len();
+    if area.width >= 160 {
+        let mut count = 0;
+        let half = sections.iter().position(|(_, rows)| {
+            count += rows.len() + 2;
+            count * 2 >= total
+        });
+        split = half.map_or(sections.len(), |i| i + 1);
     }
+    let texts: Vec<Vec<Line>> = if split < sections.len() { vec![to_lines(&sections[..split]), to_lines(&sections[split..])] } else { vec![to_lines(&sections)] };
+    let width = area.width.min(100 * texts.len() as u16);
+    let column = (width.saturating_sub(2) / texts.len() as u16).max(1) as usize;
     // Rows once wrapped, give or take a word per row.
     let rows = |lines: &Vec<Line>| lines.iter().map(|l| l.width().max(1).div_ceil(column.saturating_sub(8).max(1))).sum::<usize>();
-    let height = texts.iter().map(rows).max().unwrap_or(0) as u16 + 2;
+    let height = texts.iter().map(rows).max().unwrap_or(0).max(1) as u16 + 4;
     let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
     frame.render_widget(Block::new().style(Style::new().fg(FG).bg(BG)), popup);
-    let block = block("Keyboard shortcuts", true).title_bottom(Line::from(" any key to close ").fg(DIM));
+    let block = block("Keyboard shortcuts", true).title_bottom(Line::from(" type to filter · esc closes ").fg(DIM));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    let areas = Layout::horizontal(vec![Constraint::Fill(1); texts.len()]).split(inner);
+    let [input, _, body] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    let status = if sections.is_empty() { "   nothing matches".to_string() } else { String::new() };
+    frame.render_widget(
+        Line::from(vec![Span::from(" › ").fg(BLUE).bold(), Span::from(filter.clone()), Span::from("█").fg(BLUE), Span::from(status).fg(MUTED)]),
+        input,
+    );
+    let areas = Layout::horizontal(vec![Constraint::Fill(1); texts.len()]).split(body);
     for (lines, area) in texts.into_iter().zip(areas.iter()) {
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), *area);
     }
+}
+
+/// What can follow the prefix, shown a moment after it: the keymap's
+/// groups side by side, and the chords that need no prefix under them.
+fn draw_prefix(frame: &mut Frame, app: &App) {
+    if !app.prefix_panel() || app.help.is_some() {
+        return;
+    }
+    let keymap = &app.keymap;
+    let groups: Vec<(&str, Vec<(String, &str)>)> = Group::ALL.iter().map(|&g| (g.title(), keymap.rows(g))).collect();
+    let tall = groups.iter().map(|(_, rows)| rows.len()).max().unwrap_or(0) as u16;
+    let area = frame.area();
+    // Over the bottom of the screen, just above the footer.
+    let height = (tall + 5).min(area.height.saturating_sub(1));
+    let popup = Rect { x: area.x, y: area.bottom().saturating_sub(height + 1), width: area.width, height };
+    frame.render_widget(Clear, popup);
+    let title = Line::from(vec![Span::from(format!(" {} ", keymap.prefix_label())).fg(YELLOW).bold(), Span::from("then ").fg(MUTED)]);
+    let block = Block::bordered()
+        .title(title)
+        .title_bottom(Line::from(" esc cancels · another key does what it does on its own ").fg(DIM))
+        .border_style(border(true))
+        .style(Style::new().bg(BG));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let [columns, _, chords] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(inner);
+    let areas = Layout::horizontal(vec![Constraint::Fill(1); groups.len()]).split(columns);
+    for ((title, rows), area) in groups.iter().zip(areas.iter()) {
+        let mut lines = vec![Line::from(format!(" {title}")).fg(DIM).bold()];
+        lines.extend(rows.iter().map(|(keys, label)| Line::from(vec![Span::from(format!(" {keys:<6} ")).fg(BLUE).bold(), Span::from(*label)])));
+        frame.render_widget(Paragraph::new(lines), *area);
+    }
+    let mut spans = vec![Span::from(" WITHOUT IT ").fg(DIM).bold()];
+    for (keys, label) in keymap.chord_rows() {
+        spans.push(Span::from(format!(" {keys} ")).fg(BLUE).bold());
+        spans.push(Span::from(format!("{label}  ")).fg(MUTED));
+    }
+    frame.render_widget(Line::from(spans), chords);
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {

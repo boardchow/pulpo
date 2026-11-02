@@ -199,7 +199,7 @@ fn claude_settings() -> PathBuf {
     dir.join("settings.json")
 }
 
-fn shorten(path: &std::path::Path) -> String {
+pub fn shorten(path: &std::path::Path) -> String {
     let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     match path.strip_prefix(&home) {
         Ok(rest) => format!("~/{}", rest.display()),
