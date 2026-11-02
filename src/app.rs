@@ -16,6 +16,7 @@ use crate::git;
 use crate::keymap::{Action, Key, Keymap};
 use crate::layout::{self, Layout};
 use crate::pane::{self, Dir, Node, Pane, SavedTab, Tab};
+use crate::picker::{self, Entry, Kind, Picker, Show, Target};
 use crate::procs;
 use crate::proto::{PROTOCOL, ToClient, ToServer};
 use crate::search::{Mode, Search};
@@ -70,6 +71,8 @@ pub struct Areas {
     /// The panes of the tab on screen, and the tabs in the top bar.
     pub panes: Vec<(Pane, Rect)>,
     pub tabs: Vec<(usize, Rect)>,
+    /// The top bar's counts: a click shows those terminals.
+    pub counts: Vec<(Show, Rect)>,
     pub viewer: Rect,
     /// The editor's text (inside its border).
     pub editor: Rect,
@@ -113,6 +116,11 @@ pub struct App {
     tabs_restored: bool,
     /// Naming the tab on screen.
     pub renaming: Option<String>,
+    /// Go to, or the menu.
+    pub picker: Option<Picker>,
+    /// The session and terminal on screen, and the ones before them.
+    here: Option<(PathBuf, Option<usize>)>,
+    back: Option<(PathBuf, Option<usize>)>,
     pub sidebar_hidden: bool,
     /// The terminal (its tag) last on screen in each session, and the
     /// session last used in each repository.
@@ -213,6 +221,9 @@ impl App {
             tabs: HashMap::new(),
             tabs_restored: false,
             renaming: None,
+            picker: None,
+            here: None,
+            back: None,
             sidebar_hidden: false,
             last_term: layout.terminals.clone().into_iter().collect(),
             last_session: layout.sessions.clone().into_iter().collect(),
@@ -768,6 +779,10 @@ impl App {
     /// leave something to read, unless you are in that terminal.
     pub fn tick(&mut self) {
         self.sync_tabs();
+        let now = (self.ws().root.clone(), self.active);
+        if self.here.as_ref() != Some(&now) {
+            self.back = self.here.replace(now);
+        }
         // Messages go after a while; a question stays until answered, and
         // the server being down until r.
         match &self.message {
@@ -1179,6 +1194,9 @@ impl App {
             }
             return false;
         }
+        if self.picker.is_some() {
+            return self.picker_key(key);
+        }
         if let Some(name) = &mut self.renaming {
             match key.code {
                 KeyCode::Esc => self.renaming = None,
@@ -1551,6 +1569,10 @@ impl App {
             }
             // Terminals keep running in the server, as with q.
             Action::Detach => return true,
+            Action::Goto => self.open_goto(Show::All),
+            Action::NextWaiting => self.next_waiting(),
+            Action::LastPlace => self.last_place(),
+            Action::Menu => self.open_menu(),
             Action::Files => self.open_search(Mode::Files),
             Action::SearchFiles => self.open_search(Mode::Text),
             Action::Sidebar => {
@@ -1565,6 +1587,160 @@ impl App {
             Action::Help => self.help = Some(String::new()),
         }
         false
+    }
+
+    // Go to
+
+    /// Every terminal, by repository and session, with what its agent asks
+    /// or does; on the one you're in.
+    fn open_goto(&mut self, show: Show) {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let short = |path: &Path| match path.strip_prefix(&home) {
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => path.display().to_string(),
+        };
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let mut entries = Vec::new();
+        for main in self.repos() {
+            let repo = &self.workspaces[main];
+            let group = format!("{}  {}", repo.name, short(&repo.repo));
+            for (s, ws) in self.workspaces.iter().enumerate().filter(|(_, w)| w.repo == repo.repo) {
+                // In tab order, then any not in a tab yet.
+                let tabs = self.tabs.get(&ws.root);
+                let mut ids: Vec<usize> = tabs.map(|t| t.list.iter().flat_map(Tab::terms).collect()).unwrap_or_default();
+                let untabbed: Vec<usize> = self.terms.iter().filter(|t| self.session_of(t) == Some(s) && !ids.contains(&t.id)).map(|t| t.id).collect();
+                ids.extend(untabbed);
+                for id in ids {
+                    let Some(term) = self.terms.iter().find(|t| t.id == id) else { continue };
+                    let state = self.term_state(term);
+                    let agent = self.agents.for_tab(&term.info.tag);
+                    let said = agent.map(|a| a.detail.clone()).filter(|d| !d.is_empty());
+                    let detail = match state {
+                        State::Waiting => said.unwrap_or_else(|| "waiting for you".into()),
+                        State::Done => said.map_or_else(|| "finished".into(), |d| format!("finished: {d}")),
+                        State::Running => said.unwrap_or_else(|| "working".into()),
+                        State::Idle => String::new(),
+                    };
+                    let age = agent.filter(|_| state != State::Idle).map(|a| picker::age(now.saturating_sub(a.ts))).unwrap_or_default();
+                    let tab = tabs.and_then(|t| t.list.iter().position(|tab| tab.root.contains(Pane::Term(id))));
+                    let place = match tab {
+                        Some(n) => format!("{} · tab {}", self.session_name(s), n + 1),
+                        None => self.session_name(s).to_string(),
+                    };
+                    let mut path = short(&term.info.cwd);
+                    if let Some(branch) = &ws.status.branch {
+                        path.push_str(&format!("  ·  branch {branch}"));
+                    }
+                    entries.push(Entry { group: group.clone(), text: term.label().to_string(), place, detail, age, state: Some(state), path, target: Target::Term(id) });
+                }
+            }
+        }
+        self.picker = Some(Picker::new(Kind::Goto, entries, show, self.active.map(Target::Term)));
+    }
+
+    /// Every action by name, with its key.
+    fn open_menu(&mut self) {
+        let entries = crate::keymap::MENU
+            .iter()
+            .map(|&(group, action, name)| Entry {
+                group: group.title().to_string(),
+                text: name.to_string(),
+                place: self.keymap.hint(&[action]),
+                detail: String::new(),
+                age: String::new(),
+                state: None,
+                path: String::new(),
+                target: Target::Action(action),
+            })
+            .collect();
+        self.picker = Some(Picker::new(Kind::Menu, entries, Show::All, None));
+    }
+
+    /// Keys in a picker: type to filter, tab for which terminals, ⏎ to go.
+    fn picker_key(&mut self, key: KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(picker) = &mut self.picker else { return false };
+        match key.code {
+            KeyCode::Esc => self.picker = None,
+            KeyCode::Enter => {
+                let target = picker.selected().map(|e| e.target);
+                self.picker = None;
+                match target {
+                    Some(Target::Term(id)) => self.go_to_term(id),
+                    Some(Target::Action(action)) => return self.act(action, None),
+                    None => {}
+                }
+            }
+            KeyCode::Up => picker.step(-1),
+            KeyCode::Down => picker.step(1),
+            KeyCode::Char('k' | 'p') if ctrl => picker.step(-1),
+            KeyCode::Char('j' | 'n') if ctrl => picker.step(1),
+            KeyCode::PageUp => picker.step(-10),
+            KeyCode::PageDown => picker.step(10),
+            KeyCode::Tab if picker.kind == Kind::Goto => picker.next_show(1),
+            KeyCode::BackTab if picker.kind == Kind::Goto => picker.next_show(-1),
+            KeyCode::Backspace => {
+                picker.query.pop();
+                picker.update();
+            }
+            KeyCode::Char('u') if ctrl => {
+                picker.query.clear();
+                picker.update();
+            }
+            KeyCode::Char(c) if !ctrl => {
+                picker.query.push(c);
+                picker.update();
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Into a terminal, wherever it is: its session, its tab, its pane.
+    fn go_to_term(&mut self, id: usize) {
+        let Some(term) = self.terms.iter().find(|t| t.id == id) else { return };
+        if let Some(i) = self.session_of(term) {
+            self.set_current(i);
+        }
+        self.select_term(id);
+        self.set_focus(Focus::Terminal);
+    }
+
+    /// Into the terminal that has waited longest with something to read:
+    /// those that ask before those that finished. It's read once you're
+    /// in, so again goes to the next one.
+    fn next_waiting(&mut self) {
+        let mut waiting: Vec<(bool, u64, usize)> = self
+            .terms
+            .iter()
+            .filter(|t| !(self.focus == Focus::Terminal && self.active == Some(t.id)))
+            .filter_map(|t| {
+                let state = self.term_state(t);
+                let since = self.agents.for_tab(&t.info.tag).map_or(u64::MAX, |a| a.ts);
+                matches!(state, State::Waiting | State::Done).then_some((state != State::Waiting, since, t.id))
+            })
+            .collect();
+        waiting.sort_unstable();
+        match waiting.first() {
+            Some(&(.., id)) => self.go_to_term(id),
+            None => self.message = Some("no terminal has anything to read".into()),
+        }
+    }
+
+    /// The tab or session you were on before this one.
+    fn last_place(&mut self) {
+        let Some((root, term)) = self.back.clone() else {
+            self.message = Some("nowhere to go back to yet".into());
+            return;
+        };
+        match term.filter(|id| self.terms.iter().any(|t| t.id == *id)) {
+            Some(id) => self.go_to_term(id),
+            None => {
+                if let Some(i) = self.workspaces.iter().position(|w| w.root == root) {
+                    self.set_current(i);
+                }
+            }
+        }
     }
 
     /// Go to the pane that way. The sidebar is left of every pane, its
@@ -1642,15 +1818,22 @@ impl App {
         if matches!(mouse.kind, MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
             self.pending = None;
         }
-        if (self.help.is_some() || self.new_menu) && matches!(mouse.kind, MouseEventKind::Down(_)) {
+        if (self.help.is_some() || self.new_menu || self.picker.is_some()) && matches!(mouse.kind, MouseEventKind::Down(_)) {
             self.help = None;
             self.new_menu = false;
+            self.picker = None;
         }
-        if self.search.is_some() || self.creating.is_some() || self.renaming.is_some() || self.help.is_some() || self.new_menu {
+        if self.search.is_some() || self.creating.is_some() || self.renaming.is_some() || self.picker.is_some() || self.help.is_some() || self.new_menu {
             return;
         }
         let pos = Position::new(mouse.column, mouse.row);
         let areas = self.areas.clone();
+        if let Some(&(show, _)) = areas.counts.iter().find(|(_, r)| r.contains(pos)) {
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.open_goto(show);
+            }
+            return;
+        }
         if let Some(&(n, _)) = areas.tabs.iter().find(|(_, r)| r.contains(pos)) {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
                 self.show_tab(n, true);
