@@ -399,13 +399,14 @@ fn is_copy(root: &Path) -> bool {
 }
 
 /// `'text'` for a shell.
-fn quote(text: &str) -> String {
+pub fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// The setup, run in the session's first terminal with its environment:
-/// main's images, its database, the containers, then a shell.
-pub fn setup_script(session: &Session, config: &Config, warnings: &[String]) -> String {
+/// main's images, its database, the containers, then `start` (a command,
+/// like an agent with its task), then a shell.
+pub fn setup_script(session: &Session, config: &Config, warnings: &[String], start: Option<&str>) -> String {
     let root = quote(&session.root.to_string_lossy());
     let main = &session.main_project;
     let mut s = String::from("step() { printf '\\n\\033[1m%s\\033[0m\\n' \"$1\"; }\nsetup() (\nset -e\nset -o pipefail\n");
@@ -463,7 +464,10 @@ pub fn setup_script(session: &Session, config: &Config, warnings: &[String]) -> 
         s += &format!("echo {}\n", quote(&format!("  {var}: localhost:{port}")));
     }
     s += "else\nprintf '\\n\\033[31mThe setup stopped (see above). Fix it and run those steps here, or remove the session: x x in Sessions.\\033[0m\\n'\nfi\n";
-    s += "exec \"${SHELL:-/bin/zsh}\" -l\n";
+    match start {
+        Some(command) => s += &format!("exec \"${{SHELL:-/bin/zsh}}\" -l -c {}\n", quote(&format!("{command}; exec \"${{SHELL:-/bin/zsh}}\" -l"))),
+        None => s += "exec \"${SHELL:-/bin/zsh}\" -l\n",
+    }
     s
 }
 
@@ -645,7 +649,7 @@ mod tests {
             ports: vec![],
             images: vec![],
         };
-        let script = setup_script(&session, &Config::default(), &[]);
+        let script = setup_script(&session, &Config::default(), &[], None);
         std::process::Command::new("sh").args(["-c", &script]).env("SHELL", "/usr/bin/true").output().unwrap();
         assert_eq!(fs::read_to_string(t.join("copy/a.txt")).unwrap(), "committed");
         assert!(!t.join("copy/new.txt").exists());
@@ -653,6 +657,13 @@ mod tests {
         // Main keeps its work.
         assert_eq!(fs::read_to_string(t.join("main/a.txt")).unwrap(), "edited");
         assert!(t.join("main/new.txt").exists());
+        // Then what it starts, before the shell (an agent with its task).
+        let marker = t.join("started");
+        let start = format!(r"echo 'it'\''s on' > {}", quote(&marker.to_string_lossy()));
+        let script = setup_script(&session, &Config::default(), &[], Some(&start));
+        let mut shell = std::process::Command::new("sh");
+        shell.args(["-c", &script]).env("SHELL", "/bin/sh").stdin(std::process::Stdio::null()).output().unwrap();
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "it's on\n");
         fs::remove_dir_all(&t).unwrap();
     }
 

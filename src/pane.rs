@@ -128,6 +128,35 @@ impl Node {
         true
     }
 
+    /// Every border between two halves, to drag with the mouse.
+    pub fn dividers(&self, area: Rect) -> Vec<Divider> {
+        let mut out = Vec::new();
+        self.collect_dividers(area, &mut Vec::new(), &mut out);
+        out
+    }
+
+    fn collect_dividers(&self, area: Rect, path: &mut Vec<bool>, out: &mut Vec<Divider>) {
+        let Node::Split { beside, ratio, a, b } = self else { return };
+        let (first, second) = cut(area, *beside, *ratio);
+        out.push(Divider { path: path.clone(), beside: *beside, area, at: if *beside { second.x } else { second.y } });
+        path.push(false);
+        a.collect_dividers(first, path, out);
+        path.pop();
+        path.push(true);
+        b.collect_dividers(second, path, out);
+        path.pop();
+    }
+
+    /// Set the ratio of the split at `path` (false: into `a`, true: into `b`).
+    pub fn set_ratio(&mut self, path: &[bool], to: u16) {
+        let Node::Split { ratio, a, b, .. } = self else { return };
+        match path.split_first() {
+            None => *ratio = to.clamp(MIN_RATIO, MAX_RATIO),
+            Some((false, rest)) => a.set_ratio(rest, to),
+            Some((true, rest)) => b.set_ratio(rest, to),
+        }
+    }
+
     /// For layout.json: terminals by their tag; the file pane and unknown
     /// terminals are left out.
     pub fn save(&self, tag: &impl Fn(usize) -> Option<String>) -> Option<Saved> {
@@ -141,6 +170,59 @@ impl Node {
             },
         }
     }
+}
+
+/// A border between the two halves of a split: where it is in the tree,
+/// the split's area, and the first column (or row) of its second half.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Divider {
+    pub path: Vec<bool>,
+    pub beside: bool,
+    pub area: Rect,
+    pub at: u16,
+}
+
+impl Divider {
+    /// On the border: the edge of either pane's frame along it.
+    pub fn hit(&self, x: u16, y: u16) -> bool {
+        let (along, across, start, end) = if self.beside { (x, y, self.area.y, self.area.bottom()) } else { (y, x, self.area.x, self.area.right()) };
+        (along + 1 == self.at || along == self.at) && (start..end).contains(&across)
+    }
+
+    /// The ratio that puts the border at `x` (or `y`).
+    pub fn ratio_at(&self, x: u16, y: u16) -> u16 {
+        let (pos, start, size) = if self.beside { (x, self.area.x, self.area.width) } else { (y, self.area.y, self.area.height) };
+        (pos.saturating_sub(start) as u32 * 100 / size.max(1) as u32) as u16
+    }
+}
+
+/// Ways to lay out a tab's panes, `L` going from one to the next.
+pub const LAYOUTS: [&str; 4] = ["main pane left", "side by side", "one above the other", "grid"];
+
+/// The panes, the first one the main one, laid out the `n`th way.
+pub fn arrange(panes: &[Pane], n: usize) -> Option<Node> {
+    let (&first, rest) = panes.split_first()?;
+    let leaf = |p: &Pane| Node::Leaf(*p);
+    Some(match n % LAYOUTS.len() {
+        0 if !rest.is_empty() => Node::Split { beside: true, ratio: 60, a: Box::new(Node::Leaf(first)), b: Box::new(even(rest.iter().map(leaf).collect(), false)) },
+        0 => Node::Leaf(first),
+        1 => even(panes.iter().map(leaf).collect(), true),
+        2 => even(panes.iter().map(leaf).collect(), false),
+        _ => {
+            let columns = (panes.len() as f64).sqrt().ceil() as usize;
+            even(panes.chunks(columns).map(|row| even(row.iter().map(leaf).collect(), true)).collect(), false)
+        }
+    })
+}
+
+/// Nodes one after the other, each the same size.
+fn even(mut nodes: Vec<Node>, beside: bool) -> Node {
+    if nodes.len() == 1 {
+        return nodes.remove(0);
+    }
+    let ratio = (100 / nodes.len()) as u16;
+    let first = nodes.remove(0);
+    Node::Split { beside, ratio, a: Box::new(first), b: Box::new(even(nodes, beside)) }
 }
 
 /// `area` cut in two, the first part `ratio` percent of it.
@@ -183,6 +265,8 @@ pub struct Tab {
     pub focus: Pane,
     pub term: Option<usize>,
     pub name: Option<String>,
+    /// The layout `L` last gave it, if any.
+    pub layout: Option<usize>,
 }
 
 impl Tab {
@@ -191,7 +275,7 @@ impl Tab {
             Pane::Term(id) => Some(id),
             Pane::File => None,
         };
-        Tab { root: Node::Leaf(pane), focus: pane, term, name: None }
+        Tab { root: Node::Leaf(pane), focus: pane, term, name: None, layout: None }
     }
 
     pub fn set_focus(&mut self, pane: Pane) {
@@ -318,7 +402,7 @@ mod tests {
 
     #[test]
     fn removes_and_collapses() {
-        let mut tab = Tab { root: three(), focus: T2, term: Some(2), name: None };
+        let mut tab = Tab { root: three(), focus: T2, term: Some(2), name: None, layout: None };
         assert!(tab.remove(T2));
         assert_eq!(tab.root.panes(), vec![T1, T3]);
         // Its focus moved to a pane still there.
@@ -345,6 +429,39 @@ mod tests {
         }
         let Node::Split { ratio, .. } = &root else { panic!() };
         assert_eq!(*ratio, MIN_RATIO);
+    }
+
+    #[test]
+    fn drags_a_border() {
+        let mut root = three();
+        let dividers = root.dividers(Rect::new(0, 0, 100, 40));
+        assert_eq!(dividers.len(), 2);
+        // Between 1 and the right half: either frame's edge, all the way down.
+        let outer = &dividers[0];
+        assert!(outer.hit(49, 0) && outer.hit(50, 39) && !outer.hit(48, 5));
+        // Between 2 and 3, only on the right half.
+        let inner = &dividers[1];
+        assert!(inner.hit(70, 20) && !inner.hit(20, 20));
+        root.set_ratio(&inner.path, inner.ratio_at(70, 30));
+        let rects = root.layout(Rect::new(0, 0, 100, 40));
+        assert_eq!(rects[1].1.height, 30);
+    }
+
+    #[test]
+    fn arranges_panes() {
+        let panes = [T1, T2, T3, Pane::File];
+        let area = Rect::new(0, 0, 100, 40);
+        // The main one on the left, the rest stacked on the right.
+        let main = arrange(&panes, 0).unwrap().layout(area);
+        assert_eq!(main[0], (T1, Rect::new(0, 0, 60, 40)));
+        assert!(main[1..].iter().all(|(_, r)| r.x == 60 && r.width == 40));
+        // Side by side, evenly (give or take a column).
+        let columns = arrange(&panes, 1).unwrap().layout(area);
+        assert!(columns.iter().all(|(_, r)| r.width.abs_diff(25) <= 1));
+        // A grid of two by two.
+        let grid = arrange(&panes, 3).unwrap().layout(area);
+        assert_eq!(grid.iter().map(|(_, r)| (r.x, r.y)).collect::<Vec<_>>(), vec![(0, 0), (50, 0), (0, 20), (50, 20)]);
+        assert_eq!(arrange(&[T1], 0), Some(Node::Leaf(T1)));
     }
 
     #[test]

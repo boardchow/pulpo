@@ -96,12 +96,14 @@ pub struct Picker {
     pub entries: Vec<Entry>,
     pub rows: Vec<Row>,
     pub state: ListState,
+    /// Shown at this cell (a right click), else in the middle.
+    pub at: Option<(u16, u16)>,
 }
 
 impl Picker {
     /// On `selected` if it's there, else the first entry.
     pub fn new(kind: Kind, entries: Vec<Entry>, show: Show, selected: Option<Target>) -> Picker {
-        let mut picker = Picker { kind, query: String::new(), show, entries, rows: Vec::new(), state: ListState::default() };
+        let mut picker = Picker { kind, query: String::new(), show, entries, rows: Vec::new(), state: ListState::default(), at: None };
         picker.update();
         if let Some(row) = picker.rows.iter().position(|r| matches!(r, Row::Entry(i) if Some(picker.entries[*i].target) == selected)) {
             picker.state.select(Some(row));

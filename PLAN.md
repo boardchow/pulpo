@@ -19,6 +19,7 @@ pulpo (one binary)
 ├── app.rs      state: focus, selection, keys, mouse, terminal tabs
 ├── pane.rs     tabs and panes: a tree of splits per tab, neighbors, resizing, saved by terminal tag
 ├── picker.rs   go to (every terminal, by repository) and the menu (every action): filtered by typed words and by state
+├── input.rs    typing in prompts, with readline keys (ctrl-u, ctrl-w, alt-backspace)
 ├── keymap.rs   the prefix (ctrl-space, ctrl-b) and its keys, the chords without it; footer, prefix panel and help read it
 ├── doctor.rs   `pulpo doctor`: whether ctrl-space and Ghostty's Option key reach Pulpo, and the hooks
 ├── workspace.rs  repo registry + per-repository state (status, tree)
@@ -124,13 +125,13 @@ own version of the file.
 - [x] A built-in editor that looks exactly like the viewer (micro is gone; `$PULPO_EDITOR` for your own).
 - [x] `pulpo hooks install | status | remove` instead of pasting the hooks config.
 - [x] Program status (OSC 7501, and OSC 9;4 progress until a program reports it): what a program says beats the heuristics.
-- [ ] Terminal: links, scrollback search. (Clipboard, OSC 52: done.)
+- [ ] Terminal: links, copying from the scrollback with the keyboard. (Clipboard, OSC 52, and scrollback search: done.)
 - [x] Notification (OSC 9 to Ghostty) when an agent waits for input or finishes, at most one per terminal every 10 s.
 - [x] One key grammar (Omarchy's tmux one): a prefix that works inside terminals, chords without it, a prefix panel, a help you can filter, `keys.toml`. The old ctrl keys inside terminals go back to the programs next release.
 - [x] Tabs and panes: each session's tabs, each a tree of splits of terminals and the file pane, kept across restarts. A top bar (where you are, the tabs, who waits and works, PREFIX and ZOOM) and the sidebar in one box.
 - [x] Go to (every terminal of every repo, by state, with what its agent asks), the next one to read, back to the last place, and a menu of every action (`picker.rs`).
 - [x] Themes: following Ghostty's by default, any Ghostty theme, Omarchy's first, tried live in a picker. A Ghostty theme's background, foreground and ANSI colors give the rest (greys faded from the foreground, blue as the accent, syntax from the ANSI colors as Linear Dark's are).
-- [ ] The rest of the UI plan: layouts and Swarm, scrollback search, one text input with readline keys, right-click menus, dragging pane borders.
+- [x] Layouts (`L`: main pane left, side by side, stacked, grid), the board (every terminal of the repository, tiled), swarms (N task sessions, Claude started on a task in each once set up), scrolling back and finding in a terminal, readline keys in every prompt (`input.rs`), right-click menus, dragging pane borders.
 - [ ] Codex support.
 
 ## Terminals that keep running
