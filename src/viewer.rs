@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use ratatui::style::{Color, Modifier, Style, Stylize};
 
-use crate::theme::{ADDED_BG, BLUE, BORDER, DIM, FIND_BG, GREEN, HOVER, MARK_BG, RED, REMOVED_BG, YELLOW};
+use crate::theme;
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Theme};
@@ -305,14 +305,14 @@ impl Viewer {
             let left = (width.saturating_sub(1) / 2) as usize;
             let (old, new) = &self.pairs[i];
             let mut spans = fit(old.clone().map(highlight), left);
-            spans.push(Span::styled("│", Style::default().fg(BORDER)));
+            spans.push(Span::styled("│", Style::default().fg(theme::border())));
             spans.extend(fit(new.clone().map(highlight), (width as usize).saturating_sub(left + 1)));
             Line::from(spans)
         } else {
             highlight(self.lines[i].clone())
         };
         if self.mark == Some(i) {
-            line = line.patch_style(Style::default().bg(MARK_BG));
+            line = line.patch_style(Style::default().bg(theme::mark_bg()));
         }
         line
     }
@@ -356,13 +356,13 @@ impl Viewer {
                 }
                 let first_match = matches.partition_point(|&m| m < start);
                 if matches.get(first_match).is_some_and(|&m| m < end) {
-                    return (Some(YELLOW), in_view);
+                    return (Some(theme::yellow()), in_view);
                 }
                 let kinds = self.kinds.get(inline(start)..inline(end).min(self.kinds.len())).unwrap_or_default();
                 let color = match (kinds.contains(&Kind::Added), kinds.contains(&Kind::Removed)) {
-                    (true, true) => Some(BLUE),
-                    (true, false) => Some(GREEN),
-                    (false, true) => Some(RED),
+                    (true, true) => Some(theme::blue()),
+                    (true, false) => Some(theme::green()),
+                    (false, true) => Some(theme::red()),
                     _ => None,
                 };
                 (color, in_view)
@@ -432,14 +432,14 @@ fn load_file(path: &Path) -> Content {
         return Content::note("binary file");
     }
     let text = String::from_utf8_lossy(&bytes);
-    let (syntaxes, theme) = assets();
-    let mut highlighter = HighlightLines::new(syntax_for(path), theme);
+    let (syntaxes, colors) = assets();
+    let mut highlighter = HighlightLines::new(syntax_for(path), &colors);
     let width = text.lines().count().to_string().len();
     let lines = LinesWithEndings::from(&text)
         .enumerate()
         .map(|(i, line)| {
             let ranges = if i < MAX_HIGHLIGHTED_LINES { highlighter.highlight_line(line, syntaxes).ok() } else { None };
-            let mut spans = vec![Span::from(format!("{:>width$}  ", i + 1)).fg(DIM)];
+            let mut spans = vec![Span::from(format!("{:>width$}  ", i + 1)).fg(theme::dim())];
             spans.extend(styled(ranges, line));
             Line::from(spans)
         })
@@ -531,9 +531,9 @@ fn load_diff(mut cmd: Command, path: &Path) -> Content {
     }
 
     // One highlighter per side, so each follows its own version of the file.
-    let (syntaxes, theme) = assets();
+    let (syntaxes, colors) = assets();
     let syntax = syntax_for(path);
-    let (mut new_side, mut old_side) = (HighlightLines::new(syntax, theme), HighlightLines::new(syntax, theme));
+    let (mut new_side, mut old_side) = (HighlightLines::new(syntax, &colors), HighlightLines::new(syntax, &colors));
     let width = rows.iter().map(|r| r.1.max(r.2)).max().unwrap_or(0).to_string().len();
     let mut content = Content { gutter: width + 3, ..Content::default() };
     let (mut added, mut removed) = (0, 0);
@@ -556,9 +556,9 @@ fn load_diff(mut cmd: Command, path: &Path) -> Content {
             }
         };
         let (marker, fg, bg) = match kind {
-            Kind::Added => ('+', GREEN, Some(ADDED_BG)),
-            Kind::Removed => ('-', RED, Some(REMOVED_BG)),
-            _ => (' ', DIM, None),
+            Kind::Added => ('+', theme::green(), Some(theme::added_bg())),
+            Kind::Removed => ('-', theme::red(), Some(theme::removed_bg())),
+            _ => (' ', theme::dim(), None),
         };
         if bg.is_some() && (i == 0 || matches!(rows[i - 1].0, Kind::Same | Kind::Gap)) {
             content.changes.push(content.lines.len());
@@ -624,7 +624,7 @@ fn load_commit(root: &Path, hash: &str) -> Content {
         .map(|line| {
             let line = clean(line);
             if line.starts_with("commit ") {
-                return Line::from(line).fg(YELLOW);
+                return Line::from(line).fg(theme::yellow());
             }
             // " src/a.rs | 12 +++---"
             if let Some((file, bar)) = line.split_once(" | ")
@@ -634,8 +634,8 @@ fn load_commit(root: &Path, hash: &str) -> Content {
                 let plus = marks.chars().filter(|&c| c == '+').count();
                 return Line::from(vec![
                     Span::from(format!("{file} | {count} ")),
-                    Span::from("+".repeat(plus)).fg(GREEN),
-                    Span::from("-".repeat(marks.len() - plus)).fg(RED),
+                    Span::from("+".repeat(plus)).fg(theme::green()),
+                    Span::from("-".repeat(marks.len() - plus)).fg(theme::red()),
                 ]);
             }
             Line::from(line)
@@ -696,7 +696,7 @@ pub(crate) fn shift(line: Line<'static>, gutter: usize, n: usize) -> Line<'stati
 /// its background; a missing line is a shaded blank.
 fn fit(line: Option<Line<'static>>, width: usize) -> Vec<Span<'static>> {
     let Some(Line { spans, style, .. }) = line else {
-        return vec![Span::styled(" ".repeat(width), Style::default().bg(HOVER))];
+        return vec![Span::styled(" ".repeat(width), Style::default().bg(theme::hover()))];
     };
     let mut out = Vec::new();
     let mut used = 0;
@@ -787,7 +787,7 @@ pub(crate) fn highlight_matches(line: Line<'static>, query: &str, ignore_case: b
         return line;
     }
 
-    let found = Style::default().bg(FIND_BG);
+    let found = Style::default().bg(theme::find_bg());
     let Line { spans: old, style, alignment } = line;
     let mut spans = Vec::new();
     let mut pos = 0;
@@ -813,7 +813,7 @@ pub(crate) fn highlight_matches(line: Line<'static>, query: &str, ignore_case: b
 }
 
 fn note(text: &str) -> Line<'static> {
-    Line::from(format!(" {text}")).fg(DIM).italic()
+    Line::from(format!(" {text}")).fg(theme::dim()).italic()
 }
 
 fn clean(text: &str) -> String {
@@ -822,14 +822,15 @@ fn clean(text: &str) -> String {
 
 /// Load the syntax definitions in the background so the first file opens fast.
 pub fn warm_up() {
-    std::thread::spawn(assets);
+    std::thread::spawn(|| {
+        assets();
+    });
 }
 
-pub(crate) fn assets() -> &'static (SyntaxSet, Theme) {
-    static ASSETS: OnceLock<(SyntaxSet, Theme)> = OnceLock::new();
-    ASSETS.get_or_init(|| {
-        (two_face::syntax::extra_newlines(), crate::theme::syntax())
-    })
+/// The syntaxes, and the colors of the theme on screen.
+pub(crate) fn assets() -> (&'static SyntaxSet, std::sync::Arc<Theme>) {
+    static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+    (SYNTAXES.get_or_init(two_face::syntax::extra_newlines), crate::theme::syntax())
 }
 
 fn color(c: syntect::highlighting::Color) -> Color {
@@ -848,7 +849,7 @@ mod tests {
             Viewer { lines: vec![Line::default(); 10], kinds, changes: vec![2, 7], height: 3, ..Viewer::default() };
         // Five cells of two rows each; the first three rows are in view.
         let ruler = viewer.ruler(5);
-        assert_eq!(ruler, [(None, true), (Some(GREEN), true), (None, false), (Some(RED), false), (None, false)]);
+        assert_eq!(ruler, [(None, true), (Some(theme::green()), true), (None, false), (Some(theme::red()), false), (None, false)]);
         viewer.jump_to_ruler(3, 5);
         assert_eq!((viewer.goto, viewer.change_at), (Some(7), Some(1)));
     }
@@ -877,7 +878,7 @@ mod tests {
         let line = Line::from(vec![Span::from("12  "), Span::from("let fo"), Span::from("o = Foo;")]);
         let out = highlight_matches(line, "foo", true, 4);
         let pieces: Vec<(&str, bool)> =
-            out.spans.iter().map(|s| (s.content.as_ref(), s.style.bg == Some(FIND_BG))).collect();
+            out.spans.iter().map(|s| (s.content.as_ref(), s.style.bg == Some(theme::find_bg()))).collect();
         assert_eq!(pieces, [("12  ", false), ("let ", false), ("fo", true), ("o", true), (" = ", false), ("Foo", true), (";", false)]);
     }
 }

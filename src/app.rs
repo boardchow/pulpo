@@ -116,8 +116,11 @@ pub struct App {
     tabs_restored: bool,
     /// Naming the tab on screen.
     pub renaming: Option<String>,
-    /// Go to, or the menu.
+    /// Go to, the menu, or the themes.
     pub picker: Option<Picker>,
+    /// The themes the theme picker lists, and the one to put back on esc.
+    themes: Vec<String>,
+    theme_before: String,
     /// The session and terminal on screen, and the ones before them.
     here: Option<(PathBuf, Option<usize>)>,
     back: Option<(PathBuf, Option<usize>)>,
@@ -207,6 +210,7 @@ impl App {
         agents.load();
         let layout = layout::load();
         let (keymap, keys_error) = Keymap::load();
+        let theme_error = crate::theme::apply(&crate::theme::chosen()).err().map(|e| format!("theme: {e}; using Linear Dark"));
         let mut app = App {
             workspaces: Vec::new(),
             isolated: Vec::new(),
@@ -222,6 +226,8 @@ impl App {
             tabs_restored: false,
             renaming: None,
             picker: None,
+            themes: Vec::new(),
+            theme_before: String::new(),
             here: None,
             back: None,
             sidebar_hidden: false,
@@ -242,7 +248,7 @@ impl App {
             viewer: Viewer::default(),
             sessions_state: ListState::default().with_selected(Some(0)),
             areas: Areas::default(),
-            message: keys_error.or_else(|| {
+            message: keys_error.or(theme_error).or_else(|| {
                 (!crate::agents::hooks_installed())
                     .then(|| "run `pulpo hooks install` to see what Claude runs and asks in each terminal".into())
             }),
@@ -1573,6 +1579,7 @@ impl App {
             Action::NextWaiting => self.next_waiting(),
             Action::LastPlace => self.last_place(),
             Action::Menu => self.open_menu(),
+            Action::Theme => self.open_themes(),
             Action::Files => self.open_search(Mode::Files),
             Action::SearchFiles => self.open_search(Mode::Text),
             Action::Sidebar => {
@@ -1656,11 +1663,77 @@ impl App {
         self.picker = Some(Picker::new(Kind::Menu, entries, Show::All, None));
     }
 
+    /// Following Ghostty, Linear Dark, Omarchy's themes as Ghostty has
+    /// them, yours, then every theme Ghostty comes with.
+    fn open_themes(&mut self) {
+        let following = crate::theme::ghostty_theme().unwrap_or_else(|| "none set, so Linear Dark".into());
+        let mut groups: Vec<(&str, Vec<(String, String)>)> = vec![(
+            "PULPO",
+            vec![
+                (crate::theme::FOLLOW.into(), format!("Follow Ghostty  (now {following})")),
+                (crate::theme::LINEAR.into(), crate::theme::LINEAR.into()),
+            ],
+        )];
+        let bundled = crate::theme::ghostty_themes();
+        let omarchy = crate::theme::OMARCHY.iter().filter(|t| bundled.iter().any(|b| b == *t)).map(|t| (t.to_string(), t.to_string()));
+        groups.push(("OMARCHY'S", omarchy.collect()));
+        groups.push(("YOURS", crate::theme::user_themes().into_iter().map(|t| (t.clone(), t)).collect()));
+        groups.push(("GHOSTTY'S", bundled.into_iter().map(|t| (t.clone(), t)).collect()));
+        self.theme_before = crate::theme::chosen();
+        self.themes.clear();
+        let mut entries = Vec::new();
+        let mut on = None;
+        for (group, themes) in groups {
+            for (name, text) in themes {
+                let target = Target::Theme(self.themes.len());
+                if name == self.theme_before && on.is_none() {
+                    on = Some(target);
+                }
+                let place = if name == self.theme_before { "on".to_string() } else { String::new() };
+                self.themes.push(name);
+                entries.push(Entry { group: group.into(), text, place, detail: String::new(), age: String::new(), state: None, path: String::new(), target });
+            }
+        }
+        self.picker = Some(Picker::new(Kind::Theme, entries, Show::All, on));
+    }
+
+    /// Put a theme on screen: the panels, the terminals, and the file in
+    /// the viewer or the editor, colored again.
+    fn show_theme(&mut self, name: &str) {
+        if let Err(e) = crate::theme::apply(name) {
+            self.message = Some(e);
+            return;
+        }
+        let root = self.ws().root.clone();
+        self.viewer.reload(&root);
+        if let Some(editor) = &mut self.editor {
+            editor.recolor();
+        }
+    }
+
     /// Keys in a picker: type to filter, tab for which terminals, ⏎ to go.
+    /// Moving through the themes shows each one.
     fn picker_key(&mut self, key: KeyEvent) -> bool {
+        let quit = self.picker_input(key);
+        if let Some(picker) = &self.picker
+            && picker.kind == Kind::Theme
+            && let Some(Target::Theme(i)) = picker.selected().map(|e| e.target)
+            && let Some(name) = self.themes.get(i).cloned()
+        {
+            self.show_theme(&name);
+        }
+        quit
+    }
+
+    fn picker_input(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let Some(picker) = &mut self.picker else { return false };
         match key.code {
+            KeyCode::Esc if picker.kind == Kind::Theme => {
+                self.picker = None;
+                let before = self.theme_before.clone();
+                self.show_theme(&before);
+            }
             KeyCode::Esc => self.picker = None,
             KeyCode::Enter => {
                 let target = picker.selected().map(|e| e.target);
@@ -1668,6 +1741,14 @@ impl App {
                 match target {
                     Some(Target::Term(id)) => self.go_to_term(id),
                     Some(Target::Action(action)) => return self.act(action, None),
+                    Some(Target::Theme(i)) => {
+                        let name = self.themes.get(i).cloned().unwrap_or_default();
+                        self.show_theme(&name);
+                        self.message = Some(match crate::theme::choose(&name) {
+                            Ok(path) => format!("theme: {name} (kept in {})", path.display()),
+                            Err(e) => format!("could not keep the theme: {e}"),
+                        });
+                    }
                     None => {}
                 }
             }

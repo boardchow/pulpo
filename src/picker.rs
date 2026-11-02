@@ -11,6 +11,7 @@ use crate::keymap::Action;
 pub enum Kind {
     Goto,
     Menu,
+    Theme,
 }
 
 /// Which terminals go to shows.
@@ -53,6 +54,8 @@ impl Show {
 pub enum Target {
     Term(usize),
     Action(Action),
+    /// A theme, by its index in the list the picker was made from.
+    Theme(usize),
 }
 
 pub struct Entry {

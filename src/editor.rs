@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use syntect::highlighting::{HighlightIterator, HighlightState, Highlighter};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference};
 
-use crate::theme::{DIM, HOVER, TEXT_SELECTION};
+use crate::theme;
 use crate::viewer::{self, MAX_BYTES, MAX_HIGHLIGHTED_LINES};
 
 /// Typing within this long of the last edit undoes together.
@@ -74,6 +74,11 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// The theme changed: color the file again.
+    pub fn recolor(&mut self) {
+        self.highlight.reset();
+    }
+
     /// Open `path`, with the cursor on `line` (from 1).
     pub fn open(path: PathBuf, line: Option<usize>) -> Result<Editor, String> {
         if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_BYTES as u64) {
@@ -625,7 +630,7 @@ impl Editor {
         let selection = self.selection();
         (self.scroll..end)
             .map(|i| {
-                let mut spans = vec![Span::from(format!("{:>width$}  ", i + 1)).fg(DIM)];
+                let mut spans = vec![Span::from(format!("{:>width$}  ", i + 1)).fg(theme::dim())];
                 spans.extend(self.highlight.spans(i, &self.lines));
                 let mut line = Line::from(spans);
                 if let Some(query) = self.find.as_deref().filter(|q| !q.is_empty()) {
@@ -633,7 +638,7 @@ impl Editor {
                     line = viewer::highlight_matches(line, query, ignore_case, gutter);
                 }
                 if selection.is_none() && i == self.cursor.line {
-                    line = line.patch_style(Style::default().bg(HOVER));
+                    line = line.patch_style(Style::default().bg(theme::hover()));
                 }
                 if let Some((start, end)) = selection.filter(|(s, e)| (s.line..=e.line).contains(&i)) {
                     let from = if i == start.line { self.display_col(start) } else { 0 };
@@ -657,7 +662,7 @@ impl Editor {
 
 /// The selection's background over columns `from..to` of a drawn line.
 fn mark(line: Line<'static>, from: usize, to: usize) -> Line<'static> {
-    let selected = Style::default().bg(TEXT_SELECTION);
+    let selected = Style::default().bg(theme::text_selection());
     let Line { spans: old, style, alignment } = line;
     let mut spans = Vec::new();
     let mut at = 0;
@@ -710,6 +715,12 @@ impl Highlight {
         Highlight { syntax, states: Vec::new(), spans: Vec::new() }
     }
 
+    /// Everything redone, in the colors on screen now.
+    fn reset(&mut self) {
+        self.states.clear();
+        self.spans.clear();
+    }
+
     /// Line `from` changed: it and everything after it is redone.
     fn invalidate(&mut self, from: usize) {
         self.states.truncate(from + 1);
@@ -717,8 +728,8 @@ impl Highlight {
     }
 
     fn spans(&mut self, i: usize, lines: &[String]) -> Vec<Span<'static>> {
-        let (syntaxes, theme) = viewer::assets();
-        let highlighter = Highlighter::new(theme);
+        let (syntaxes, colors) = viewer::assets();
+        let highlighter = Highlighter::new(&colors);
         if self.states.is_empty() {
             self.states.push((ParseState::new(self.syntax), HighlightState::new(&highlighter, ScopeStack::new())));
         }
@@ -851,8 +862,8 @@ mod tests {
         let mut e = editor("let x = \"hi\";\n");
         let spans = e.highlight.spans(0, &e.lines);
         // The same pieces and colors the viewer gets for the same line.
-        let (syntaxes, theme) = viewer::assets();
-        let mut viewer = syntect::easy::HighlightLines::new(viewer::syntax_for(&e.path), theme);
+        let (syntaxes, colors) = viewer::assets();
+        let mut viewer = syntect::easy::HighlightLines::new(viewer::syntax_for(&e.path), &colors);
         let expected = viewer::styled(viewer.highlight_line("let x = \"hi\";\n", syntaxes).ok(), "let x = \"hi\";\n");
         assert_eq!(spans, expected);
         assert!(spans.len() > 3);

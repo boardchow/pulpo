@@ -276,8 +276,8 @@ impl Term {
                 }
                 target.set_style(
                     Style::default()
-                        .fg(color(cell.fgcolor(), theme::FG))
-                        .bg(color(cell.bgcolor(), theme::BG))
+                        .fg(color(cell.fgcolor(), theme::fg()))
+                        .bg(color(cell.bgcolor(), theme::bg()))
                         .add_modifier(modifier),
                 );
             }
@@ -350,7 +350,7 @@ pub fn nz(n: u16) -> NonZeroU16 {
 fn color(c: vt100::Color, default: Color) -> Color {
     match c {
         vt100::Color::Default => default,
-        vt100::Color::Idx(i) if i < 16 => theme::ANSI[i as usize],
+        vt100::Color::Idx(i) if i < 16 => theme::ansi()[i as usize],
         vt100::Color::Idx(i) => Color::Indexed(i),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }

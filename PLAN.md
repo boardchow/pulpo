@@ -34,7 +34,7 @@ pulpo (one binary)
 ├── layout.rs   where you were, and what was open, across restarts and reboots
 ├── viewer.rs   read-only file view (syntect), inline diffs, find in file
 ├── editor.rs   editing a file, highlighted by the viewer's own code (identical by construction)
-├── theme.rs    Linear Dark colors (UI, syntax, terminal palette)
+├── theme.rs    the colors on screen (UI, syntax, terminal palette): Linear Dark, or any Ghostty theme, following Ghostty's by default
 ├── tree.rs     lazy file tree, gitignore-aware (ignore crate), and the tree of a search's matches
 ├── git.rs      `git status --porcelain=v2`, `--numstat` and `log --graph` parsers
 ├── status.rs   program status reports (OSC 7501)
@@ -129,9 +129,9 @@ own version of the file.
 - [x] One key grammar (Omarchy's tmux one): a prefix that works inside terminals, chords without it, a prefix panel, a help you can filter, `keys.toml`. The old ctrl keys inside terminals go back to the programs next release.
 - [x] Tabs and panes: each session's tabs, each a tree of splits of terminals and the file pane, kept across restarts. A top bar (where you are, the tabs, who waits and works, PREFIX and ZOOM) and the sidebar in one box.
 - [x] Go to (every terminal of every repo, by state, with what its agent asks), the next one to read, back to the last place, and a menu of every action (`picker.rs`).
-- [ ] The rest of the UI plan: themes that follow Ghostty, layouts and Swarm, scrollback search.
+- [x] Themes: following Ghostty's by default, any Ghostty theme, Omarchy's first, tried live in a picker. A Ghostty theme's background, foreground and ANSI colors give the rest (greys faded from the foreground, blue as the accent, syntax from the ANSI colors as Linear Dark's are).
+- [ ] The rest of the UI plan: layouts and Swarm, scrollback search, one text input with readline keys, right-click menus, dragging pane borders.
 - [ ] Codex support.
-- [ ] Read the theme from the VS Code extension instead of copying it.
 
 ## Terminals that keep running
 
