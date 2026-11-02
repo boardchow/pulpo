@@ -11,6 +11,7 @@ use crate::app::{App, Focus};
 use crate::git::Change;
 use crate::keymap::{Action, Group, TABS};
 use crate::pane::Pane;
+use crate::picker::{self, Kind, Show};
 use crate::search::Mode;
 use crate::tree::Row;
 use crate::workspace::GraphItem;
@@ -31,6 +32,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_right(frame, app, right);
     draw_footer(frame, app, footer);
     draw_search(frame, app);
+    draw_picker(frame, app);
     draw_prefix(frame, app);
     draw_help(frame, app);
 }
@@ -103,12 +105,14 @@ fn draw_topbar(frame: &mut Frame, app: &mut App, area: Rect) {
     let states: Vec<State> = app.terms.iter().map(|term| app.term_state(term)).collect();
     let count = |state: State| states.iter().filter(|&&s| s == state).count();
     let (waiting, working) = (count(State::Waiting) + count(State::Done), count(State::Running));
-    let mut right = Vec::new();
+    // Each count opens go to on those terminals.
+    let mut right: Vec<(Span, Option<Show>)> = Vec::new();
     if waiting > 0 {
-        right.extend([Span::from(format!("◆ {waiting} to read")).fg(MAGENTA).bold(), Span::from("  ")]);
+        right.extend([(Span::from(format!("◆ {waiting} to read")).fg(MAGENTA).bold(), Some(Show::ToRead)), (Span::from("  "), None)]);
     }
     if working > 0 {
-        right.extend([Span::from(format!("{} {working} working", state_icon(State::Running).0)).fg(YELLOW), Span::from("  ")]);
+        let label = format!("{} {working} working", state_icon(State::Running).0);
+        right.extend([(Span::from(label).fg(YELLOW), Some(Show::Working)), (Span::from("  "), None)]);
     }
     if waiting + working == 0 {
         let quiet = match states.len() {
@@ -116,20 +120,28 @@ fn draw_topbar(frame: &mut Frame, app: &mut App, area: Rect) {
             1 => "1 terminal, quiet".to_string(),
             n => format!("{n} terminals, quiet"),
         };
-        right.extend([Span::from(quiet).fg(DIM), Span::from("  ")]);
+        right.extend([(Span::from(quiet).fg(DIM), Some(Show::All)), (Span::from("  "), None)]);
     }
     let badge = |text: &str| Span::from(format!(" {text} ")).fg(BG).bg(YELLOW).bold();
     if app.prefix.is_some() {
-        right.extend([badge("PREFIX"), Span::from(" ")]);
+        right.extend([(badge("PREFIX"), None), (Span::from(" "), None)]);
     }
     if app.zoomed_pane().is_some() {
-        right.extend([badge("ZOOM"), Span::from(" ")]);
+        right.extend([(badge("ZOOM"), None), (Span::from(" "), None)]);
     }
-    let right = Line::from(right);
-    let width = (right.width() as u16).min(area.width);
+    let width = (right.iter().map(|(span, _)| span.width()).sum::<usize>() as u16).min(area.width);
     let [left_area, right_area] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(width)]).areas(area);
+    let mut x = right_area.x;
+    app.areas.counts.clear();
+    for (span, show) in &right {
+        let w = span.width() as u16;
+        if let Some(show) = show {
+            app.areas.counts.push((*show, Rect { x, y: area.y, width: w, height: 1 }));
+        }
+        x += w;
+    }
     frame.render_widget(Line::from(spans), left_area);
-    frame.render_widget(right, right_area);
+    frame.render_widget(Line::from(right.into_iter().map(|(span, _)| span).collect::<Vec<_>>()), right_area);
 }
 
 /// A list in the sidebar: its heading (and the key that goes there), then
@@ -862,6 +874,76 @@ fn draw_prefix(frame: &mut Frame, app: &App) {
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let (width, height) = (width.min(area.width), height.min(area.height));
     Rect { x: area.x + (area.width - width) / 2, y: area.y + (area.height - height) / 3, width, height }
+}
+
+/// Go to, or the menu, over everything else.
+fn draw_picker(frame: &mut Frame, app: &mut App) {
+    let Some(picker) = &mut app.picker else { return };
+    let area = frame.area();
+    let popup = centered(area, (area.width * 7 / 10).max(60), (area.height * 7 / 10).max(12));
+    frame.render_widget(Clear, popup);
+    let goto = picker.kind == Kind::Goto;
+    let (title, hint) = if goto {
+        ("Go to", " type to filter · ⇥ which terminals · ↑↓ move · ⏎ go there · esc close ")
+    } else {
+        ("Menu", " type to filter · ↑↓ move · ⏎ do it · esc close ")
+    };
+    let block = block(title, true).title_bottom(Line::from(hint).fg(DIM));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let [input, _, list, _, detail] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(u16::from(goto)),
+        Constraint::Length(u16::from(goto)),
+    ])
+    .areas(inner);
+
+    let mut spans = vec![Span::from(" › ").fg(BLUE).bold(), Span::from(picker.query.clone()), Span::from("█").fg(BLUE), Span::from("   ")];
+    if goto {
+        for show in Show::ALL {
+            let chip = Span::from(format!(" {} ", show.label()));
+            spans.push(if show == picker.show { chip.fg(BG).bg(BLUE).bold() } else { chip.fg(MUTED) });
+            spans.push(Span::from(" "));
+        }
+    }
+    spans.push(Span::from(format!("  {} of {}", picker.shown(), picker.entries.len())).fg(DIM));
+    frame.render_widget(Line::from(spans), input);
+
+    let items: Vec<ListItem> = picker
+        .rows
+        .iter()
+        .map(|row| match row {
+            // The repository's name, then where it is.
+            picker::Row::Heading(group) => {
+                let (name, rest) = group.split_once("  ").unwrap_or((group, ""));
+                ListItem::new(Line::from(vec![Span::from(format!(" {}", name.to_uppercase())).fg(MUTED).bold(), Span::from(format!("  {rest}")).fg(DIM)]))
+            }
+            picker::Row::Entry(i) => {
+                let entry = &picker.entries[*i];
+                let line = if goto {
+                    let state = entry.state.unwrap_or(State::Idle);
+                    let (icon, color) = state_icon(state);
+                    let said = if matches!(state, State::Waiting | State::Done) { MAGENTA } else { MUTED };
+                    Line::from(vec![
+                        Span::from(format!("   {icon} ")).fg(color).bold(),
+                        Span::from(format!("{:<14} ", entry.text)).fg(FG),
+                        Span::from(format!("{:<22} ", entry.place)).fg(MUTED),
+                        Span::from(format!("{:>4}  ", entry.age)).fg(DIM),
+                        Span::from(entry.detail.replace('\n', " ")).fg(said),
+                    ])
+                } else {
+                    Line::from(vec![Span::from(format!("   {:<52} ", entry.text)), Span::from(entry.place.clone()).fg(BLUE).bold()])
+                };
+                ListItem::new(line)
+            }
+        })
+        .collect();
+    frame.render_stateful_widget(List::new(items).highlight_style(highlight(true)), list, &mut picker.state);
+    if goto && let Some(entry) = picker.selected() {
+        frame.render_widget(Line::from(format!(" {}", entry.path)).fg(MUTED), detail);
+    }
 }
 
 /// The search popup over everything else.

@@ -111,6 +111,10 @@ From anywhere, terminals included, Pulpo has a prefix: `ctrl-space` or `ctrl-b`,
 | `1`-`9`, `p` `n` | tab N, previous / next |
 | `r` `k` | rename the tab, close it (press it twice) |
 | `e` | hide or show the sidebar |
+| `g` | go to: every agent and terminal, in every repo, with what it asks; type to filter, `tab` for which ones |
+| `a` | the agent that has waited longest with something to read; again for the next |
+| `tab` | back to the last tab or session |
+| `space` | the menu: every action by name, with its key |
 | `C` | new task session |
 | `P` `N` | previous / next session |
 | `K` | delete the task session (press it twice) |
@@ -178,6 +182,8 @@ When you actually want everything stopped: `Q` twice. It does it the polite way:
 Spinner next to a terminal: it's working.
 
 `◆`: it's waiting for you.
+
+The top bar counts them for all your repos: click a count, or `ctrl-b g`, to see which. `ctrl-b a` goes straight to the one that has waited longest.
 
 And Ghostty pings you when an agent asks something or finishes. No more clicking through tabs to find the one that's been stuck for ten minutes.
 

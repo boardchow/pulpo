@@ -18,6 +18,7 @@ pulpo (one binary)
 ├── main.rs     terminal setup + event loop (one mpsc channel for everything)
 ├── app.rs      state: focus, selection, keys, mouse, terminal tabs
 ├── pane.rs     tabs and panes: a tree of splits per tab, neighbors, resizing, saved by terminal tag
+├── picker.rs   go to (every terminal, by repository) and the menu (every action): filtered by typed words and by state
 ├── keymap.rs   the prefix (ctrl-space, ctrl-b) and its keys, the chords without it; footer, prefix panel and help read it
 ├── doctor.rs   `pulpo doctor`: whether ctrl-space and Ghostty's Option key reach Pulpo, and the hooks
 ├── workspace.rs  repo registry + per-repository state (status, tree)
@@ -127,7 +128,8 @@ own version of the file.
 - [x] Notification (OSC 9 to Ghostty) when an agent waits for input or finishes, at most one per terminal every 10 s.
 - [x] One key grammar (Omarchy's tmux one): a prefix that works inside terminals, chords without it, a prefix panel, a help you can filter, `keys.toml`. The old ctrl keys inside terminals go back to the programs next release.
 - [x] Tabs and panes: each session's tabs, each a tree of splits of terminals and the file pane, kept across restarts. A top bar (where you are, the tabs, who waits and works, PREFIX and ZOOM) and the sidebar in one box.
-- [ ] The rest of the UI plan: a picker for every agent, themes that follow Ghostty, layouts and Swarm, scrollback search.
+- [x] Go to (every terminal of every repo, by state, with what its agent asks), the next one to read, back to the last place, and a menu of every action (`picker.rs`).
+- [ ] The rest of the UI plan: themes that follow Ghostty, layouts and Swarm, scrollback search.
 - [ ] Codex support.
 - [ ] Read the theme from the VS Code extension instead of copying it.
 
