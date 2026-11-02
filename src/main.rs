@@ -4,6 +4,7 @@ mod client;
 mod doctor;
 mod editor;
 mod git;
+mod input;
 mod keymap;
 mod layout;
 mod pane;

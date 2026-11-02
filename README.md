@@ -105,17 +105,21 @@ From anywhere, terminals included, Pulpo has a prefix: `ctrl-space` or `ctrl-b`,
 | `shift` + arrows | swap with the pane that way |
 | `alt` + arrows | move the border |
 | `v` `h` | split: a shell beside or below |
+| `L` | next layout: the pane you're in as the main one on the left, side by side, stacked, a grid |
 | `z` | zoom: the pane alone |
 | `x` | close the pane (press it twice) |
 | `c` | new tab with a shell |
 | `1`-`9`, `p` `n` | tab N, previous / next |
 | `r` `k` | rename the tab, close it (press it twice) |
+| `[` | scroll back through the terminal: `j` `k` `u` `d` `g` `G`, `/` finds (`n` `N` for the next), `q` back to now |
 | `e` | hide or show the sidebar |
 | `g` | go to: every agent and terminal, in every repo, with what it asks; type to filter, `tab` for which ones |
 | `a` | the agent that has waited longest with something to read; again for the next |
 | `tab` | back to the last tab or session |
 | `space` | the menu: every action by name, with its key |
 | `T` | theme: follow Ghostty's, Linear Dark, or any Ghostty theme; moving through the list tries each one |
+| `B` | the board: every terminal of this repo, tiled, typing goes into the one you're in; again to go back |
+| `S` | a swarm: `4 fix the flaky tests` makes four task sessions, starts Claude on that in each, and shows the board |
 | `C` | new task session |
 | `P` `N` | previous / next session |
 | `K` | delete the task session (press it twice) |
@@ -124,6 +128,8 @@ From anywhere, terminals included, Pulpo has a prefix: `ctrl-space` or `ctrl-b`,
 | `f` `/` | files, search inside files |
 | `?` | every key; type to filter |
 | the prefix again | sends it to the program |
+
+With the mouse: drag the border between two panes, and right-click for what can be done there.
 
 And a few without the prefix:
 
@@ -161,6 +167,8 @@ Each session is its own git repo on the same branch main was on. Make a branch i
 Start `claude` in it. Give it a job. Do it again.
 
 One Claude on the bug. One on the feature. One on the tests. None of them can mess with the others.
+
+Or all at once: `ctrl-b S`, then `4 fix the flaky tests`. Four sessions, Claude on it in each, all on one board.
 
 If you use Docker Compose, each session also gets its own containers, its own ports and its own copy of the database. No more port 3000 fights lol. (The setup for each repo lives in `~/.config/pulpo/repos/<repo>.toml` if you wanna tweak it.)
 

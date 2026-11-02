@@ -245,6 +245,38 @@ impl Term {
         }
     }
 
+    /// How far back in its history it shows: 0 is the screen as it is.
+    pub fn scrolled(&self) -> usize {
+        self.parser.screen().scrollback()
+    }
+
+    pub fn scroll_to(&mut self, rows: usize) {
+        self.parser.screen_mut().set_scrollback(rows);
+    }
+
+    /// Rows on screen.
+    pub fn rows(&self) -> u16 {
+        self.parser.screen().size().0.get()
+    }
+
+    /// Bring the next line with `query` in it (any case) to the top: further
+    /// back in its history, or with `older` false, toward now. False when
+    /// there is none; it stays where it was.
+    pub fn find(&mut self, query: &str, older: bool) -> bool {
+        let needle = query.to_lowercase();
+        let screen = self.parser.screen_mut();
+        let (start, end, width) = (screen.scrollback(), screen.scrollback_len(), screen.size().1.get());
+        let offsets: Vec<usize> = if older { (start + 1..=end).collect() } else { (0..start).rev().collect() };
+        for at in offsets {
+            screen.set_scrollback(at);
+            if screen.rows(0, width).next().is_some_and(|row| row.to_lowercase().contains(&needle)) {
+                return true;
+            }
+        }
+        screen.set_scrollback(start);
+        false
+    }
+
     /// Scroll through history; positive goes back in time.
     pub fn scroll(&mut self, rows: isize) {
         let screen = self.parser.screen_mut();

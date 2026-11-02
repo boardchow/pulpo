@@ -13,9 +13,10 @@ use crate::agents::{Agents, State};
 use crate::client::{self, Link};
 use crate::editor::Editor;
 use crate::git;
-use crate::keymap::{Action, Key, Keymap};
+use crate::keymap::{Action, Group, Key, Keymap};
 use crate::layout::{self, Layout};
-use crate::pane::{self, Dir, Node, Pane, SavedTab, Tab};
+use crate::input;
+use crate::pane::{self, Dir, Divider, Node, Pane, SavedTab, Tab};
 use crate::picker::{self, Entry, Kind, Picker, Show, Target};
 use crate::procs;
 use crate::proto::{PROTOCOL, ToClient, ToServer};
@@ -73,11 +74,23 @@ pub struct Areas {
     pub tabs: Vec<(usize, Rect)>,
     /// The top bar's counts: a click shows those terminals.
     pub counts: Vec<(Show, Rect)>,
+    /// The borders between the panes on screen, to drag.
+    pub dividers: Vec<Divider>,
     pub viewer: Rect,
     /// The editor's text (inside its border).
     pub editor: Rect,
     /// The viewer's overview ruler.
     pub ruler: Rect,
+}
+
+/// Scrolling back through a terminal, and finding in it.
+pub struct Scroll {
+    pub id: usize,
+    pub query: String,
+    /// Typing what to find.
+    pub typing: bool,
+    /// Whether the last find found it.
+    pub found: Option<bool>,
 }
 
 /// A session's tabs, and the one on screen.
@@ -125,6 +138,13 @@ pub struct App {
     here: Option<(PathBuf, Option<usize>)>,
     back: Option<(PathBuf, Option<usize>)>,
     pub sidebar_hidden: bool,
+    /// Every terminal of the repository tiled, instead of the tab.
+    pub board: bool,
+    /// Typing a swarm: how many, and their task.
+    pub swarm: Option<String>,
+    pub scrolling: Option<Scroll>,
+    /// The border being dragged.
+    dragging: Option<Divider>,
     /// The terminal (its tag) last on screen in each session, and the
     /// session last used in each repository.
     last_term: HashMap<PathBuf, String>,
@@ -231,6 +251,10 @@ impl App {
             here: None,
             back: None,
             sidebar_hidden: false,
+            board: false,
+            swarm: None,
+            scrolling: None,
+            dragging: None,
             last_term: layout.terminals.clone().into_iter().collect(),
             last_session: layout.sessions.clone().into_iter().collect(),
             saved: layout.clone(),
@@ -741,6 +765,8 @@ impl App {
             create.name.push_str(text.trim());
         } else if let Some(name) = &mut self.renaming {
             name.push_str(text.trim());
+        } else if let Some(swarm) = &mut self.swarm {
+            swarm.push_str(text.trim());
         } else if let Some(search) = &mut self.search {
             search.query.push_str(text.trim());
             search.update(&self.tx);
@@ -785,6 +811,15 @@ impl App {
     /// leave something to read, unless you are in that terminal.
     pub fn tick(&mut self) {
         self.sync_tabs();
+        if let Some(scroll) = &self.scrolling
+            && (self.focus != Focus::Terminal || self.active != Some(scroll.id))
+        {
+            let id = scroll.id;
+            self.scrolling = None;
+            if let Some(term) = self.terms.iter_mut().find(|t| t.id == id) {
+                term.scroll_to(0);
+            }
+        }
         let now = (self.ws().root.clone(), self.active);
         if self.here.as_ref() != Some(&now) {
             self.back = self.here.replace(now);
@@ -1048,7 +1083,10 @@ impl App {
                 }
             }
         }
-        self.active = self.tab().and_then(|t| t.term);
+        // On the board you may be in another session's terminal.
+        if !(self.board && self.active.is_some_and(|id| ids.contains(&id))) {
+            self.active = self.tab().and_then(|t| t.term);
+        }
     }
 
     /// The tabs layout.json had, with the terminals the server still has.
@@ -1166,12 +1204,9 @@ impl App {
             match key.code {
                 KeyCode::Esc => self.help = None,
                 KeyCode::Char('?') if filter.is_empty() => self.help = None,
-                KeyCode::Backspace => {
-                    filter.pop();
+                _ => {
+                    input::edit(filter, key);
                 }
-                KeyCode::Char('u') if ctrl => filter.clear(),
-                KeyCode::Char(c) if !ctrl => filter.push(c),
-                _ => {}
             }
             return false;
         }
@@ -1191,12 +1226,11 @@ impl App {
             match key.code {
                 KeyCode::Esc => self.creating = None,
                 KeyCode::Enter => self.create(),
-                KeyCode::Backspace => {
-                    create.name.pop();
-                }
                 // Session names are lowercase, like Compose projects.
-                KeyCode::Char(c) if !ctrl => create.name.push(if create.session { c.to_ascii_lowercase() } else { c }),
-                _ => {}
+                KeyCode::Char(c) if !ctrl && create.session => create.name.push(c.to_ascii_lowercase()),
+                _ => {
+                    input::edit(&mut create.name, key);
+                }
             }
             return false;
         }
@@ -1212,11 +1246,22 @@ impl App {
                         tab.name = (!name.is_empty()).then_some(name);
                     }
                 }
-                KeyCode::Backspace => {
-                    name.pop();
+                _ => {
+                    input::edit(name, key);
                 }
-                KeyCode::Char(c) if !ctrl => name.push(c),
-                _ => {}
+            }
+            return false;
+        }
+        if let Some(text) = &mut self.swarm {
+            match key.code {
+                KeyCode::Esc => self.swarm = None,
+                KeyCode::Enter => {
+                    let text = self.swarm.take().unwrap_or_default();
+                    self.start_swarm(&text);
+                }
+                _ => {
+                    input::edit(text, key);
+                }
             }
             return false;
         }
@@ -1228,11 +1273,9 @@ impl App {
             match key.code {
                 KeyCode::Esc => self.viewer.clear_find(),
                 KeyCode::Enter => self.viewer.finish_find(),
-                KeyCode::Backspace => self.viewer.edit_find(|q| {
-                    q.pop();
+                _ => self.viewer.edit_find(|q| {
+                    input::edit(q, key);
                 }),
-                KeyCode::Char(c) if !ctrl => self.viewer.edit_find(|q| q.push(c)),
-                _ => {}
             }
             return false;
         }
@@ -1251,6 +1294,10 @@ impl App {
         if let Some(action) = self.keymap.chord(k) {
             let pending = self.pending.take();
             return self.act(action, pending);
+        }
+        if self.scrolling.is_some() && self.focus == Focus::Terminal {
+            self.scroll_key(key);
+            return false;
         }
         let pending = self.pending.take();
         if self.focus == Focus::Terminal {
@@ -1550,6 +1597,10 @@ impl App {
             Action::ResizeDown => self.resize_pane(Dir::Down),
             Action::SplitBeside => self.split(true),
             Action::SplitBelow => self.split(false),
+            Action::Layout => self.next_layout(),
+            Action::Scroll => self.start_scroll(),
+            Action::Board => self.toggle_board(),
+            Action::Swarm => self.swarm = Some(String::new()),
             Action::Zoom => self.zoom(),
             Action::ClosePane if self.focus == Focus::Editor => self.close_editor(pending),
             Action::ClosePane if self.focus == Focus::Viewer => {
@@ -1578,7 +1629,7 @@ impl App {
             Action::Goto => self.open_goto(Show::All),
             Action::NextWaiting => self.next_waiting(),
             Action::LastPlace => self.last_place(),
-            Action::Menu => self.open_menu(),
+            Action::Menu => self.open_menu(&Group::ALL, None),
             Action::Theme => self.open_themes(),
             Action::Files => self.open_search(Mode::Files),
             Action::SearchFiles => self.open_search(Mode::Text),
@@ -1594,6 +1645,138 @@ impl App {
             Action::Help => self.help = Some(String::new()),
         }
         false
+    }
+
+    // Layouts, the board, swarms, scrolling back
+
+    /// The tab's panes laid out the next way, the one you're in as the main
+    /// one.
+    fn next_layout(&mut self) {
+        let focused = self.focused_pane();
+        let Some(tab) = self.tab_mut() else { return };
+        let mut panes = tab.root.panes();
+        let main = focused.filter(|p| panes.contains(p)).unwrap_or(tab.focus);
+        panes.retain(|&p| p != main);
+        panes.insert(0, main);
+        let n = tab.layout.map_or(0, |n| (n + 1) % pane::LAYOUTS.len());
+        tab.layout = Some(n);
+        if let Some(root) = pane::arrange(&panes, n) {
+            tab.root = root;
+        }
+        let again = self.keymap.hint(&[Action::Layout]);
+        self.message = Some(format!("layout: {} ({again} for the next)", pane::LAYOUTS[n]));
+    }
+
+    /// This repository's terminals, by session and in tab order: the board.
+    pub fn repo_terms(&self) -> Vec<(usize, usize)> {
+        let repo = &self.ws().repo;
+        let mut out = Vec::new();
+        for (s, ws) in self.workspaces.iter().enumerate().filter(|(_, w)| &w.repo == repo) {
+            let mut ids: Vec<usize> = self.tabs.get(&ws.root).map(|t| t.list.iter().flat_map(Tab::terms).collect()).unwrap_or_default();
+            let untabbed: Vec<usize> = self.terms.iter().filter(|t| self.session_of(t) == Some(s) && !ids.contains(&t.id)).map(|t| t.id).collect();
+            ids.extend(untabbed);
+            out.extend(ids.into_iter().map(|id| (id, s)));
+        }
+        out
+    }
+
+    /// Every terminal of the repository tiled; again, back to the tab of
+    /// the one you're in.
+    fn toggle_board(&mut self) {
+        if self.board {
+            self.board = false;
+            if let Some(id) = self.active.filter(|_| self.focus == Focus::Terminal) {
+                self.go_to_term(id);
+            }
+            return;
+        }
+        let terms = self.repo_terms();
+        if terms.is_empty() {
+            self.message = Some("no terminals in this repository yet".into());
+            return;
+        }
+        self.board = true;
+        self.zoomed = false;
+        if self.focused_pane().is_none() {
+            let id = self.active.filter(|id| terms.iter().any(|(t, _)| t == id)).unwrap_or(terms[0].0);
+            self.focus_pane(Pane::Term(id));
+        }
+    }
+
+    /// `4 fix the flaky tests`: four task sessions of this repository, each
+    /// starting Claude on that once set up, all on the board.
+    fn start_swarm(&mut self, text: &str) {
+        let text = text.trim();
+        let (count, task) = match text.split_once(' ') {
+            Some((n, rest)) if n.parse::<usize>().is_ok() => (n.parse().unwrap_or(3), rest.trim()),
+            _ => match text.parse::<usize>() {
+                Ok(n) => (n, ""),
+                Err(_) => (3, text),
+            },
+        };
+        let count = count.clamp(1, 8);
+        let repo = self.ws().repo.clone();
+        let taken: Vec<String> = self.sessions().into_iter().map(|i| self.session_name(i).to_string()).collect();
+        let names: Vec<String> = (1..).map(|n| format!("swarm-{n}")).filter(|name| !taken.contains(name)).take(count).collect();
+        let claude = if task.is_empty() { "claude".to_string() } else { format!("claude {}", session::quote(task)) };
+        for name in &names {
+            self.create_session(&repo, name, Some(&claude));
+        }
+        self.board = true;
+        self.message = Some(format!("swarm: {} task sessions setting up ({}), Claude starts in each once ready", names.len(), names.join(", ")));
+    }
+
+    /// Scroll back through the terminal you're in, and find in it.
+    fn start_scroll(&mut self) {
+        match self.active.filter(|_| self.focus == Focus::Terminal) {
+            Some(id) => self.scrolling = Some(Scroll { id, query: String::new(), typing: false, found: None }),
+            None => self.message = Some("go into a terminal first".into()),
+        }
+    }
+
+    fn scroll_key(&mut self, key: KeyEvent) {
+        let Some(scroll) = &mut self.scrolling else { return };
+        let Some(term) = self.terms.iter_mut().find(|t| t.id == scroll.id) else {
+            self.scrolling = None;
+            return;
+        };
+        if scroll.typing {
+            match key.code {
+                KeyCode::Esc => {
+                    scroll.typing = false;
+                    scroll.query.clear();
+                }
+                KeyCode::Enter => {
+                    scroll.typing = false;
+                    scroll.found = (!scroll.query.is_empty()).then(|| term.find(&scroll.query, true));
+                }
+                _ => {
+                    input::edit(&mut scroll.query, key);
+                }
+            }
+            return;
+        }
+        let half = (term.rows() / 2).max(1) as isize;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => term.scroll(1),
+            KeyCode::Down | KeyCode::Char('j') => term.scroll(-1),
+            KeyCode::PageUp | KeyCode::Char('u' | 'b') => term.scroll(half),
+            KeyCode::PageDown | KeyCode::Char('d' | 'f' | ' ') => term.scroll(-half),
+            KeyCode::Home | KeyCode::Char('g') => term.scroll_to(usize::MAX),
+            KeyCode::End | KeyCode::Char('G') => term.scroll_to(0),
+            KeyCode::Char('/' | '?') => {
+                scroll.typing = true;
+                scroll.query.clear();
+                scroll.found = None;
+            }
+            KeyCode::Char('n') if !scroll.query.is_empty() => scroll.found = Some(term.find(&scroll.query, true)),
+            KeyCode::Char('N') if !scroll.query.is_empty() => scroll.found = Some(term.find(&scroll.query, false)),
+            KeyCode::Esc | KeyCode::Char('q') => {
+                term.scroll_to(0);
+                self.scrolling = None;
+            }
+            _ => {}
+        }
     }
 
     // Go to
@@ -1645,10 +1828,12 @@ impl App {
         self.picker = Some(Picker::new(Kind::Goto, entries, show, self.active.map(Target::Term)));
     }
 
-    /// Every action by name, with its key.
-    fn open_menu(&mut self) {
+    /// Every action of these groups by name, with its key; at the mouse
+    /// for a right click.
+    fn open_menu(&mut self, groups: &[Group], at: Option<(u16, u16)>) {
         let entries = crate::keymap::MENU
             .iter()
+            .filter(|(group, ..)| groups.contains(group))
             .map(|&(group, action, name)| Entry {
                 group: group.title().to_string(),
                 text: name.to_string(),
@@ -1660,7 +1845,9 @@ impl App {
                 target: Target::Action(action),
             })
             .collect();
-        self.picker = Some(Picker::new(Kind::Menu, entries, Show::All, None));
+        let mut picker = Picker::new(Kind::Menu, entries, Show::All, None);
+        picker.at = at;
+        self.picker = Some(picker);
     }
 
     /// Following Ghostty, Linear Dark, Omarchy's themes as Ghostty has
@@ -1760,19 +1947,11 @@ impl App {
             KeyCode::PageDown => picker.step(10),
             KeyCode::Tab if picker.kind == Kind::Goto => picker.next_show(1),
             KeyCode::BackTab if picker.kind == Kind::Goto => picker.next_show(-1),
-            KeyCode::Backspace => {
-                picker.query.pop();
-                picker.update();
+            _ => {
+                if input::edit(&mut picker.query, key) {
+                    picker.update();
+                }
             }
-            KeyCode::Char('u') if ctrl => {
-                picker.query.clear();
-                picker.update();
-            }
-            KeyCode::Char(c) if !ctrl => {
-                picker.query.push(c);
-                picker.update();
-            }
-            _ => {}
         }
         false
     }
@@ -1904,11 +2083,50 @@ impl App {
             self.new_menu = false;
             self.picker = None;
         }
-        if self.search.is_some() || self.creating.is_some() || self.renaming.is_some() || self.picker.is_some() || self.help.is_some() || self.new_menu {
+        if self.search.is_some()
+            || self.creating.is_some()
+            || self.renaming.is_some()
+            || self.swarm.is_some()
+            || self.picker.is_some()
+            || self.help.is_some()
+            || self.new_menu
+        {
             return;
         }
         let pos = Position::new(mouse.column, mouse.row);
         let areas = self.areas.clone();
+        // Dragging a border between panes.
+        if let Some(divider) = &self.dragging {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    let (path, ratio) = (divider.path.clone(), divider.ratio_at(pos.x, pos.y));
+                    if let Some(tab) = self.tab_mut() {
+                        tab.root.set_ratio(&path, ratio);
+                    }
+                }
+                _ => self.dragging = None,
+            }
+            return;
+        }
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some(divider) = areas.dividers.iter().find(|d| d.hit(pos.x, pos.y))
+        {
+            self.dragging = Some(divider.clone());
+            return;
+        }
+        // A right click: what can be done there, at the mouse.
+        if mouse.kind == MouseEventKind::Down(MouseButton::Right) {
+            let at = Some((pos.x, pos.y));
+            match areas.panes.iter().find(|(_, r)| r.contains(pos)).map(|&(p, _)| p) {
+                Some(pane) => {
+                    self.focus_pane(pane);
+                    self.open_menu(&[Group::Panes, Group::Tabs], at);
+                }
+                None if areas.sessions.contains(pos) || areas.workspaces.contains(pos) => self.open_menu(&[Group::Sessions], at),
+                None => self.open_menu(&Group::ALL, at),
+            }
+            return;
+        }
         if let Some(&(show, _)) = areas.counts.iter().find(|(_, r)| r.contains(pos)) {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
                 self.open_goto(show);
@@ -2064,22 +2282,17 @@ impl App {
 
     /// Typing in the search popup, and tab between its two kinds of search.
     fn search_input(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let Some(search) = &mut self.search else { return };
         match key.code {
             KeyCode::Tab | KeyCode::BackTab if search.mode != Mode::Repos => {
                 search.mode = if search.mode == Mode::Files { Mode::Text } else { Mode::Files };
                 search.update(&self.tx);
             }
-            KeyCode::Backspace => {
-                search.query.pop();
-                search.update(&self.tx);
+            _ => {
+                if input::edit(&mut search.query, key) {
+                    search.update(&self.tx);
+                }
             }
-            KeyCode::Char(c) if !ctrl => {
-                search.query.push(c);
-                search.update(&self.tx);
-            }
-            _ => {}
         }
     }
 
@@ -2409,10 +2622,10 @@ impl App {
     /// Copy the repository's main checkout into a new session, show it, and
     /// set it up in its first terminal: main's images, a copy of its
     /// database, its own containers. The terminal stays as its shell.
-    fn create_session(&mut self, repo: &Path, name: &str) {
+    fn create_session(&mut self, repo: &Path, name: &str, start: Option<&str>) {
         let made = session::config(repo).and_then(|(config, warnings)| {
             let session = session::create(repo, name, &config)?;
-            Ok((session::setup_script(&session, &config, &warnings), session.root))
+            Ok((session::setup_script(&session, &config, &warnings, start), session.root))
         });
         let (script, root) = match made {
             Ok(made) => made,
@@ -2507,7 +2720,7 @@ impl App {
             return;
         }
         if session {
-            self.create_session(&dir, name);
+            self.create_session(&dir, name, None);
             return;
         }
         let path = dir.join(name.trim_end_matches('/'));
