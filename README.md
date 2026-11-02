@@ -97,13 +97,45 @@ Make and do things:
 | `q q` | quit; terminals keep running |
 | `Q Q` | quit and stop every terminal |
 
-Inside a terminal:
+From anywhere, terminals included, Pulpo has a prefix: `ctrl-space` or `ctrl-b`, then one key. Same keys as Omarchy's tmux. Wait a beat after the prefix and a panel shows what can follow.
+
+| Prefix, then | Does |
+| --- | --- |
+| `←` `↑` `→` `↓` | go to the panel that way |
+| `z` | zoom: the terminal or the file alone |
+| `x` | close the terminal (press it twice) |
+| `c` | new shell in this session |
+| `1`-`9`, `p` `n` | terminal N, previous / next |
+| `C` | new task session |
+| `P` `N` | previous / next session |
+| `K` | delete the task session (press it twice) |
+| `W` | add a workspace |
+| `d` | detach: quit, terminals keep running |
+| `f` `/` | files, search inside files |
+| `?` | every key; type to filter |
+| the prefix again | sends it to the program |
+
+And a few without the prefix:
 
 | Key | Does |
 | --- | --- |
-| `ctrl-s` | back to the sidebar |
-| `ctrl-n` | new shell in the same session |
-| `ctrl-[` `ctrl-]` | previous / next terminal |
+| `ctrl-alt-←↑→↓` | go to the panel that way |
+| `alt-1`-`9` | terminal N |
+| `alt-↑` `alt-↓` | previous / next session |
+
+On a Mac, two things can get in the way. macOS switches keyboard layouts on `ctrl-space` when you have more than one (use `ctrl-b`, or turn that shortcut off), and Ghostty types `¡™£` for `alt-1`-`3` unless the left Option key is Alt. `pulpo doctor` checks both, and `pulpo doctor --fix` sets up Ghostty.
+
+Want other keys? `~/.config/pulpo/keys.toml`:
+
+```toml
+prefix = ["ctrl-a"]
+[after_prefix]
+zoom = "m"
+[chords]
+tab_1 = "alt-a"
+```
+
+The old `ctrl-s`, `ctrl-n`, `ctrl-f`, `ctrl-q` and `ctrl-[` `ctrl-]` still work inside terminals for now, and say what replaces them. In the next release they go back to your programs (`legacy_ctrl_keys = false` does it today).
 
 ## Sandboxes
 
