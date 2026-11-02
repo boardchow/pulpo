@@ -69,7 +69,7 @@ pulpo
 
 Run it anywhere and you get your workspaces. Run it inside a git repo and it adds that one.
 
-The bar on top says where you are, shows the session's tabs and who's working or waiting. The sidebar on the left has your repos, sessions, changes and graph. The right side is where you work: tabs, each split into panes like tmux. A pane is a terminal, or the file pane (the viewer, or the editor in its place), which follows you to the tab you're on. Your files are one key away: `f` shows them as a tree, and typing filters it. `/` searches inside them.
+The sidebar on the left has the pulpo (with who's working or waiting), your repos, sessions, the session's tabs, changes and graph. The right side is where you work: tabs, each split into panes like tmux. A pane is a terminal, or the file pane (the viewer, or the editor in its place), which follows you to the tab you're on. Your files are one key away: `f` shows them as a tree, and typing filters it. `/` searches inside them.
 
 It's made for the keyboard (clicking works too). The bottom bar shows the keys that work right where you are, and `?` shows all of them.
 
@@ -105,13 +105,13 @@ From anywhere, terminals included, Pulpo has a prefix: `ctrl-space` or `ctrl-b`,
 | `shift` + arrows | swap with the pane that way |
 | `alt` + arrows | move the border |
 | `v` `h` | split: a shell beside or below |
-| `L` | next layout: the pane you're in as the main one on the left, side by side, stacked, a grid |
+| `L` | next layout: the pane you're in as the main one on the left, side by side, stacked, a grid, review (the diff of what the agent edits, on the right, following it) |
 | `z` | zoom: the pane alone |
 | `x` | close the pane (press it twice) |
 | `c` | new tab with a shell |
 | `1`-`9`, `p` `n` | tab N, previous / next |
 | `r` `k` | rename the tab, close it (press it twice) |
-| `[` | scroll back through the terminal: `j` `k` `u` `d` `g` `G`, `/` finds (`n` `N` for the next), `q` back to now |
+| `[` | scroll back through the terminal: `j` `k` `u` `d` `g` `G` move, `/` finds (`n` `N` for the next), `v` selects, `y` copies, `q` back to now |
 | `e` | hide or show the sidebar |
 | `g` | go to: every agent and terminal, in every repo, with what it asks; type to filter, `tab` for which ones |
 | `a` | the agent that has waited longest with something to read; again for the next |
@@ -129,7 +129,7 @@ From anywhere, terminals included, Pulpo has a prefix: `ctrl-space` or `ctrl-b`,
 | `?` | every key; type to filter |
 | the prefix again | sends it to the program |
 
-With the mouse: drag the border between two panes, and right-click for what can be done there.
+With the mouse: drag the border between two panes, right-click for what can be done there, and ctrl-click a link to open it, or a path (`src/app.rs:120`, as agents print them) to see that line in the viewer.
 
 And a few without the prefix:
 
@@ -192,7 +192,7 @@ Spinner next to a terminal: it's working.
 
 `◆`: it's waiting for you.
 
-The top bar counts them for all your repos: click a count, or `ctrl-b g`, to see which. `ctrl-b a` goes straight to the one that has waited longest.
+Next to the pulpo, the sidebar counts them for all your repos: click that, or `ctrl-b g`, to see which. `ctrl-b a` goes straight to the one that has waited longest.
 
 And Ghostty pings you when an agent asks something or finishes. No more clicking through tabs to find the one that's been stuck for ten minutes.
 

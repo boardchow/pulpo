@@ -125,10 +125,11 @@ own version of the file.
 - [x] A built-in editor that looks exactly like the viewer (micro is gone; `$PULPO_EDITOR` for your own).
 - [x] `pulpo hooks install | status | remove` instead of pasting the hooks config.
 - [x] Program status (OSC 7501, and OSC 9;4 progress until a program reports it): what a program says beats the heuristics.
-- [ ] Terminal: links, copying from the scrollback with the keyboard. (Clipboard, OSC 52, and scrollback search: done.)
+- [x] Terminal: links (ctrl-click: URLs open, `path:line` shows in the viewer), scrollback search, copying lines from it (`v`, `y`; wrapped lines come back whole). Clipboard, OSC 52.
+- [x] The review layout: the file pane follows the file the tab's agents last edited (the hooks record `tool_input.file_path`), unless you're reading or editing.
 - [x] Notification (OSC 9 to Ghostty) when an agent waits for input or finishes, at most one per terminal every 10 s.
 - [x] One key grammar (Omarchy's tmux one): a prefix that works inside terminals, chords without it, a prefix panel, a help you can filter, `keys.toml`. The old ctrl keys inside terminals go back to the programs next release.
-- [x] Tabs and panes: each session's tabs, each a tree of splits of terminals and the file pane, kept across restarts. A top bar (where you are, the tabs, who waits and works, PREFIX and ZOOM) and the sidebar in one box.
+- [x] Tabs and panes: each session's tabs, each a tree of splits of terminals and the file pane, kept across restarts. The sidebar in one box: the pulpo with who waits and works, the lists, and the session's tabs with the modes on (ZOOM, BOARD, SCROLL). A top bar came and went: the sidebar already said it all.
 - [x] Go to (every terminal of every repo, by state, with what its agent asks), the next one to read, back to the last place, and a menu of every action (`picker.rs`).
 - [x] Themes: following Ghostty's by default, any Ghostty theme, Omarchy's first, tried live in a picker. A Ghostty theme's background, foreground and ANSI colors give the rest (greys faded from the foreground, blue as the accent, syntax from the ANSI colors as Linear Dark's are).
 - [x] Layouts (`L`: main pane left, side by side, stacked, grid), the board (every terminal of the repository, tiled), swarms (N task sessions, Claude started on a task in each once set up), scrolling back and finding in a terminal, readline keys in every prompt (`input.rs`), right-click menus, dragging pane borders.

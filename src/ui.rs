@@ -19,15 +19,16 @@ use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Block::new().style(Style::new().fg(theme::fg()).bg(theme::bg())), frame.area());
-    let [top, main, footer] = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
+    let [main, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
     let width = if app.sidebar_hidden { 0 } else { (main.width * 27 / 100).clamp(28, 42).min(main.width) };
     let [sidebar, right] = Layout::horizontal([Constraint::Length(width), Constraint::Fill(1)]).areas(main);
-    draw_topbar(frame, app, top);
     if width > 0 {
         draw_sidebar(frame, app, sidebar);
     } else {
         let areas = &mut app.areas;
         (areas.workspaces, areas.sessions, areas.changes, areas.graph) = Default::default();
+        areas.tabs.clear();
+        areas.counts.clear();
     }
     draw_right(frame, app, right);
     draw_footer(frame, app, footer);
@@ -59,7 +60,7 @@ fn pulpo(wiggle: bool) -> Vec<String> {
 
 /// The pulpo, and beside it the version, what the terminals are doing and
 /// where the current workspace lives.
-fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
     let art_width = PULPO[0].chars().count() as u16;
     let [_, art, text] = Layout::horizontal([Constraint::Length(1), Constraint::Length(art_width), Constraint::Fill(1)]).spacing(1).areas(area);
     let states: Vec<State> = app.terms.iter().map(|term| app.term_state(term)).collect();
@@ -95,28 +96,33 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(path).fg(theme::muted()),
     ];
     frame.render_widget(Paragraph::new(lines), text);
+    // A click on what they're doing shows them.
+    let show = match (waiting, working) {
+        (0, 0) => Show::All,
+        (0, _) => Show::Working,
+        _ => Show::ToRead,
+    };
+    app.areas.counts = vec![(show, Rect { y: text.y + 1, height: 1, ..text })];
 }
 
-/// One row: where you are, the session's tabs (each with how its
-/// terminals are doing), what all terminals are doing, and the modes on.
-fn draw_topbar(frame: &mut Frame, app: &mut App, area: Rect) {
-    let ws = app.ws();
-    let mut spans = vec![Span::from(" pulpo ").fg(theme::blue()).bold(), Span::from(format!(" {}", ws.name)).fg(theme::muted())];
-    if app.sessions().first() != Some(&app.current) {
-        spans.push(Span::from(" › ").fg(theme::dim()));
-        spans.push(Span::from(app.session_name(app.current).to_string()).fg(theme::fg()).bold());
+/// The session's tabs, numbered as ⌥1-9 reaches them, each with how its
+/// terminals are doing; the modes on, by the heading.
+fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
+    let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    let mut heading = vec![Span::from(" TABS").fg(theme::muted()).bold(), Span::from(format!("  {}", app.keymap.hint(&TABS))).fg(theme::dim())];
+    let badge = |text: &str| Span::from(format!(" {text} ")).fg(theme::bg()).bg(theme::yellow()).bold();
+    for (on, text) in [(app.zoomed_pane().is_some(), "ZOOM"), (app.board, "BOARD"), (app.scrolling.is_some(), "SCROLL")] {
+        if on {
+            heading.extend([Span::from(" "), badge(text)]);
+        }
     }
-    if let Some(branch) = &ws.status.branch {
-        spans.push(Span::from(format!("  {branch}")).fg(theme::dim()));
-    }
-    spans.push(Span::from("   "));
+    frame.render_widget(Line::from(heading), head);
 
-    // The tabs, numbered as ⌥1-9 reaches them.
-    let mut x = area.x + spans.iter().map(Span::width).sum::<usize>() as u16;
-    let mut tabs = Vec::new();
+    let mut rects = Vec::new();
+    let mut lines = Vec::new();
     if let Some(list) = app.tabs() {
-        for (n, tab) in list.list.iter().enumerate() {
-            let on = n == list.active;
+        for (n, tab) in list.list.iter().enumerate().take(body.height as usize) {
+            let on = n == list.active && !app.board;
             let terms: Vec<&crate::term::Term> = tab.terms().into_iter().filter_map(|id| app.terms.iter().find(|t| t.id == id)).collect();
             let state = terms.iter().map(|t| app.term_state(t)).max_by_key(|s| s.urgency()).unwrap_or(State::Idle);
             let (icon, color) = state_icon(state);
@@ -124,70 +130,22 @@ fn draw_topbar(frame: &mut Frame, app: &mut App, area: Rect) {
             let label = tab.name.clone().or(named).unwrap_or_else(|| "file".into());
             let more = tab.root.panes().len().saturating_sub(1);
             let more = if more > 0 { format!(" +{more}") } else { String::new() };
-            let bg = if on { theme::selection() } else { theme::bg() };
-            let name = Span::from(format!(" {label}")).fg(if on { theme::fg() } else { theme::muted() }).bg(bg);
-            let pieces = [
-                Span::from(format!(" {} ", n + 1)).fg(theme::muted()).bg(bg),
-                Span::from(icon).fg(color).bg(bg).bold(),
-                if on { name.bold() } else { name },
-                Span::from(format!("{more} ")).fg(theme::dim()).bg(bg),
-            ];
-            let width = pieces.iter().map(Span::width).sum::<usize>() as u16;
-            tabs.push((n, Rect { x, y: area.y, width, height: 1 }));
-            x += width + 1;
-            spans.extend(pieces);
-            spans.push(Span::from(" "));
+            let name = Span::from(format!(" {label}"));
+            let line = Line::from(vec![
+                Span::from(format!(" {} ", n + 1)).fg(theme::dim()),
+                Span::from(icon).fg(color).bold(),
+                if on { name.fg(theme::fg()).bold() } else { name.fg(theme::muted()) },
+                Span::from(more).fg(theme::dim()),
+            ]);
+            lines.push(if on { line.bg(theme::selection()) } else { line });
+            rects.push((n, Rect { y: body.y + n as u16, height: 1, ..body }));
         }
     }
-    app.areas.tabs = tabs;
-
-    // On the right: who has something to read, who works, and the modes.
-    let states: Vec<State> = app.terms.iter().map(|term| app.term_state(term)).collect();
-    let count = |state: State| states.iter().filter(|&&s| s == state).count();
-    let (waiting, working) = (count(State::Waiting) + count(State::Done), count(State::Running));
-    // Each count opens go to on those terminals.
-    let mut right: Vec<(Span, Option<Show>)> = Vec::new();
-    if waiting > 0 {
-        right.extend([(Span::from(format!("◆ {waiting} to read")).fg(theme::magenta()).bold(), Some(Show::ToRead)), (Span::from("  "), None)]);
+    if lines.is_empty() {
+        lines.push(Line::from(format!(" none yet: {} opens one", app.keymap.hint(&[Action::NewTab]))).fg(theme::dim()));
     }
-    if working > 0 {
-        let label = format!("{} {working} working", state_icon(State::Running).0);
-        right.extend([(Span::from(label).fg(theme::yellow()), Some(Show::Working)), (Span::from("  "), None)]);
-    }
-    if waiting + working == 0 {
-        let quiet = match states.len() {
-            0 => "no terminals".to_string(),
-            1 => "1 terminal, quiet".to_string(),
-            n => format!("{n} terminals, quiet"),
-        };
-        right.extend([(Span::from(quiet).fg(theme::dim()), Some(Show::All)), (Span::from("  "), None)]);
-    }
-    let badge = |text: &str| Span::from(format!(" {text} ")).fg(theme::bg()).bg(theme::yellow()).bold();
-    if app.prefix.is_some() {
-        right.extend([(badge("PREFIX"), None), (Span::from(" "), None)]);
-    }
-    if app.zoomed_pane().is_some() {
-        right.extend([(badge("ZOOM"), None), (Span::from(" "), None)]);
-    }
-    if app.board {
-        right.extend([(badge("BOARD"), None), (Span::from(" "), None)]);
-    }
-    if app.scrolling.is_some() {
-        right.extend([(badge("SCROLL"), None), (Span::from(" "), None)]);
-    }
-    let width = (right.iter().map(|(span, _)| span.width()).sum::<usize>() as u16).min(area.width);
-    let [left_area, right_area] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(width)]).areas(area);
-    let mut x = right_area.x;
-    app.areas.counts.clear();
-    for (span, show) in &right {
-        let w = span.width() as u16;
-        if let Some(show) = show {
-            app.areas.counts.push((*show, Rect { x, y: area.y, width: w, height: 1 }));
-        }
-        x += w;
-    }
-    frame.render_widget(Line::from(spans), left_area);
-    frame.render_widget(Line::from(right.into_iter().map(|(span, _)| span).collect::<Vec<_>>()), right_area);
+    app.areas.tabs = rects;
+    frame.render_widget(Paragraph::new(lines), body);
 }
 
 /// A list in the sidebar: its heading (and the key that goes there), then
@@ -215,10 +173,13 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     // The last few commits; the rest scrolls inside.
     let graph_height = app.ws().graph_len().clamp(1, 10) as u16 + 1;
     // Changes take whatever height is left. The files are behind f.
-    let [workspaces, _, sessions, _, changes, _, graph] = Layout::vertical([
+    let tabs_height = app.tabs().map_or(0, |t| t.list.len()).clamp(1, 9) as u16 + 1;
+    let [workspaces, _, sessions, _, tabs, _, changes, _, graph] = Layout::vertical([
         Constraint::Length(workspaces_height),
         Constraint::Length(1),
         Constraint::Length(sessions_height),
+        Constraint::Length(1),
+        Constraint::Length(tabs_height),
         Constraint::Length(1),
         Constraint::Min(2),
         Constraint::Length(1),
@@ -293,6 +254,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     section(frame, sessions, "SESSIONS", "s", focused, List::new(items), &mut app.sessions_state);
+    draw_tabs(frame, app, tabs);
 
     let current = app.current;
     let ws = &mut app.workspaces[current];
@@ -496,9 +458,53 @@ fn draw_term_pane(frame: &mut Frame, app: &mut App, id: usize, area: Rect, sessi
     {
         frame.set_cursor_position(cursor);
     }
-    if let Some(scroll) = app.scrolling.as_ref().filter(|s| s.id == id && !s.typing && !s.query.is_empty()) {
+    underline_links(frame.buffer_mut(), inner);
+    let Some(scroll) = app.scrolling.as_ref().filter(|s| s.id == id) else { return };
+    if !scroll.typing && !scroll.query.is_empty() {
         mark(frame.buffer_mut(), inner, &scroll.query);
     }
+    // The line you're on, and the lines selected.
+    let top = app.terms.iter().find(|t| t.id == id).map_or(0, |t| t.top_line());
+    let selected = scroll.anchor.map(|a| (a.min(scroll.cursor), a.max(scroll.cursor)));
+    for row in 0..inner.height {
+        let line = top + row as usize;
+        let bg = if line == scroll.cursor {
+            theme::selection()
+        } else if selected.is_some_and(|(from, to)| (from..=to).contains(&line)) {
+            theme::text_selection()
+        } else {
+            continue;
+        };
+        for x in inner.left()..inner.right() {
+            if let Some(cell) = frame.buffer_mut().cell_mut((x, inner.y + row)) {
+                cell.set_bg(bg);
+            }
+        }
+    }
+}
+
+/// Links in a terminal, underlined: ctrl-click opens them.
+fn underline_links(buf: &mut ratatui::buffer::Buffer, area: Rect) {
+    for y in area.top()..area.bottom() {
+        let row: String = (area.left()..area.right()).map(|x| buf.cell((x, y)).and_then(|c| c.symbol().chars().next()).unwrap_or(' ')).collect();
+        let chars: Vec<char> = row.chars().collect();
+        let mut from = 0;
+        while let Some(found) = ["https://", "http://"].iter().filter_map(|scheme| row_find(&chars, scheme, from)).min() {
+            let end = chars[found..].iter().position(|c| c.is_whitespace() || "\"'`<>()[]{}│".contains(*c)).map_or(chars.len(), |i| found + i);
+            for x in found..end {
+                if let Some(cell) = buf.cell_mut((area.x + x as u16, y)) {
+                    cell.modifier.insert(Modifier::UNDERLINED);
+                }
+            }
+            from = end;
+        }
+    }
+}
+
+/// Where `needle` starts in `chars`, from `from` on.
+fn row_find(chars: &[char], needle: &str, from: usize) -> Option<usize> {
+    let needle: Vec<char> = needle.chars().collect();
+    (from..chars.len().saturating_sub(needle.len() - 1)).find(|&i| chars[i..i + needle.len()] == needle[..])
 }
 
 /// Every place `query` shows in `area` (any case), on the find color.
@@ -667,7 +673,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         let keys: &[(&str, &str)] = if scroll.typing {
             &[("⏎", "find, going back"), ("esc", "cancel")]
         } else {
-            &[("j/k u/d", "scroll"), ("g/G", "oldest/now"), ("/", "find"), ("n/N", "older/newer match"), ("q", "back to now")]
+            &[("j/k u/d", "move"), ("g/G", "oldest/now"), ("/", "find"), ("n/N", "older/newer"), ("v", "select"), ("y", "copy"), ("q", "back to now")]
         };
         let mut spans = footer_spans("SCROLL", theme::yellow(), keys, &[]);
         let mut input = Vec::new();
@@ -902,6 +908,8 @@ fn help_sections(app: &App) -> Vec<(String, Vec<(String, String)>)> {
         ("shift-⏎".to_string(), "new line in a Claude prompt".to_string()),
         (format!("{0} {0}", keymap.prefix_label()), "the prefix itself, for the program".to_string()),
         ("claude".to_string(), "type it in a shell to start an agent; the terminal is named after it".to_string()),
+        ("ctrl-click".to_string(), "open the link under the mouse, or show the file (path:line) in the viewer; right-click offers it too".to_string()),
+        ("drag a border".to_string(), "resize the panes on each side of it".to_string()),
     ];
     if keymap.legacy {
         terminal.push((
