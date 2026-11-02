@@ -115,6 +115,7 @@ From anywhere, terminals included, Pulpo has a prefix: `ctrl-space` or `ctrl-b`,
 | `a` | the agent that has waited longest with something to read; again for the next |
 | `tab` | back to the last tab or session |
 | `space` | the menu: every action by name, with its key |
+| `T` | theme: follow Ghostty's, Linear Dark, or any Ghostty theme; moving through the list tries each one |
 | `C` | new task session |
 | `P` `N` | previous / next session |
 | `K` | delete the task session (press it twice) |
@@ -194,6 +195,10 @@ pulpo hooks install   # adds them to ~/.claude/settings.json, rest of the file u
 pulpo hooks status    # shows what's installed
 pulpo hooks remove    # takes them out
 ```
+
+## Colors
+
+Pulpo wears your Ghostty theme, so it looks like the terminal around it. No theme in Ghostty: Linear Dark, Pulpo's own. `ctrl-b T` picks another: Omarchy's favorites first (Tokyo Night, Catppuccin, Gruvbox, Rosé Pine…), then yours, then all of Ghostty's. Move through them to try each one, `⏎` keeps it (in `~/.config/pulpo/config.toml`), `esc` puts the old one back.
 
 ## Editing
 

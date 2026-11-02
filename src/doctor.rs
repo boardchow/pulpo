@@ -91,7 +91,7 @@ fn input_switch_on_ctrl_space() -> Option<usize> {
 }
 
 /// Ghostty's config files, in the order it reads them.
-fn ghostty_configs() -> Vec<PathBuf> {
+pub fn ghostty_configs() -> Vec<PathBuf> {
     let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
     let support = home().join("Library/Application Support/com.mitchellh.ghostty");
     [xdg.join("ghostty/config"), xdg.join("ghostty/config.ghostty"), support.join("config"), support.join("config.ghostty")]

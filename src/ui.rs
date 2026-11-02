@@ -15,10 +15,10 @@ use crate::picker::{self, Kind, Show};
 use crate::search::Mode;
 use crate::tree::Row;
 use crate::workspace::GraphItem;
-use crate::theme::{ACCENT, BG, BLUE, BORDER, DIM, EDITOR_BG, FG, GREEN, HOVER, MAGENTA, MUTED, RED, SELECTION, SKY, WHITE, YELLOW};
+use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    frame.render_widget(Block::new().style(Style::new().fg(FG).bg(BG)), frame.area());
+    frame.render_widget(Block::new().style(Style::new().fg(theme::fg()).bg(theme::bg())), frame.area());
     let [top, main, footer] = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
     let width = if app.sidebar_hidden { 0 } else { (main.width * 27 / 100).clamp(28, 42).min(main.width) };
     let [sidebar, right] = Layout::horizontal([Constraint::Length(width), Constraint::Fill(1)]).areas(main);
@@ -61,13 +61,13 @@ fn pulpo(wiggle: bool) -> Vec<String> {
 /// terminals are doing), what all terminals are doing, and the modes on.
 fn draw_topbar(frame: &mut Frame, app: &mut App, area: Rect) {
     let ws = app.ws();
-    let mut spans = vec![Span::from(" pulpo ").fg(BLUE).bold(), Span::from(format!(" {}", ws.name)).fg(MUTED)];
+    let mut spans = vec![Span::from(" pulpo ").fg(theme::blue()).bold(), Span::from(format!(" {}", ws.name)).fg(theme::muted())];
     if app.sessions().first() != Some(&app.current) {
-        spans.push(Span::from(" › ").fg(DIM));
-        spans.push(Span::from(app.session_name(app.current).to_string()).fg(FG).bold());
+        spans.push(Span::from(" › ").fg(theme::dim()));
+        spans.push(Span::from(app.session_name(app.current).to_string()).fg(theme::fg()).bold());
     }
     if let Some(branch) = &ws.status.branch {
-        spans.push(Span::from(format!("  {branch}")).fg(DIM));
+        spans.push(Span::from(format!("  {branch}")).fg(theme::dim()));
     }
     spans.push(Span::from("   "));
 
@@ -84,13 +84,13 @@ fn draw_topbar(frame: &mut Frame, app: &mut App, area: Rect) {
             let label = tab.name.clone().or(named).unwrap_or_else(|| "file".into());
             let more = tab.root.panes().len().saturating_sub(1);
             let more = if more > 0 { format!(" +{more}") } else { String::new() };
-            let bg = if on { SELECTION } else { BG };
-            let name = Span::from(format!(" {label}")).fg(if on { FG } else { MUTED }).bg(bg);
+            let bg = if on { theme::selection() } else { theme::bg() };
+            let name = Span::from(format!(" {label}")).fg(if on { theme::fg() } else { theme::muted() }).bg(bg);
             let pieces = [
-                Span::from(format!(" {} ", n + 1)).fg(MUTED).bg(bg),
+                Span::from(format!(" {} ", n + 1)).fg(theme::muted()).bg(bg),
                 Span::from(icon).fg(color).bg(bg).bold(),
                 if on { name.bold() } else { name },
-                Span::from(format!("{more} ")).fg(DIM).bg(bg),
+                Span::from(format!("{more} ")).fg(theme::dim()).bg(bg),
             ];
             let width = pieces.iter().map(Span::width).sum::<usize>() as u16;
             tabs.push((n, Rect { x, y: area.y, width, height: 1 }));
@@ -108,11 +108,11 @@ fn draw_topbar(frame: &mut Frame, app: &mut App, area: Rect) {
     // Each count opens go to on those terminals.
     let mut right: Vec<(Span, Option<Show>)> = Vec::new();
     if waiting > 0 {
-        right.extend([(Span::from(format!("◆ {waiting} to read")).fg(MAGENTA).bold(), Some(Show::ToRead)), (Span::from("  "), None)]);
+        right.extend([(Span::from(format!("◆ {waiting} to read")).fg(theme::magenta()).bold(), Some(Show::ToRead)), (Span::from("  "), None)]);
     }
     if working > 0 {
         let label = format!("{} {working} working", state_icon(State::Running).0);
-        right.extend([(Span::from(label).fg(YELLOW), Some(Show::Working)), (Span::from("  "), None)]);
+        right.extend([(Span::from(label).fg(theme::yellow()), Some(Show::Working)), (Span::from("  "), None)]);
     }
     if waiting + working == 0 {
         let quiet = match states.len() {
@@ -120,9 +120,9 @@ fn draw_topbar(frame: &mut Frame, app: &mut App, area: Rect) {
             1 => "1 terminal, quiet".to_string(),
             n => format!("{n} terminals, quiet"),
         };
-        right.extend([(Span::from(quiet).fg(DIM), Some(Show::All)), (Span::from("  "), None)]);
+        right.extend([(Span::from(quiet).fg(theme::dim()), Some(Show::All)), (Span::from("  "), None)]);
     }
-    let badge = |text: &str| Span::from(format!(" {text} ")).fg(BG).bg(YELLOW).bold();
+    let badge = |text: &str| Span::from(format!(" {text} ")).fg(theme::bg()).bg(theme::yellow()).bold();
     if app.prefix.is_some() {
         right.extend([(badge("PREFIX"), None), (Span::from(" "), None)]);
     }
@@ -149,8 +149,8 @@ fn draw_topbar(frame: &mut Frame, app: &mut App, area: Rect) {
 fn section(frame: &mut Frame, area: Rect, title: &str, key: &str, focused: bool, list: List, state: &mut ListState) {
     let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
     let heading = Line::from(vec![
-        Span::from(format!(" {title}")).fg(if focused { BLUE } else { MUTED }).bold(),
-        Span::from(format!("  {key}")).fg(DIM),
+        Span::from(format!(" {title}")).fg(if focused { theme::blue() } else { theme::muted() }).bold(),
+        Span::from(format!("  {key}")).fg(theme::dim()),
     ]);
     frame.render_widget(heading, head);
     frame.render_stateful_widget(list.highlight_style(highlight(focused)), body, state);
@@ -158,7 +158,7 @@ fn section(frame: &mut Frame, area: Rect, title: &str, key: &str, focused: bool,
 
 fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let in_sidebar = matches!(app.focus, Focus::Workspaces | Focus::Sessions | Focus::Changes | Focus::Graph);
-    let outer = Block::bordered().border_type(BorderType::Rounded).border_style(border(in_sidebar)).style(Style::new().bg(BG));
+    let outer = Block::bordered().border_type(BorderType::Rounded).border_style(border(in_sidebar)).style(Style::new().bg(theme::bg()));
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
     let workspaces_height = app.repos().len().clamp(1, 8) as u16 + 1;
@@ -189,7 +189,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|i| {
             let w = &app.workspaces[i];
             let current = w.repo == current_repo;
-            let mut spans = vec![Span::from(if current { " ● " } else { "   " }).fg(ACCENT)];
+            let mut spans = vec![Span::from(if current { " ● " } else { "   " }).fg(theme::accent())];
             let name = Span::from(w.name.clone());
             spans.push(if current { name.bold() } else { name });
             // Something works or waits in one of its sessions.
@@ -213,31 +213,31 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|i| {
             let w = &app.workspaces[i];
             let current = i == app.current;
-            let (icon, color) = app.session_state(i).map_or((" ", DIM), state_icon);
+            let (icon, color) = app.session_state(i).map_or((" ", theme::dim()), state_icon);
             let name = Span::from(app.session_name(i).to_string());
             let name = match app.session_state(i) {
                 Some(State::Waiting | State::Done) => name.fg(color).bold(),
-                _ if current => name.fg(FG).bold(),
-                _ => name.fg(MUTED),
+                _ if current => name.fg(theme::fg()).bold(),
+                _ => name.fg(theme::muted()),
             };
             let mut spans = vec![Span::from(format!(" {icon} ")).fg(color).bold(), name];
             if let Some(branch) = &w.status.branch {
-                spans.push(Span::from(format!("  {branch}")).fg(MUTED));
+                spans.push(Span::from(format!("  {branch}")).fg(theme::muted()));
             }
             if w.status.ahead > 0 {
-                spans.push(Span::from(format!(" ↑{}", w.status.ahead)).fg(GREEN));
+                spans.push(Span::from(format!(" ↑{}", w.status.ahead)).fg(theme::green()));
             }
             if w.status.behind > 0 {
-                spans.push(Span::from(format!(" ↓{}", w.status.behind)).fg(RED));
+                spans.push(Span::from(format!(" ↓{}", w.status.behind)).fg(theme::red()));
             }
             if !w.status.changes.is_empty() {
-                spans.push(Span::from(format!(" ±{}", w.status.changes.len())).fg(BLUE));
+                spans.push(Span::from(format!(" ±{}", w.status.changes.len())).fg(theme::blue()));
             }
             // An isolated session: where its app answers.
             if let Some(session) = app.isolated.iter().find(|s| s.root == w.root) {
                 let web = session.ports.iter().filter(|(var, _)| ["APP", "WEB", "HTTP"].iter().any(|k| var.contains(k)));
                 for (_, port) in web {
-                    spans.push(Span::from(format!(" :{port}")).fg(SKY));
+                    spans.push(Span::from(format!(" :{port}")).fg(theme::sky()));
                 }
             }
             ListItem::new(Line::from(spans))
@@ -276,7 +276,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 _ if file => ' ',
                 ch => ch,
             };
-            Span::from(ch.to_string()).fg(LANES[i / 2 % LANES.len()])
+            Span::from(ch.to_string()).fg(lanes()[i / 2 % 5])
         }));
         spans
     };
@@ -287,9 +287,9 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 let mut spans = lanes(&row.graph, false);
                 if let Some(commit) = &row.commit {
                     let fold = if ws.is_commit_open(&commit.hash) { " ▾" } else { "" };
-                    spans.push(Span::from(fold).fg(DIM));
+                    spans.push(Span::from(fold).fg(theme::dim()));
                     if !commit.refs.is_empty() {
-                        spans.push(Span::from(format!(" {}", commit.refs)).fg(SKY).bold());
+                        spans.push(Span::from(format!(" {}", commit.refs)).fg(theme::sky()).bold());
                     }
                     spans.push(Span::from(format!(" {}", commit.subject)));
                 }
@@ -323,11 +323,11 @@ fn file_items(rows: &[Row], changed: &[(PathBuf, char)], quiet_folders: bool) ->
                 .map(|(_, k)| *k);
             let style = match kind {
                 Some(k) => Style::default().fg(kind_color(k)),
-                None if row.is_dir && quiet_folders => Style::default().fg(MUTED),
+                None if row.is_dir && quiet_folders => Style::default().fg(theme::muted()),
                 None => Style::default(),
             };
             ListItem::new(Line::from(vec![
-                Span::from(format!(" {}{icon}", "  ".repeat(row.depth))).fg(DIM),
+                Span::from(format!(" {}{icon}", "  ".repeat(row.depth))).fg(theme::dim()),
                 Span::styled(row.name.clone(), style),
             ]))
         })
@@ -342,12 +342,12 @@ fn change_spans(c: &Change) -> Vec<Span<'static>> {
     let dir = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
     let mut spans = vec![Span::from(name).fg(kind_color(c.kind()))];
     if c.added > 0 {
-        spans.push(Span::from(format!(" +{}", c.added)).fg(GREEN));
+        spans.push(Span::from(format!(" +{}", c.added)).fg(theme::green()));
     }
     if c.removed > 0 {
-        spans.push(Span::from(format!(" −{}", c.removed)).fg(RED));
+        spans.push(Span::from(format!(" −{}", c.removed)).fg(theme::red()));
     }
-    spans.push(Span::from(format!(" {dir}")).fg(MUTED));
+    spans.push(Span::from(format!(" {dir}")).fg(theme::muted()));
     spans
 }
 
@@ -357,14 +357,16 @@ fn state_icon(state: State) -> (&'static str, Color) {
     const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     match state {
-        State::Running => (SPINNER[(now.as_millis() / 100) as usize % SPINNER.len()], YELLOW),
-        State::Waiting | State::Done => ("◆", MAGENTA),
-        State::Idle => ("○", DIM),
+        State::Running => (SPINNER[(now.as_millis() / 100) as usize % SPINNER.len()], theme::yellow()),
+        State::Waiting | State::Done => ("◆", theme::magenta()),
+        State::Idle => ("○", theme::dim()),
     }
 }
 
 /// Colors of the graph's lanes, left to right, like `git log --graph --color`.
-const LANES: [Color; 5] = [BLUE, MAGENTA, GREEN, YELLOW, SKY];
+fn lanes() -> [Color; 5] {
+    [theme::blue(), theme::magenta(), theme::green(), theme::yellow(), theme::sky()]
+}
 
 /// The tab on screen: its panes as split, or the zoomed one alone.
 fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -398,12 +400,12 @@ fn draw_term_pane(frame: &mut Frame, app: &mut App, id: usize, area: Rect) {
     let state = app.term_state(term);
     let (icon, color) = state_icon(state);
     let label = Span::from(term.label().to_string());
-    let mut title = vec![Span::from(" "), Span::from(format!("{icon} ")).fg(color).bold(), if focused { label.fg(FG).bold() } else { label.fg(MUTED) }];
+    let mut title = vec![Span::from(" "), Span::from(format!("{icon} ")).fg(color).bold(), if focused { label.fg(theme::fg()).bold() } else { label.fg(theme::muted()) }];
     if matches!(state, State::Waiting | State::Done) {
-        title.push(Span::from(" to read").fg(MAGENTA));
+        title.push(Span::from(" to read").fg(theme::magenta()));
     }
     title.push(Span::from(" "));
-    let block = Block::bordered().border_type(BorderType::Rounded).title(Line::from(title)).border_style(border(focused)).style(Style::new().bg(BG));
+    let block = Block::bordered().border_type(BorderType::Rounded).title(Line::from(title)).border_style(border(focused)).style(Style::new().bg(theme::bg()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(term) = app.terms.iter_mut().find(|t| t.id == id) else { return };
@@ -417,13 +419,13 @@ fn draw_term_pane(frame: &mut Frame, app: &mut App, id: usize, area: Rect) {
 
 /// No tab in this session: the pulpo, and how to start.
 fn draw_empty(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border(false)).style(Style::new().bg(BG));
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border(false)).style(Style::new().bg(theme::bg()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let working = app.terms.iter().any(|t| app.term_state(t) == State::Running);
     let keymap = &app.keymap;
-    let key = |k: String, text: &str| Line::from(vec![Span::from(format!("{k:<10}")).fg(BLUE).bold(), Span::from(text.to_string()).fg(MUTED)]);
-    let mut lines: Vec<Line> = pulpo(working).into_iter().map(|row| Line::from(row).fg(BLUE)).collect();
+    let key = |k: String, text: &str| Line::from(vec![Span::from(format!("{k:<10}")).fg(theme::blue()).bold(), Span::from(text.to_string()).fg(theme::muted())]);
+    let mut lines: Vec<Line> = pulpo(working).into_iter().map(|row| Line::from(row).fg(theme::blue())).collect();
     lines.extend([
         Line::default(),
         Line::from("No terminals in this session").bold(),
@@ -453,7 +455,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(editor) = app.editor.as_mut() else { return };
     let name = editor.path.strip_prefix(&root).unwrap_or(&editor.path).display().to_string();
     let title = if editor.dirty { format!("{name} ● unsaved") } else { name };
-    let block = block(&title, focused).style(Style::new().bg(EDITOR_BG));
+    let block = block(&title, focused).style(Style::new().bg(theme::editor_bg()));
     let inner = block.inner(area);
     editor.view = (inner.height as usize, inner.width as usize);
     let rows = editor.rows(inner.height as usize);
@@ -470,7 +472,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
-    let block = block(&app.viewer.heading(), app.focus == Focus::Viewer).style(Style::new().bg(EDITOR_BG));
+    let block = block(&app.viewer.heading(), app.focus == Focus::Viewer).style(Style::new().bg(theme::editor_bg()));
     let inner = block.inner(area);
     // The overview ruler takes the last column.
     let [text, ruler] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
@@ -490,7 +492,7 @@ fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
     for (i, (color, in_view)) in app.viewer.ruler(ruler.height as usize).into_iter().enumerate() {
         if let Some(cell) = frame.buffer_mut().cell_mut((ruler.x, ruler.y + i as u16)) {
             cell.set_symbol(if color.is_some() { "▐" } else { " " });
-            cell.set_style(Style::new().fg(color.unwrap_or(EDITOR_BG)).bg(if in_view { BORDER } else { EDITOR_BG }));
+            cell.set_style(Style::new().fg(color.unwrap_or(theme::editor_bg())).bg(if in_view { theme::border() } else { theme::editor_bg() }));
         }
     }
 }
@@ -504,21 +506,21 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         if app.focus == Focus::Terminal {
             keys.push((again.as_str(), "sends it to the program"));
         }
-        frame.render_widget(Line::from(footer_spans("PREFIX", YELLOW, &keys, &[])), area);
+        frame.render_widget(Line::from(footer_spans("PREFIX", theme::yellow(), &keys, &[])), area);
         return;
     }
     if app.new_menu {
         let keys = [("w", "workspace"), ("s", "session"), ("t", "terminal"), ("f", "file or folder"), ("esc", "cancel")];
-        frame.render_widget(Line::from(footer_spans("NEW", ACCENT, &keys, &[])), area);
+        frame.render_widget(Line::from(footer_spans("NEW", theme::accent(), &keys, &[])), area);
         return;
     }
     if let Some(create) = app.creating.as_ref().filter(|c| c.session) {
-        let mut spans = footer_spans("NEW SESSION", ACCENT, &[("⏎", "create"), ("esc", "cancel")], &[]);
+        let mut spans = footer_spans("NEW SESSION", theme::accent(), &[("⏎", "create"), ("esc", "cancel")], &[]);
         let input = vec![
-            Span::from("› ").fg(BLUE).bold(),
+            Span::from("› ").fg(theme::blue()).bold(),
             Span::from(create.name.clone()),
-            Span::from("█").fg(BLUE),
-            Span::from("   its own copy, Docker, ports and database   ").fg(MUTED),
+            Span::from("█").fg(theme::blue()),
+            Span::from("   its own copy, Docker, ports and database   ").fg(theme::muted()),
         ];
         spans.splice(2..2, input);
         frame.render_widget(Line::from(spans), area);
@@ -529,32 +531,32 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         let root = &app.ws().root;
         let dir = create.dir.strip_prefix(root).unwrap_or(&create.dir).display().to_string();
         let dir = if dir.is_empty() { String::new() } else { format!("{dir}/") };
-        let mut spans = footer_spans("NEW FILE", ACCENT, &[("⏎", "create"), ("esc", "cancel")], &[]);
+        let mut spans = footer_spans("NEW FILE", theme::accent(), &[("⏎", "create"), ("esc", "cancel")], &[]);
         let input = vec![
-            Span::from("› ").fg(BLUE).bold(),
-            Span::from(dir).fg(MUTED),
+            Span::from("› ").fg(theme::blue()).bold(),
+            Span::from(dir).fg(theme::muted()),
             Span::from(create.name.clone()),
-            Span::from("█").fg(BLUE),
-            Span::from("   end with / for a folder   ").fg(MUTED),
+            Span::from("█").fg(theme::blue()),
+            Span::from("   end with / for a folder   ").fg(theme::muted()),
         ];
         spans.splice(2..2, input);
         frame.render_widget(Line::from(spans), area);
         return;
     }
     if let Some(name) = &app.renaming {
-        let mut spans = footer_spans("RENAME TAB", ACCENT, &[("⏎", "rename"), ("esc", "cancel")], &[]);
+        let mut spans = footer_spans("RENAME TAB", theme::accent(), &[("⏎", "rename"), ("esc", "cancel")], &[]);
         let input = vec![
-            Span::from("› ").fg(BLUE).bold(),
+            Span::from("› ").fg(theme::blue()).bold(),
             Span::from(name.clone()),
-            Span::from("█").fg(BLUE),
-            Span::from("   empty: named after its terminal   ").fg(MUTED),
+            Span::from("█").fg(theme::blue()),
+            Span::from("   empty: named after its terminal   ").fg(theme::muted()),
         ];
         spans.splice(2..2, input);
         frame.render_widget(Line::from(spans), area);
         return;
     }
     if let Some(message) = &app.message {
-        frame.render_widget(Line::from(format!(" {message}")).fg(YELLOW).bold(), area);
+        frame.render_widget(Line::from(format!(" {message}")).fg(theme::yellow()).bold(), area);
         return;
     }
     if app.focus == Focus::Viewer
@@ -568,12 +570,12 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         let keys: &[(&str, &str)] =
             if find.typing { &[("⏎", "done"), ("esc", "cancel")] } else { &[("n/p", "next/previous"), ("/", "new search"), ("esc", "clear")] };
         // The same input line as the search popup, after the badge.
-        let mut input = vec![Span::from("› ").fg(BLUE).bold(), Span::from(find.query.clone())];
+        let mut input = vec![Span::from("› ").fg(theme::blue()).bold(), Span::from(find.query.clone())];
         if find.typing {
-            input.push(Span::from("█").fg(BLUE));
+            input.push(Span::from("█").fg(theme::blue()));
         }
-        input.push(Span::from(format!("   {count}   ")).fg(MUTED));
-        let mut spans = footer_spans("FIND IN FILE", ACCENT, keys, &[]);
+        input.push(Span::from(format!("   {count}   ")).fg(theme::muted()));
+        let mut spans = footer_spans("FIND IN FILE", theme::accent(), keys, &[]);
         spans.splice(2..2, input);
         frame.render_widget(Line::from(spans), area);
         return;
@@ -581,12 +583,12 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     // Typing what to find in the editor, like finding in the viewer.
     if let Some(editor) = app.editor.as_ref().filter(|e| e.find_typing && app.focus == Focus::Editor) {
         let input = vec![
-            Span::from("› ").fg(BLUE).bold(),
+            Span::from("› ").fg(theme::blue()).bold(),
             Span::from(editor.find.clone().unwrap_or_default()),
-            Span::from("█").fg(BLUE),
-            Span::from("   ").fg(MUTED),
+            Span::from("█").fg(theme::blue()),
+            Span::from("   ").fg(theme::muted()),
         ];
-        let mut spans = footer_spans("FIND IN FILE", ACCENT, &[("⏎", "next"), ("shift-⏎", "previous"), ("esc", "done")], &[]);
+        let mut spans = footer_spans("FIND IN FILE", theme::accent(), &[("⏎", "next"), ("shift-⏎", "previous"), ("esc", "done")], &[]);
         spans.splice(2..2, input);
         frame.render_widget(Line::from(spans), area);
         return;
@@ -660,22 +662,22 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Focus::Viewer => &[("w s c f t", "go to panel"), (&prefix, "prefix"), ("?", "all keys"), ("q", "quit")],
         _ => &[("w s c g f t", "go to panel"), ("n", "new"), (&prefix, "prefix"), ("?", "all keys"), ("q", "quit")],
     };
-    let color = if app.focus == Focus::Terminal { YELLOW } else { ACCENT };
+    let color = if app.focus == Focus::Terminal { theme::yellow() } else { theme::accent() };
     frame.render_widget(Line::from(footer_spans(badge, color, keys, global)), area);
 }
 
 fn footer_spans(badge: &str, color: Color, keys: &[(&str, &str)], global: &[(&str, &str)]) -> Vec<Span<'static>> {
     // Text on the indigo accent is white, on lighter badges dark; keys use the
     // lighter blue where the accent would be too dark to read.
-    let (badge_fg, key) = if color == ACCENT { (WHITE, BLUE) } else { (BG, color) };
+    let (badge_fg, key) = if color == theme::accent() { (theme::on_accent(), theme::blue()) } else { (theme::bg(), color) };
     let mut spans = vec![Span::styled(format!(" {badge} "), Style::default().fg(badge_fg).bg(color).bold()), Span::from(" ")];
     let key_color = key;
     for (i, (key, label)) in keys.iter().chain(global).enumerate() {
         if i == keys.len() && !global.is_empty() {
-            spans.push(Span::from("│ ").fg(DIM));
+            spans.push(Span::from("│ ").fg(theme::dim()));
         }
         spans.push(Span::from(key.to_string()).fg(key_color).bold());
-        spans.push(Span::from(format!(" {label}  ")).fg(MUTED));
+        spans.push(Span::from(format!(" {label}  ")).fg(theme::muted()));
     }
     spans
 }
@@ -791,7 +793,7 @@ fn draw_help(frame: &mut Frame, app: &App) {
         for (title, keys) in sections {
             lines.push(Line::from(format!(" {title}")).bold());
             for (key, text) in keys {
-                lines.push(Line::from(vec![Span::from(format!("   {key:<16}")).fg(BLUE).bold(), Span::from(text.clone())]));
+                lines.push(Line::from(vec![Span::from(format!("   {key:<16}")).fg(theme::blue()).bold(), Span::from(text.clone())]));
             }
             lines.push(Line::default());
         }
@@ -818,14 +820,14 @@ fn draw_help(frame: &mut Frame, app: &App) {
     let height = texts.iter().map(rows).max().unwrap_or(0).max(1) as u16 + 4;
     let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
-    frame.render_widget(Block::new().style(Style::new().fg(FG).bg(BG)), popup);
-    let block = block("Keyboard shortcuts", true).title_bottom(Line::from(" type to filter · esc closes ").fg(DIM));
+    frame.render_widget(Block::new().style(Style::new().fg(theme::fg()).bg(theme::bg())), popup);
+    let block = block("Keyboard shortcuts", true).title_bottom(Line::from(" type to filter · esc closes ").fg(theme::dim()));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let [input, _, body] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
     let status = if sections.is_empty() { "   nothing matches".to_string() } else { String::new() };
     frame.render_widget(
-        Line::from(vec![Span::from(" › ").fg(BLUE).bold(), Span::from(filter.clone()), Span::from("█").fg(BLUE), Span::from(status).fg(MUTED)]),
+        Line::from(vec![Span::from(" › ").fg(theme::blue()).bold(), Span::from(filter.clone()), Span::from("█").fg(theme::blue()), Span::from(status).fg(theme::muted())]),
         input,
     );
     let areas = Layout::horizontal(vec![Constraint::Fill(1); texts.len()]).split(body);
@@ -848,25 +850,25 @@ fn draw_prefix(frame: &mut Frame, app: &App) {
     let height = (tall + 5).min(area.height.saturating_sub(1));
     let popup = Rect { x: area.x, y: area.bottom().saturating_sub(height + 1), width: area.width, height };
     frame.render_widget(Clear, popup);
-    let title = Line::from(vec![Span::from(format!(" {} ", keymap.prefix_label())).fg(YELLOW).bold(), Span::from("then ").fg(MUTED)]);
+    let title = Line::from(vec![Span::from(format!(" {} ", keymap.prefix_label())).fg(theme::yellow()).bold(), Span::from("then ").fg(theme::muted())]);
     let block = Block::bordered()
         .title(title)
-        .title_bottom(Line::from(" esc cancels · another key does what it does on its own ").fg(DIM))
+        .title_bottom(Line::from(" esc cancels · another key does what it does on its own ").fg(theme::dim()))
         .border_style(border(true))
-        .style(Style::new().bg(BG));
+        .style(Style::new().bg(theme::bg()));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let [columns, _, chords] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(inner);
     let areas = Layout::horizontal(vec![Constraint::Fill(1); groups.len()]).split(columns);
     for ((title, rows), area) in groups.iter().zip(areas.iter()) {
-        let mut lines = vec![Line::from(format!(" {title}")).fg(DIM).bold()];
-        lines.extend(rows.iter().map(|(keys, label)| Line::from(vec![Span::from(format!(" {keys:<6} ")).fg(BLUE).bold(), Span::from(*label)])));
+        let mut lines = vec![Line::from(format!(" {title}")).fg(theme::dim()).bold()];
+        lines.extend(rows.iter().map(|(keys, label)| Line::from(vec![Span::from(format!(" {keys:<6} ")).fg(theme::blue()).bold(), Span::from(*label)])));
         frame.render_widget(Paragraph::new(lines), *area);
     }
-    let mut spans = vec![Span::from(" WITHOUT IT ").fg(DIM).bold()];
+    let mut spans = vec![Span::from(" WITHOUT IT ").fg(theme::dim()).bold()];
     for (keys, label) in keymap.chord_rows() {
-        spans.push(Span::from(format!(" {keys} ")).fg(BLUE).bold());
-        spans.push(Span::from(format!("{label}  ")).fg(MUTED));
+        spans.push(Span::from(format!(" {keys} ")).fg(theme::blue()).bold());
+        spans.push(Span::from(format!("{label}  ")).fg(theme::muted()));
     }
     frame.render_widget(Line::from(spans), chords);
 }
@@ -883,12 +885,12 @@ fn draw_picker(frame: &mut Frame, app: &mut App) {
     let popup = centered(area, (area.width * 7 / 10).max(60), (area.height * 7 / 10).max(12));
     frame.render_widget(Clear, popup);
     let goto = picker.kind == Kind::Goto;
-    let (title, hint) = if goto {
-        ("Go to", " type to filter · ⇥ which terminals · ↑↓ move · ⏎ go there · esc close ")
-    } else {
-        ("Menu", " type to filter · ↑↓ move · ⏎ do it · esc close ")
+    let (title, hint) = match picker.kind {
+        Kind::Goto => ("Go to", " type to filter · ⇥ which terminals · ↑↓ move · ⏎ go there · esc close "),
+        Kind::Menu => ("Menu", " type to filter · ↑↓ move · ⏎ do it · esc close "),
+        Kind::Theme => ("Theme", " type to filter · ↑↓ try it · ⏎ keep it · esc put the old one back "),
     };
-    let block = block(title, true).title_bottom(Line::from(hint).fg(DIM));
+    let block = block(title, true).title_bottom(Line::from(hint).fg(theme::dim()));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let [input, _, list, _, detail] = Layout::vertical([
@@ -900,15 +902,15 @@ fn draw_picker(frame: &mut Frame, app: &mut App) {
     ])
     .areas(inner);
 
-    let mut spans = vec![Span::from(" › ").fg(BLUE).bold(), Span::from(picker.query.clone()), Span::from("█").fg(BLUE), Span::from("   ")];
+    let mut spans = vec![Span::from(" › ").fg(theme::blue()).bold(), Span::from(picker.query.clone()), Span::from("█").fg(theme::blue()), Span::from("   ")];
     if goto {
         for show in Show::ALL {
             let chip = Span::from(format!(" {} ", show.label()));
-            spans.push(if show == picker.show { chip.fg(BG).bg(BLUE).bold() } else { chip.fg(MUTED) });
+            spans.push(if show == picker.show { chip.fg(theme::bg()).bg(theme::blue()).bold() } else { chip.fg(theme::muted()) });
             spans.push(Span::from(" "));
         }
     }
-    spans.push(Span::from(format!("  {} of {}", picker.shown(), picker.entries.len())).fg(DIM));
+    spans.push(Span::from(format!("  {} of {}", picker.shown(), picker.entries.len())).fg(theme::dim()));
     frame.render_widget(Line::from(spans), input);
 
     let items: Vec<ListItem> = picker
@@ -918,23 +920,23 @@ fn draw_picker(frame: &mut Frame, app: &mut App) {
             // The repository's name, then where it is.
             picker::Row::Heading(group) => {
                 let (name, rest) = group.split_once("  ").unwrap_or((group, ""));
-                ListItem::new(Line::from(vec![Span::from(format!(" {}", name.to_uppercase())).fg(MUTED).bold(), Span::from(format!("  {rest}")).fg(DIM)]))
+                ListItem::new(Line::from(vec![Span::from(format!(" {}", name.to_uppercase())).fg(theme::muted()).bold(), Span::from(format!("  {rest}")).fg(theme::dim())]))
             }
             picker::Row::Entry(i) => {
                 let entry = &picker.entries[*i];
                 let line = if goto {
                     let state = entry.state.unwrap_or(State::Idle);
                     let (icon, color) = state_icon(state);
-                    let said = if matches!(state, State::Waiting | State::Done) { MAGENTA } else { MUTED };
+                    let said = if matches!(state, State::Waiting | State::Done) { theme::magenta() } else { theme::muted() };
                     Line::from(vec![
                         Span::from(format!("   {icon} ")).fg(color).bold(),
-                        Span::from(format!("{:<14} ", entry.text)).fg(FG),
-                        Span::from(format!("{:<22} ", entry.place)).fg(MUTED),
-                        Span::from(format!("{:>4}  ", entry.age)).fg(DIM),
+                        Span::from(format!("{:<14} ", entry.text)).fg(theme::fg()),
+                        Span::from(format!("{:<22} ", entry.place)).fg(theme::muted()),
+                        Span::from(format!("{:>4}  ", entry.age)).fg(theme::dim()),
                         Span::from(entry.detail.replace('\n', " ")).fg(said),
                     ])
                 } else {
-                    Line::from(vec![Span::from(format!("   {:<52} ", entry.text)), Span::from(entry.place.clone()).fg(BLUE).bold()])
+                    Line::from(vec![Span::from(format!("   {:<52} ", entry.text)), Span::from(entry.place.clone()).fg(theme::blue()).bold()])
                 };
                 ListItem::new(line)
             }
@@ -942,7 +944,7 @@ fn draw_picker(frame: &mut Frame, app: &mut App) {
         .collect();
     frame.render_stateful_widget(List::new(items).highlight_style(highlight(true)), list, &mut picker.state);
     if goto && let Some(entry) = picker.selected() {
-        frame.render_widget(Line::from(format!(" {}", entry.path)).fg(MUTED), detail);
+        frame.render_widget(Line::from(format!(" {}", entry.path)).fg(theme::muted()), detail);
     }
 }
 
@@ -952,7 +954,7 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let popup = centered(area, (area.width * 7 / 10).max(40), (area.height * 7 / 10).max(10));
     frame.render_widget(Clear, popup);
-    frame.render_widget(Block::new().style(Style::new().fg(FG).bg(BG)), popup);
+    frame.render_widget(Block::new().style(Style::new().fg(theme::fg()).bg(theme::bg())), popup);
     let (title, hint) = match search.mode {
         Mode::Files => (
             " Files ",
@@ -961,7 +963,7 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
         Mode::Text => (" Search inside files ", " tab: search file names · ↑↓ move · ⏎ open · esc close "),
         Mode::Repos => (" Add a workspace ", " git repositories in your home folder · type to filter, or a path (~/…) · ⏎ add · esc close "),
     };
-    let block = block(title.trim(), true).title_bottom(Line::from(hint).fg(DIM));
+    let block = block(title.trim(), true).title_bottom(Line::from(hint).fg(theme::dim()));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let [input, _, results] =
@@ -980,10 +982,10 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
     };
     frame.render_widget(
         Line::from(vec![
-            Span::from(" › ").fg(BLUE).bold(),
+            Span::from(" › ").fg(theme::blue()).bold(),
             Span::from(search.query.clone()),
-            Span::from("█").fg(BLUE),
-            Span::from(format!("   {status}")).fg(MUTED),
+            Span::from("█").fg(theme::blue()),
+            Span::from(format!("   {status}")).fg(theme::muted()),
         ]),
         input,
     );
@@ -1006,15 +1008,15 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
         .iter()
         .map(|hit| match hit.line {
             Some(line) => ListItem::new(Line::from(vec![
-                Span::from(format!(" {}", hit.rel)).fg(MUTED),
-                Span::from(format!(":{}", line + 1)).fg(YELLOW),
+                Span::from(format!(" {}", hit.rel)).fg(theme::muted()),
+                Span::from(format!(":{}", line + 1)).fg(theme::yellow()),
                 Span::from(format!("  {}", hit.text)),
             ])),
             None => {
                 let path = Path::new(&hit.rel);
                 let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                 let dir = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
-                ListItem::new(Line::from(vec![Span::from(format!(" {name}")).bold(), Span::from(format!("  {dir}")).fg(MUTED)]))
+                ListItem::new(Line::from(vec![Span::from(format!(" {name}")).bold(), Span::from(format!("  {dir}")).fg(theme::muted())]))
             }
         })
         .collect();
@@ -1025,30 +1027,30 @@ fn block(title: &str, focused: bool) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
         .title(format!(" {title} "))
-        .title_style(Style::new().fg(if focused { FG } else { MUTED }).bold())
+        .title_style(Style::new().fg(if focused { theme::fg() } else { theme::muted() }).bold())
         .border_style(border(focused))
-        .style(Style::new().bg(BG))
+        .style(Style::new().bg(theme::bg()))
 }
 
 fn border(focused: bool) -> Style {
-    Style::default().fg(if focused { ACCENT } else { BORDER })
+    Style::default().fg(if focused { theme::accent() } else { theme::border() })
 }
 
 fn highlight(focused: bool) -> Style {
     if focused {
-        Style::default().fg(FG).bg(SELECTION).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme::fg()).bg(theme::selection()).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().bg(HOVER)
+        Style::default().bg(theme::hover())
     }
 }
 
 /// gitDecoration colors.
 fn kind_color(kind: char) -> Color {
     match kind {
-        'A' | '?' => GREEN,
-        'D' => RED,
-        'R' | 'C' => SKY,
-        'U' => YELLOW,
-        _ => BLUE,
+        'A' | '?' => theme::green(),
+        'D' => theme::red(),
+        'R' | 'C' => theme::sky(),
+        'U' => theme::yellow(),
+        _ => theme::blue(),
     }
 }
