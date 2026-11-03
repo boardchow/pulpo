@@ -1,8 +1,7 @@
 //! Where you were, kept across restarts of Pulpo and of the machine: the
 //! session on screen, the session last used in each repository, the
-//! terminal last on screen in each session, each session's tabs and how
-//! they are split, and every open terminal with the Claude session running
-//! in it. Pulpo reopens where you were; after a
+//! terminal last on screen in each session, and every open terminal with
+//! the Claude session running in it. Pulpo reopens where you were; after a
 //! reboot (the server comes back without terminals), it opens the
 //! terminals again and resumes their Claude sessions.
 //!
@@ -14,8 +13,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::pane::SavedTab;
-
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Layout {
@@ -24,8 +21,7 @@ pub struct Layout {
     /// of its terminal last on screen.
     pub sessions: BTreeMap<PathBuf, PathBuf>,
     pub terminals: BTreeMap<PathBuf, String>,
-    /// Session → its tabs, their terminals by tag.
-    pub tabs: BTreeMap<PathBuf, Vec<SavedTab>>,
+    /// In the order of their tabs.
     pub open: Vec<Open>,
 }
 

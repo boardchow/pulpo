@@ -74,11 +74,6 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// The theme changed: color the file again.
-    pub fn recolor(&mut self) {
-        self.highlight.reset();
-    }
-
     /// Open `path`, with the cursor on `line` (from 1).
     pub fn open(path: PathBuf, line: Option<usize>) -> Result<Editor, String> {
         if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_BYTES as u64) {
@@ -604,6 +599,13 @@ impl Editor {
         self.lines.len().to_string().len() + 2
     }
 
+    /// Scroll sideways (a trackpad swipe, shift + wheel), no further than
+    /// the longest line; the cursor brings it back when it moves.
+    pub fn scroll_sideways(&mut self, columns: isize) {
+        let widest = self.lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+        self.hscroll = self.hscroll.saturating_add_signed(columns).min(widest);
+    }
+
     /// Scroll so the cursor is in view.
     pub fn follow_cursor(&mut self) {
         let (height, width) = (self.view.0.max(1), self.view.1);
@@ -713,12 +715,6 @@ struct Highlight {
 impl Highlight {
     fn new(syntax: &'static SyntaxReference) -> Highlight {
         Highlight { syntax, states: Vec::new(), spans: Vec::new() }
-    }
-
-    /// Everything redone, in the colors on screen now.
-    fn reset(&mut self) {
-        self.states.clear();
-        self.spans.clear();
     }
 
     /// Line `from` changed: it and everything after it is redone.

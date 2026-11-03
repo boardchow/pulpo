@@ -1,40 +1,56 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::agents::State;
-use crate::app::{App, Focus};
-use crate::git::Change;
-use crate::keymap::{Action, Group, TABS};
-use crate::pane::Pane;
-use crate::picker::{self, Kind, Show};
+use crate::app::{App, Areas, Ask, Focus};
+use crate::theme;
 use crate::search::Mode;
 use crate::tree::Row;
-use crate::workspace::GraphItem;
-use crate::theme;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Block::new().style(Style::new().fg(theme::fg()).bg(theme::bg())), frame.area());
     let [main, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
-    let width = if app.sidebar_hidden { 0 } else { (main.width * 27 / 100).clamp(28, 42).min(main.width) };
-    let [sidebar, right] = Layout::horizontal([Constraint::Length(width), Constraint::Fill(1)]).areas(main);
-    if width > 0 {
-        draw_sidebar(frame, app, sidebar);
-    } else {
-        let areas = &mut app.areas;
-        (areas.workspaces, areas.sessions, areas.changes, areas.graph) = Default::default();
-        areas.tabs.clear();
-        areas.counts.clear();
+    // Workspaces and sessions on the left, the terminals in the middle,
+    // files and changes on the right (as wide as their borders were
+    // dragged); prefix < and > hide a side.
+    let left = if app.left_hidden { 0 } else { app.left_width.unwrap_or((main.width * 18 / 100).clamp(26, 36)).clamp(20.min(main.width / 3), main.width / 3) };
+    let rest = main.width - left;
+    let least = 24.min(rest);
+    let right = if app.right_hidden { 0 } else { app.right_width.unwrap_or(rest * 42 / 100).clamp(least, rest.saturating_sub(30).max(least)) };
+    // A file opened (⏎) or edited takes everything right of the sidebar,
+    // the terminal included, until esc.
+    let expanded = match app.focus {
+        Focus::Files => app.files_expanded || app.editor.is_some(),
+        Focus::Changes => app.changes_expanded,
+        _ => false,
+    };
+    let (center, right) = if expanded { (0, main.width - left) } else { (main.width - left - right, right) };
+    let [left_area, center_area, right_area] = Layout::horizontal([Constraint::Length(left), Constraint::Length(center), Constraint::Length(right)]).areas(main);
+    // A border to drag where a side meets what's next to it.
+    let border_at = |area: Rect| Rect { x: area.x.saturating_sub(1), width: 2, ..area };
+    app.areas = Areas {
+        width: main.width,
+        left_divider: if left > 0 { border_at(if center > 0 { center_area } else { right_area }) } else { Rect::default() },
+        divider: if right > 0 && center > 0 { border_at(right_area) } else { Rect::default() },
+        ..Areas::default()
+    };
+    if left > 0 {
+        draw_left(frame, app, left_area);
     }
-    draw_right(frame, app, right);
+    if center > 0 {
+        draw_center(frame, app, center_area);
+    }
+    if right > 0 {
+        draw_right(frame, app, right_area);
+    }
     draw_footer(frame, app, footer);
     draw_search(frame, app);
-    draw_picker(frame, app);
-    draw_prefix(frame, app);
+    draw_repos(frame, app);
     draw_help(frame, app);
 }
 
@@ -59,7 +75,7 @@ fn pulpo(wiggle: bool) -> Vec<String> {
 }
 
 /// The pulpo, and beside it the version, what the terminals are doing and
-/// where the current workspace lives.
+/// where the current session lives.
 fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
     let art_width = PULPO[0].chars().count() as u16;
     let [_, art, text] = Layout::horizontal([Constraint::Length(1), Constraint::Length(art_width), Constraint::Fill(1)]).spacing(1).areas(area);
@@ -76,15 +92,6 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
         1 => "1 terminal, all quiet".to_string(),
         n => format!("{n} terminals, all quiet"),
     };
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let root = &app.ws().root;
-    let path = match root.strip_prefix(&home) {
-        Ok(rest) => format!("~/{}", rest.display()),
-        Err(_) => root.display().to_string(),
-    };
-    // Too long for the sidebar: keep the end, which names the workspace.
-    let (width, length) = (text.width as usize, path.chars().count());
-    let path = if length > width && width > 0 { format!("…{}", path.chars().skip(length - width + 1).collect::<String>()) } else { path };
     let lines = vec![
         Line::from(vec![Span::from("Pulpo").fg(theme::fg()).bold(), Span::from(concat!(" v", env!("CARGO_PKG_VERSION"))).fg(theme::muted())]),
         // Colored only when a terminal waits for you or works.
@@ -93,105 +100,48 @@ fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
             (0, _) => theme::yellow(),
             _ => theme::magenta(),
         }),
-        Line::from(path).fg(theme::muted()),
     ];
     frame.render_widget(Paragraph::new(lines), text);
-    // A click on what they're doing shows them.
-    let show = match (waiting, working) {
-        (0, 0) => Show::All,
-        (0, _) => Show::Working,
-        _ => Show::ToRead,
-    };
-    app.areas.counts = vec![(show, Rect { y: text.y + 1, height: 1, ..text })];
+    // A click on who waits goes there.
+    if waiting > 0 {
+        app.areas.counts = Rect { y: text.y + 1, height: 1, ..text };
+    }
 }
 
-/// The session's tabs, numbered as ⌥1-9 reaches them, each with how its
-/// terminals are doing; the modes on, by the heading.
-fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
-    let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
-    let mut heading = vec![Span::from(" TABS").fg(theme::muted()).bold(), Span::from(format!("  {}", app.keymap.hint(&TABS))).fg(theme::dim())];
-    let badge = |text: &str| Span::from(format!(" {text} ")).fg(theme::bg()).bg(theme::yellow()).bold();
-    for (on, text) in [(app.zoomed_pane().is_some(), "ZOOM"), (app.board, "BOARD"), (app.scrolling.is_some(), "SCROLL")] {
-        if on {
-            heading.extend([Span::from(" "), badge(text)]);
-        }
-    }
-    frame.render_widget(Line::from(heading), head);
-
-    let mut rects = Vec::new();
-    let mut lines = Vec::new();
-    if let Some(list) = app.tabs() {
-        for (n, tab) in list.list.iter().enumerate().take(body.height as usize) {
-            let on = n == list.active && !app.board;
-            let terms: Vec<&crate::term::Term> = tab.terms().into_iter().filter_map(|id| app.terms.iter().find(|t| t.id == id)).collect();
-            let state = terms.iter().map(|t| app.term_state(t)).max_by_key(|s| s.urgency()).unwrap_or(State::Idle);
-            let (icon, color) = state_icon(state);
-            let named = tab.term.and_then(|id| terms.iter().find(|t| t.id == id)).or(terms.first()).map(|t| t.label().to_string());
-            let label = tab.name.clone().or(named).unwrap_or_else(|| "file".into());
-            let more = tab.root.panes().len().saturating_sub(1);
-            let more = if more > 0 { format!(" +{more}") } else { String::new() };
-            let name = Span::from(format!(" {label}"));
-            let line = Line::from(vec![
-                Span::from(format!(" {} ", n + 1)).fg(theme::dim()),
-                Span::from(icon).fg(color).bold(),
-                if on { name.fg(theme::fg()).bold() } else { name.fg(theme::muted()) },
-                Span::from(more).fg(theme::dim()),
-            ]);
-            lines.push(if on { line.bg(theme::selection()) } else { line });
-            rects.push((n, Rect { y: body.y + n as u16, height: 1, ..body }));
-        }
-    }
-    if lines.is_empty() {
-        lines.push(Line::from(format!(" none yet: {} opens one", app.keymap.hint(&[Action::NewTab]))).fg(theme::dim()));
-    }
-    app.areas.tabs = rects;
-    frame.render_widget(Paragraph::new(lines), body);
+/// A list in its own frame, titled; where the rows are, for the mouse.
+fn panel(frame: &mut Frame, block: Block<'static>, area: Rect, focused: bool, items: Vec<ListItem>, state: &mut ListState) -> Rect {
+    let body = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_stateful_widget(List::new(items).highlight_style(highlight(focused)), body, state);
+    body
 }
 
-/// A list in the sidebar: its heading (and the key that goes there), then
-/// its rows.
-fn section(frame: &mut Frame, area: Rect, title: &str, key: &str, focused: bool, list: List, state: &mut ListState) {
-    let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
-    let heading = Line::from(vec![
-        Span::from(format!(" {title}")).fg(if focused { theme::blue() } else { theme::muted() }).bold(),
-        Span::from(format!("  {key}")).fg(theme::dim()),
-    ]);
-    frame.render_widget(heading, head);
-    frame.render_stateful_widget(list.highlight_style(highlight(focused)), body, state);
+fn framed(name: &str, focused: bool) -> Block<'static> {
+    Block::bordered().border_type(BorderType::Rounded).title(title(name, focused, Vec::new())).border_style(border(focused)).style(Style::new().bg(theme::bg()))
 }
 
-fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
-    let in_sidebar = matches!(app.focus, Focus::Workspaces | Focus::Sessions | Focus::Changes | Focus::Graph);
-    let outer = Block::bordered().border_type(BorderType::Rounded).border_style(border(in_sidebar)).style(Style::new().bg(theme::bg()));
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
-    // The pulpo on top, a blank line under it.
-    let [header, _, inner] = Layout::vertical([Constraint::Length(PULPO.len() as u16), Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
-    draw_header(frame, app, header);
-    let workspaces_height = app.repos().len().clamp(1, 8) as u16 + 1;
-    let sessions_height = app.sessions().len().clamp(1, 6) as u16 + 1;
-    // The last few commits; the rest scrolls inside.
-    let graph_height = app.ws().graph_len().clamp(1, 10) as u16 + 1;
-    // Changes take whatever height is left. The files are behind f.
-    let tabs_height = app.tabs().map_or(0, |t| t.list.len()).clamp(1, 9) as u16 + 1;
-    let [workspaces, _, sessions, _, tabs, _, changes, _, graph] = Layout::vertical([
-        Constraint::Length(workspaces_height),
+/// The pulpo, then two panels as tall as their rows: the workspaces, and
+/// the sessions of the current one.
+fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
+    let rows = |n: usize| n.max(1) as u16 + 2;
+    // A row of air above the pulpo.
+    let [_, header, _, workspaces, sessions, _] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(sessions_height),
+        Constraint::Length(PULPO.len() as u16),
         Constraint::Length(1),
-        Constraint::Length(tabs_height),
-        Constraint::Length(1),
-        Constraint::Min(2),
-        Constraint::Length(1),
-        Constraint::Length(graph_height),
+        Constraint::Length(rows(app.repos().len())),
+        // Two rows each: the name, then the branch.
+        Constraint::Length(rows(app.sessions().len() * 2)),
+        Constraint::Fill(1),
     ])
-    .areas(inner);
-    app.areas.workspaces = workspaces;
-    app.areas.sessions = sessions;
-    app.areas.changes = changes;
-    app.areas.graph = graph;
+    .areas(area);
+    draw_header(frame, app, header);
+    let focused = app.focus == Focus::Workspaces;
+    let block = framed("Workspaces", focused);
+    let rows = block.inner(workspaces);
+    frame.render_widget(block, workspaces);
 
-    // Workspaces: the repositories, each with how its sessions are doing.
+    // The repositories, each with how its sessions are doing.
     let current_repo = app.ws().repo.clone();
     let items: Vec<ListItem> = app
         .repos()
@@ -202,7 +152,6 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             let mut spans = vec![Span::from(if current { " ● " } else { "   " }).fg(theme::accent())];
             let name = Span::from(w.name.clone());
             spans.push(if current { name.bold() } else { name });
-            // Something works or waits in one of its sessions.
             let states = app.workspaces.iter().enumerate().filter(|(_, s)| s.repo == w.repo).filter_map(|(s, _)| app.session_state(s));
             if let Some(state @ (State::Running | State::Waiting | State::Done)) = states.max_by_key(|state| state.urgency()) {
                 let (icon, color) = state_icon(state);
@@ -211,273 +160,111 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             ListItem::new(Line::from(spans))
         })
         .collect();
-    let focused = app.focus == Focus::Workspaces;
-    section(frame, workspaces, "WORKSPACES", "w", focused, List::new(items), &mut app.workspaces_state);
+    frame.render_stateful_widget(List::new(items).highlight_style(highlight(focused)), rows, &mut app.workspaces_state);
+    app.areas.workspaces = rows;
 
-    // Sessions of this repository: the checkout itself, then its worktrees.
-    // The current one holds the terminals, files and changes on screen.
-    let focused = app.focus == Focus::Sessions;
+    // The repository's sessions: the checkout itself, its worktrees, its
+    // task sessions. The current one is on screen.
     let items: Vec<ListItem> = app
         .sessions()
         .into_iter()
         .map(|i| {
             let w = &app.workspaces[i];
-            let current = i == app.current;
-            let (icon, color) = app.session_state(i).map_or((" ", theme::dim()), state_icon);
+            let state = app.session_state(i);
+            let (icon, color) = state.map_or((" ", theme::dim()), state_icon);
             let name = Span::from(app.session_name(i).to_string());
-            let name = match app.session_state(i) {
+            let name = match state {
                 Some(State::Waiting | State::Done) => name.fg(color).bold(),
-                _ if current => name.fg(theme::fg()).bold(),
+                _ if i == app.current => name.fg(theme::fg()).bold(),
                 _ => name.fg(theme::muted()),
             };
             let mut spans = vec![Span::from(format!(" {icon} ")).fg(color).bold(), name];
-            if let Some(branch) = &w.status.branch {
-                spans.push(Span::from(format!("  {branch}")).fg(theme::muted()));
-            }
-            if w.status.ahead > 0 {
-                spans.push(Span::from(format!(" ↑{}", w.status.ahead)).fg(theme::green()));
-            }
-            if w.status.behind > 0 {
-                spans.push(Span::from(format!(" ↓{}", w.status.behind)).fg(theme::red()));
-            }
             if !w.status.changes.is_empty() {
                 spans.push(Span::from(format!(" ±{}", w.status.changes.len())).fg(theme::blue()));
             }
-            // An isolated session: where its app answers.
+            // A task session: where its app answers.
             if let Some(session) = app.isolated.iter().find(|s| s.root == w.root) {
                 let web = session.ports.iter().filter(|(var, _)| ["APP", "WEB", "HTTP"].iter().any(|k| var.contains(k)));
                 for (_, port) in web {
                     spans.push(Span::from(format!(" :{port}")).fg(theme::sky()));
                 }
             }
-            ListItem::new(Line::from(spans))
+            // Under the name, its branch, or how its setup goes.
+            let below = if app.setup_failed.contains_key(&w.root) {
+                Span::from("✗ setup failed").fg(theme::red())
+            } else if app.setting_up.contains_key(&w.root) {
+                Span::from(format!("{} setting up", state_icon(State::Running).0)).fg(theme::yellow())
+            } else {
+                Span::from(w.status.branch.clone().unwrap_or_default()).fg(theme::muted())
+            };
+            ListItem::new(vec![Line::from(spans), Line::from(vec![Span::from("   "), below])])
         })
         .collect();
-    section(frame, sessions, "SESSIONS", "s", focused, List::new(items), &mut app.sessions_state);
-    draw_tabs(frame, app, tabs);
-
-    let current = app.current;
-    let ws = &mut app.workspaces[current];
-
-    // Changes in the current workspace.
-    let items: Vec<ListItem> = ws
-        .status
-        .changes
-        .iter()
-        .map(|c| {
-            let code: String = c.code.iter().map(|&ch| if ch == '.' { ' ' } else { ch }).collect();
-            let mut spans = vec![Span::from(format!(" {code} ")).fg(kind_color(c.kind())).bold()];
-            spans.extend(change_spans(c));
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-    let focused = app.focus == Focus::Changes;
-    let title = format!("CHANGES {}", ws.status.changes.len());
-    section(frame, changes, &title, "c", focused, List::new(items), &mut ws.changes_state);
-
-    // History of the local branches, each lane of the graph in its own color,
-    // and the files of the commit unfolded.
-    let lanes = |graph: &str, file: bool| -> Vec<Span<'static>> {
-        let mut spans = vec![Span::from(" ")];
-        spans.extend(graph.chars().enumerate().map(|(i, ch)| {
-            // Under a commit, its lane goes on down past the files.
-            let ch = match ch {
-                '*' if file => '|',
-                '*' => '●',
-                _ if file => ' ',
-                ch => ch,
-            };
-            Span::from(ch.to_string()).fg(lanes()[i / 2 % 5])
-        }));
-        spans
-    };
-    let items: Vec<ListItem> = (0..ws.graph_len())
-        .filter_map(|i| ws.graph_item(i))
-        .map(|item| match item {
-            GraphItem::Row(row) => {
-                let mut spans = lanes(&row.graph, false);
-                if let Some(commit) = &row.commit {
-                    let fold = if ws.is_commit_open(&commit.hash) { " ▾" } else { "" };
-                    spans.push(Span::from(fold).fg(theme::dim()));
-                    if !commit.refs.is_empty() {
-                        spans.push(Span::from(format!(" {}", commit.refs)).fg(theme::sky()).bold());
-                    }
-                    spans.push(Span::from(format!(" {}", commit.subject)));
-                }
-                ListItem::new(Line::from(spans))
-            }
-            GraphItem::File(row, change) => {
-                let mut spans = lanes(&row.graph, true);
-                spans.push(Span::from(format!(" {} ", change.kind())).fg(kind_color(change.kind())).bold());
-                spans.extend(change_spans(change));
-                ListItem::new(Line::from(spans))
-            }
-        })
-        .collect();
-    let focused = app.focus == Focus::Graph;
-    section(frame, graph, "GRAPH", "g", focused, List::new(items), &mut ws.graph_state);
+    let focused = app.focus == Focus::Sessions;
+    app.areas.sessions = panel(frame, framed("Sessions", focused), sessions, focused, items, &mut app.sessions_state);
 }
 
-/// Rows of a file tree, colored by git status like VS Code. Among matches,
-/// the folders are only the way to them, so they stay quiet.
-fn file_items(rows: &[Row], changed: &[(PathBuf, char)], quiet_folders: bool) -> Vec<ListItem<'static>> {
-    rows.iter()
-        .map(|row| {
-            let icon = match (row.is_dir, row.expanded) {
-                (true, true) => "▾ ",
-                (true, false) => "▸ ",
-                _ => "  ",
-            };
-            let kind = changed
-                .iter()
-                .find(|(p, _)| if row.is_dir { p.starts_with(&row.path) } else { *p == row.path })
-                .map(|(_, k)| *k);
-            let style = match kind {
-                Some(k) => Style::default().fg(kind_color(k)),
-                None if row.is_dir && quiet_folders => Style::default().fg(theme::muted()),
-                None => Style::default(),
-            };
-            ListItem::new(Line::from(vec![
-                Span::from(format!(" {}{icon}", "  ".repeat(row.depth))).fg(theme::dim()),
-                Span::styled(row.name.clone(), style),
-            ]))
-        })
-        .collect()
-}
-
-/// A changed file: its name in the color of the change, lines added and
-/// removed, then its folder.
-fn change_spans(c: &Change) -> Vec<Span<'static>> {
-    let path = Path::new(&c.path);
-    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let dir = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
-    let mut spans = vec![Span::from(name).fg(kind_color(c.kind()))];
-    if c.added > 0 {
-        spans.push(Span::from(format!(" +{}", c.added)).fg(theme::green()));
-    }
-    if c.removed > 0 {
-        spans.push(Span::from(format!(" −{}", c.removed)).fg(theme::red()));
-    }
-    spans.push(Span::from(format!(" {dir}")).fg(theme::muted()));
-    spans
-}
-
-/// How a terminal shows its state: a spinner while it works, a steady
-/// colored mark until you read what it finished or asks, a dim one after.
-fn state_icon(state: State) -> (&'static str, Color) {
-    const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    match state {
-        State::Running => (SPINNER[(now.as_millis() / 100) as usize % SPINNER.len()], theme::yellow()),
-        State::Waiting | State::Done => ("◆", theme::magenta()),
-        State::Idle => ("○", theme::dim()),
-    }
-}
-
-/// Colors of the graph's lanes, left to right, like `git log --graph --color`.
-fn lanes() -> [Color; 5] {
-    [theme::blue(), theme::magenta(), theme::green(), theme::yellow(), theme::sky()]
-}
-
-/// The tab on screen: its panes as split, or the zoomed one alone.
-fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.areas.editor = Rect::default();
-    app.areas.viewer = Rect::default();
-    app.areas.ruler = Rect::default();
-    app.areas.panes.clear();
-    app.areas.dividers.clear();
-    app.set_term_size(area.height.saturating_sub(2), area.width.saturating_sub(2));
-    if app.board {
-        draw_board(frame, app, area);
-        return;
-    }
-    let Some(tab) = app.tab() else {
-        draw_empty(frame, app, area);
-        return;
-    };
-    let (panes, dividers) = match app.zoomed_pane() {
-        Some(pane) => (vec![(pane, area)], Vec::new()),
-        None => (tab.root.layout(area), tab.root.dividers(area)),
-    };
-    app.areas.dividers = dividers;
-    for &(pane, rect) in &panes {
-        match pane {
-            Pane::Term(id) => draw_term_pane(frame, app, id, rect, None),
-            Pane::File if app.editor.is_some() => draw_editor(frame, app, rect),
-            Pane::File => draw_viewer(frame, app, rect),
-        }
-    }
-    app.areas.panes = panes;
-}
-
-/// Every terminal of the repository, tiled, each titled with its session;
-/// or the one you zoomed.
-fn draw_board(frame: &mut Frame, app: &mut App, area: Rect) {
-    let terms = app.repo_terms();
-    let zoomed = app.active.filter(|id| app.zoomed && app.focus == Focus::Terminal && terms.iter().any(|(t, _)| t == id));
-    let tiles = match zoomed {
-        Some(id) => vec![(Pane::Term(id), area)],
-        None => {
-            let panes: Vec<Pane> = terms.iter().map(|&(id, _)| Pane::Term(id)).collect();
-            crate::pane::arrange(&panes, 3).map_or_else(Vec::new, |grid| grid.layout(area))
-        }
-    };
-    for &(pane, rect) in &tiles {
-        if let Pane::Term(id) = pane {
-            let session = terms.iter().find(|(t, _)| *t == id).map(|&(_, s)| app.session_name(s).to_string());
-            draw_term_pane(frame, app, id, rect, session);
-        }
-    }
-    app.areas.panes = tiles;
-}
-
-/// A terminal in its pane, sized to it, its state (and on the board, its
-/// session) in the title. Scrolling back, what you look for stands out.
-fn draw_term_pane(frame: &mut Frame, app: &mut App, id: usize, area: Rect, session: Option<String>) {
-    let focused = app.focus == Focus::Terminal && app.active == Some(id);
-    let Some(term) = app.terms.iter().find(|t| t.id == id) else { return };
-    let state = app.term_state(term);
-    let (icon, color) = state_icon(state);
-    let label = Span::from(term.label().to_string());
-    let mut title = vec![Span::from(" ")];
-    if let Some(session) = session {
-        title.push(Span::from(format!("{session} · ")).fg(theme::dim()));
-    }
-    title.extend([Span::from(format!("{icon} ")).fg(color).bold(), if focused { label.fg(theme::fg()).bold() } else { label.fg(theme::muted()) }]);
-    if matches!(state, State::Waiting | State::Done) {
-        title.push(Span::from(" to read").fg(theme::magenta()));
-    }
-    title.push(Span::from(" "));
-    let block = Block::bordered().border_type(BorderType::Rounded).title(Line::from(title)).border_style(border(focused)).style(Style::new().bg(theme::bg()));
+/// The session's terminals: their tabs on the frame, the one on screen in it.
+fn draw_center(frame: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Terminal;
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border(focused)).style(Style::new().bg(theme::bg()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // The tabs, numbered, each with how its terminal is doing, then +.
+    // Names shortened, down to none, so they and the + fit on the frame.
+    let mut spans = vec![Span::from(" ")];
+    let mut x = area.x + 2;
+    let tabs: Vec<usize> = app.session_terms();
+    let room = area.width.saturating_sub(2 + 1 + 3) as usize;
+    let tab_width = |n: usize, cap: usize| format!(" {} ", n + 1).chars().count() + app.terms[tabs[n]].label().chars().count().min(cap) + 1 + 3;
+    let cap = (0..=20).rev().find(|&cap| (0..tabs.len()).map(|n| tab_width(n, cap)).sum::<usize>() <= room).unwrap_or(0);
+    for (n, &i) in tabs.iter().enumerate() {
+        let term = &app.terms[i];
+        let on = app.active == Some(term.id);
+        let (icon, color) = state_icon(app.term_state(term));
+        let label: String = term.label().chars().take(cap).collect();
+        let label = if label.is_empty() { String::new() } else { format!("{label} ") };
+        let text = format!(" {} {label}", n + 1);
+        let width = text.chars().count() as u16 + 2;
+        let style = if on { Style::new().fg(theme::fg()).bg(theme::hover()).bold() } else { Style::new().fg(theme::muted()) };
+        spans.extend([Span::styled(text, style), Span::styled(format!("{icon} "), style.fg(color)), Span::from(" ")]);
+        app.areas.tabs.push((Some(term.id), Rect { x, y: area.y, width, height: 1 }));
+        x += width + 1;
+    }
+    spans.push(Span::from(" + ").fg(theme::muted()));
+    app.areas.tabs.push((None, Rect { x, y: area.y, width: 3, height: 1 }));
+    frame.render_widget(Line::from(spans), Rect { x: area.x + 1, y: area.y, width: area.width.saturating_sub(2), height: 1 });
+
+    app.set_term_size(inner.height, inner.width);
+    app.areas.term = inner;
+    let Some(id) = app.active else {
+        let p = app.keymap.label();
+        let lines = vec![Line::from("No terminal in this session").bold(), Line::default(), Line::from(format!("{p} t opens one, or click +")).fg(theme::muted())];
+        let spot = Rect { y: inner.y + inner.height / 3, height: 3.min(inner.height), ..inner };
+        frame.render_widget(Paragraph::new(lines).centered(), spot);
+        return;
+    };
+    let prefixed = app.prefixed;
     let Some(term) = app.terms.iter_mut().find(|t| t.id == id) else { return };
     term.resize(inner.height.max(1), inner.width.max(1));
     if let Some(cursor) = term.render(inner, frame.buffer_mut())
         && focused
+        && !prefixed
     {
         frame.set_cursor_position(cursor);
     }
     underline_links(frame.buffer_mut(), inner);
-    let Some(scroll) = app.scrolling.as_ref().filter(|s| s.id == id) else { return };
-    if !scroll.typing && !scroll.query.is_empty() {
-        mark(frame.buffer_mut(), inner, &scroll.query);
-    }
-    // The line you're on, and the lines selected.
-    let top = app.terms.iter().find(|t| t.id == id).map_or(0, |t| t.top_line());
-    let selected = scroll.anchor.map(|a| (a.min(scroll.cursor), a.max(scroll.cursor)));
-    for row in 0..inner.height {
-        let line = top + row as usize;
-        let bg = if line == scroll.cursor {
-            theme::selection()
-        } else if selected.is_some_and(|(from, to)| (from..=to).contains(&line)) {
-            theme::text_selection()
-        } else {
-            continue;
-        };
-        for x in inner.left()..inner.right() {
-            if let Some(cell) = frame.buffer_mut().cell_mut((x, inner.y + row)) {
-                cell.set_bg(bg);
+    // What the mouse selects.
+    if let Some(selecting) = app.selecting.as_ref().filter(|s| s.id == id) {
+        let (from, to) = if selecting.from <= selecting.to { (selecting.from, selecting.to) } else { (selecting.to, selecting.from) };
+        for row in from.0..=to.0.min(inner.height.saturating_sub(1)) {
+            let start = if row == from.0 { from.1 } else { 0 };
+            let end = if row == to.0 { to.1 } else { inner.width.saturating_sub(1) };
+            for col in start..=end {
+                if let Some(cell) = frame.buffer_mut().cell_mut((inner.x + col, inner.y + row)) {
+                    cell.set_bg(theme::text_selection());
+                }
             }
         }
     }
@@ -507,518 +294,209 @@ fn row_find(chars: &[char], needle: &str, from: usize) -> Option<usize> {
     (from..chars.len().saturating_sub(needle.len() - 1)).find(|&i| chars[i..i + needle.len()] == needle[..])
 }
 
-/// Every place `query` shows in `area` (any case), on the find color.
-fn mark(buf: &mut ratatui::buffer::Buffer, area: Rect, query: &str) {
-    let needle: Vec<char> = query.to_lowercase().chars().collect();
-    for y in area.top()..area.bottom() {
-        let row: Vec<char> = (area.left()..area.right())
-            .map(|x| buf.cell((x, y)).and_then(|c| c.symbol().chars().next()).unwrap_or(' ').to_lowercase().next().unwrap_or(' '))
-            .collect();
-        for start in 0..row.len().saturating_sub(needle.len() - 1) {
-            if row[start..start + needle.len()] == needle[..] {
-                for x in start..start + needle.len() {
-                    if let Some(cell) = buf.cell_mut((area.x + x as u16, y)) {
-                        cell.set_bg(theme::find_bg());
-                    }
-                }
-            }
-        }
+/// Files over Changes; the one you're in alone while its file is open.
+fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
+    if app.focus == Focus::Files && (app.files_expanded || app.editor.is_some()) {
+        draw_files(frame, app, area);
+    } else if app.focus == Focus::Changes && app.changes_expanded {
+        draw_changes(frame, app, area);
+    } else {
+        let [files, changes] = Layout::vertical([Constraint::Percentage(55), Constraint::Fill(1)]).areas(area);
+        draw_files(frame, app, files);
+        draw_changes(frame, app, changes);
     }
 }
 
-/// No tab in this session: the pulpo, and how to start.
-fn draw_empty(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border(false)).style(Style::new().bg(theme::bg()));
+/// A panel of the right side: its frame, then the tree on the left and the
+/// file on the right, a line between them to drag. The tree is as wide as
+/// it was dragged, else a quarter of the panel.
+fn split_panel(frame: &mut Frame, app: &mut App, area: Rect, title: Line<'static>, focused: bool) -> (Rect, Rect) {
+    let block = Block::bordered().border_type(BorderType::Rounded).title(title).border_style(border(focused)).style(Style::new().bg(theme::bg()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let working = app.terms.iter().any(|t| app.term_state(t) == State::Running);
-    let keymap = &app.keymap;
-    let key = |k: String, text: &str| Line::from(vec![Span::from(format!("{k:<10}")).fg(theme::blue()).bold(), Span::from(text.to_string()).fg(theme::muted())]);
-    let mut lines: Vec<Line> = pulpo(working).into_iter().map(|row| Line::from(row).fg(theme::blue())).collect();
-    lines.extend([
-        Line::default(),
-        Line::from("No terminals in this session").bold(),
-        Line::default(),
-        key("t".into(), "a shell here, then type claude"),
-        key(keymap.hint(&[Action::NewTab]), "the same, from anywhere"),
-        key(keymap.hint(&[Action::Help]), "every key"),
-    ]);
-    let height = lines.len() as u16;
-    let width = 44.min(inner.width);
-    let spot = Rect { x: inner.x + inner.width.saturating_sub(width) / 2, y: inner.y + inner.height.saturating_sub(height) / 3, width, height: height.min(inner.height) };
-    // The pulpo and the heading centered, the keys under them.
-    for (i, line) in lines.into_iter().enumerate() {
-        let row = Rect { y: spot.y + i as u16, height: 1, ..spot };
-        if row.y >= inner.bottom() {
-            break;
+    let fallback = (inner.width / 4).clamp(16, 32);
+    let width = app.tree_width.unwrap_or(fallback).clamp(8.min(inner.width / 2), inner.width.saturating_sub(20).max(8));
+    let [tree, line, file] = Layout::horizontal([Constraint::Length(width), Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    app.areas.tree_dividers.push((line, tree.x));
+    for y in line.top()..line.bottom() {
+        if let Some(cell) = frame.buffer_mut().cell_mut((line.x, y)) {
+            cell.set_symbol("│").set_fg(theme::border());
         }
-        let line = if i < 5 { line.centered() } else { line };
-        frame.render_widget(line, row);
     }
+    (tree, file)
 }
 
-/// The file being edited, drawn as the viewer draws files.
-fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
-    let focused = app.focus == Focus::Editor;
+fn title(name: &str, focused: bool, rest: Vec<Span<'static>>) -> Line<'static> {
+    let mut spans = vec![Span::from(format!(" {name} ")).fg(if focused { theme::fg() } else { theme::muted() }).bold()];
+    spans.extend(rest);
+    Line::from(spans)
+}
+
+fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Files;
     let root = app.ws().root.clone();
-    let Some(editor) = app.editor.as_mut() else { return };
-    let name = editor.path.strip_prefix(&root).unwrap_or(&editor.path).display().to_string();
-    let title = if editor.dirty { format!("{name} ● unsaved") } else { name };
-    let block = block(&title, focused).style(Style::new().bg(theme::editor_bg()));
-    let inner = block.inner(area);
-    editor.view = (inner.height as usize, inner.width as usize);
-    let rows = editor.rows(inner.height as usize);
-    let cursor = editor.cursor_cell();
-    app.areas.editor = inner;
-    frame.render_widget(Paragraph::new(rows).block(block), area);
-    if focused
-        && let Some((row, col)) = cursor
-        && row < inner.height as usize
-        && col < inner.width as usize
-    {
-        frame.set_cursor_position((inner.x + col as u16, inner.y + row as u16));
+    let mut rest = Vec::new();
+    let open = app.editor.as_ref().map(|e| e.path.clone()).or_else(|| match &app.viewer.source {
+        Some(crate::viewer::Source::File(path)) => Some(path.clone()),
+        _ => None,
+    });
+    if let Some(path) = open {
+        rest.push(Span::from(format!("{} ", path.strip_prefix(&root).unwrap_or(&path).display())).fg(theme::muted()));
+    }
+    if let Some(editor) = &app.editor {
+        rest.push(if editor.dirty { Span::from("● unsaved ").fg(theme::yellow()) } else { Span::from("editing ").fg(theme::blue()) });
+    }
+    let (tree, file) = split_panel(frame, app, area, title("Files", focused, rest), focused);
+    app.areas.files_tree = tree;
+    app.areas.files_file = file;
+
+    let in_tree = focused && app.editor.is_none() && !app.reading;
+    let ws = &mut app.workspaces[app.current];
+    let changed: Vec<(PathBuf, char)> = ws.status.changes.iter().map(|c| (ws.root.join(&c.path), c.kind())).collect();
+    frame.render_stateful_widget(List::new(file_items(&ws.tree.rows, &changed)).highlight_style(highlight(in_tree)), tree, &mut ws.files_state);
+
+    if app.editor.is_some() {
+        draw_editor(frame, app, file);
+    } else if app.viewer.is_open() {
+        draw_viewer(frame, app, file);
+    } else {
+        frame.render_widget(Line::from(" select a file").fg(theme::dim()), file);
     }
 }
 
-fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
-    let block = block(&app.viewer.heading(), app.focus == Focus::Viewer).style(Style::new().bg(theme::editor_bg()));
-    let inner = block.inner(area);
-    // The overview ruler takes the last column.
-    let [text, ruler] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
-    app.viewer.height = inner.height as usize;
-    app.viewer.set_width(text.width);
-    if let Some(line) = app.viewer.goto.take() {
-        app.viewer.scroll = line.saturating_sub(inner.height as usize / 3);
-    }
-    app.viewer.scroll_by(0);
-    app.areas.viewer = area;
-    let (scroll, end) = (app.viewer.scroll, (app.viewer.scroll + inner.height as usize).min(app.viewer.row_count()));
-    let lines: Vec<Line> = (scroll..end).map(|i| app.viewer.decorated(i, text.width)).collect();
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+/// Rows of a file tree, colored by git status like VS Code.
+fn file_items(rows: &[Row], changed: &[(PathBuf, char)]) -> Vec<ListItem<'static>> {
+    rows.iter()
+        .map(|row| {
+            let kind = changed.iter().find(|(p, _)| if row.is_dir { p.starts_with(&row.path) } else { *p == row.path }).map(|(_, k)| *k);
+            tree_item(row, kind)
+        })
+        .collect()
+}
 
-    // Changes and matches as colored marks, over a lighter band for the part in view.
-    app.areas.ruler = ruler;
-    for (i, (color, in_view)) in app.viewer.ruler(ruler.height as usize).into_iter().enumerate() {
+fn tree_item(row: &Row, kind: Option<char>) -> ListItem<'static> {
+    let icon = match (row.is_dir, row.expanded) {
+        (true, true) => "▾ ",
+        (true, false) => "▸ ",
+        _ => "  ",
+    };
+    let style = kind.map_or_else(Style::default, |k| Style::default().fg(kind_color(k)));
+    ListItem::new(Line::from(vec![Span::from(format!(" {}{icon}", "  ".repeat(row.depth))).fg(theme::dim()), Span::styled(row.name.clone(), style)]))
+}
+
+fn draw_changes(frame: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Changes;
+    let Some(changes) = &app.changes else { return };
+    let mut rest = vec![Span::from(format!("{} ", changes.files.len())).fg(theme::blue()), Span::from(format!("{} ", changes.since)).fg(theme::muted())];
+    if let Some((path, diff)) = &changes.diff {
+        rest.push(Span::from(format!("· {} ", path.strip_prefix(&changes.root).unwrap_or(path).display())).fg(theme::muted()));
+        rest.push(Span::from(format!("+{} ", diff.added)).fg(theme::green()));
+        rest.push(Span::from(format!("−{} ", diff.removed)).fg(theme::red()));
+    }
+    let (tree, file) = split_panel(frame, app, area, title("Changes", focused, rest), focused);
+    app.areas.changes_tree = tree;
+    app.areas.changes_file = file;
+    let in_tree = focused && !app.reading;
+    let Some(changes) = &mut app.changes else { return };
+    let items: Vec<ListItem> = changes.rows.iter().map(|row| tree_item(row, changes.status_of(&row.path))).collect();
+    if items.is_empty() {
+        frame.render_widget(Line::from(" nothing changed").fg(theme::dim()), tree);
+    }
+    frame.render_stateful_widget(List::new(items).highlight_style(highlight(in_tree)), tree, &mut changes.state);
+    // The marks of where it changed take the last column.
+    let [file, ruler] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1)]).areas(file);
+    app.areas.changes_file = file;
+    app.areas.changes_ruler = ruler;
+    changes.height = file.height as usize;
+    changes.scroll_by(0);
+    for (i, (color, in_view)) in changes.ruler(ruler.height as usize).into_iter().enumerate() {
         if let Some(cell) = frame.buffer_mut().cell_mut((ruler.x, ruler.y + i as u16)) {
             cell.set_symbol(if color.is_some() { "▐" } else { " " });
             cell.set_style(Style::new().fg(color.unwrap_or(theme::editor_bg())).bg(if in_view { theme::border() } else { theme::editor_bg() }));
         }
     }
+    let (scroll, hscroll) = (changes.scroll, changes.hscroll);
+    let lines: Vec<Line> = changes.diff.as_ref().map_or_else(Vec::new, |(_, diff)| {
+        diff.lines.iter().skip(scroll).take(file.height as usize).map(|l| crate::viewer::shift(l.clone(), diff.gutter, hscroll)).collect()
+    });
+    frame.render_widget(Paragraph::new(lines).style(Style::new().bg(theme::editor_bg())), file);
 }
 
-fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let keymap = &app.keymap;
-    if app.prefix.is_some() {
-        let again = format!("{} again", keymap.prefix_label());
-        let help = keymap.keys_label(&[Action::Help]);
-        let mut keys = vec![("esc", "cancel"), (help.as_str(), "every key")];
-        if app.focus == Focus::Terminal {
-            keys.push((again.as_str(), "sends it to the program"));
-        }
-        frame.render_widget(Line::from(footer_spans("PREFIX", theme::yellow(), &keys, &[])), area);
-        return;
-    }
-    if app.new_menu {
-        let keys = [("w", "workspace"), ("s", "session"), ("t", "terminal"), ("f", "file or folder"), ("esc", "cancel")];
-        frame.render_widget(Line::from(footer_spans("NEW", theme::accent(), &keys, &[])), area);
-        return;
-    }
-    if let Some(create) = app.creating.as_ref().filter(|c| c.session) {
-        let mut spans = footer_spans("NEW SESSION", theme::accent(), &[("⏎", "create"), ("esc", "cancel")], &[]);
-        let input = vec![
-            Span::from("› ").fg(theme::blue()).bold(),
-            Span::from(create.name.clone()),
-            Span::from("█").fg(theme::blue()),
-            Span::from("   its own copy, Docker, ports and database   ").fg(theme::muted()),
-        ];
-        spans.splice(2..2, input);
-        frame.render_widget(Line::from(spans), area);
-        return;
-    }
-    if let Some(create) = &app.creating {
-        // Where it goes, then the name being typed, like the find line.
-        let root = &app.ws().root;
-        let dir = create.dir.strip_prefix(root).unwrap_or(&create.dir).display().to_string();
-        let dir = if dir.is_empty() { String::new() } else { format!("{dir}/") };
-        let mut spans = footer_spans("NEW FILE", theme::accent(), &[("⏎", "create"), ("esc", "cancel")], &[]);
-        let input = vec![
-            Span::from("› ").fg(theme::blue()).bold(),
-            Span::from(dir).fg(theme::muted()),
-            Span::from(create.name.clone()),
-            Span::from("█").fg(theme::blue()),
-            Span::from("   end with / for a folder   ").fg(theme::muted()),
-        ];
-        spans.splice(2..2, input);
-        frame.render_widget(Line::from(spans), area);
-        return;
-    }
-    if let Some(text) = &app.swarm {
-        let mut spans = footer_spans("SWARM", theme::accent(), &[("⏎", "start"), ("esc", "cancel")], &[]);
-        let input = vec![
-            Span::from("› ").fg(theme::blue()).bold(),
-            Span::from(text.clone()),
-            Span::from("█").fg(theme::blue()),
-            Span::from("   how many (3 if you don't say), then their task: 4 fix the flaky tests   ").fg(theme::muted()),
-        ];
-        spans.splice(2..2, input);
-        frame.render_widget(Line::from(spans), area);
-        return;
-    }
-    if let Some(scroll) = app.scrolling.as_ref().filter(|_| app.focus == Focus::Terminal) {
-        let back = app.terms.iter().find(|t| t.id == scroll.id).map_or(0, |t| t.scrolled());
-        let found = match scroll.found {
-            Some(false) => "   no more matches",
-            _ => "",
-        };
-        let keys: &[(&str, &str)] = if scroll.typing {
-            &[("⏎", "find, going back"), ("esc", "cancel")]
-        } else {
-            &[("j/k u/d", "move"), ("g/G", "oldest/now"), ("/", "find"), ("n/N", "older/newer"), ("v", "select"), ("y", "copy"), ("q", "back to now")]
-        };
-        let mut spans = footer_spans("SCROLL", theme::yellow(), keys, &[]);
-        let mut input = Vec::new();
-        if scroll.typing || !scroll.query.is_empty() {
-            input.push(Span::from("› ").fg(theme::blue()).bold());
-            input.push(Span::from(scroll.query.clone()));
-            if scroll.typing {
-                input.push(Span::from("█").fg(theme::blue()));
-            }
-        }
-        input.push(Span::from(format!("   {back} lines back{found}   ")).fg(theme::muted()));
-        spans.splice(2..2, input);
-        frame.render_widget(Line::from(spans), area);
-        return;
-    }
-    if let Some(name) = &app.renaming {
-        let mut spans = footer_spans("RENAME TAB", theme::accent(), &[("⏎", "rename"), ("esc", "cancel")], &[]);
-        let input = vec![
-            Span::from("› ").fg(theme::blue()).bold(),
-            Span::from(name.clone()),
-            Span::from("█").fg(theme::blue()),
-            Span::from("   empty: named after its terminal   ").fg(theme::muted()),
-        ];
-        spans.splice(2..2, input);
-        frame.render_widget(Line::from(spans), area);
-        return;
-    }
-    if let Some(message) = &app.message {
-        frame.render_widget(Line::from(format!(" {message}")).fg(theme::yellow()).bold(), area);
-        return;
-    }
-    if app.focus == Focus::Viewer
-        && let Some(find) = &app.viewer.find
+/// The file being edited, drawn as the viewer draws files.
+fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::Files && !app.prefixed;
+    let Some(editor) = app.editor.as_mut() else { return };
+    editor.view = (area.height as usize, area.width as usize);
+    let rows = editor.rows(area.height as usize);
+    let cursor = editor.cursor_cell();
+    app.areas.editor = area;
+    frame.render_widget(Paragraph::new(rows).style(Style::new().bg(theme::editor_bg())), area);
+    if focused
+        && let Some((row, col)) = cursor
+        && row < area.height as usize
+        && col < area.width as usize
     {
-        let count = match find.matches.len() {
-            0 if find.query.is_empty() => String::new(),
-            0 => "no match".to_string(),
-            n => format!("{}/{n}", find.current + 1),
-        };
-        let keys: &[(&str, &str)] =
-            if find.typing { &[("⏎", "done"), ("esc", "cancel")] } else { &[("n/p", "next/previous"), ("/", "new search"), ("esc", "clear")] };
-        // The same input line as the search popup, after the badge.
-        let mut input = vec![Span::from("› ").fg(theme::blue()).bold(), Span::from(find.query.clone())];
-        if find.typing {
-            input.push(Span::from("█").fg(theme::blue()));
-        }
-        input.push(Span::from(format!("   {count}   ")).fg(theme::muted()));
-        let mut spans = footer_spans("FIND IN FILE", theme::accent(), keys, &[]);
-        spans.splice(2..2, input);
-        frame.render_widget(Line::from(spans), area);
-        return;
+        frame.set_cursor_position((area.x + col as u16, area.y + row as u16));
     }
-    // Typing what to find in the editor, like finding in the viewer.
-    if let Some(editor) = app.editor.as_ref().filter(|e| e.find_typing && app.focus == Focus::Editor) {
-        let input = vec![
-            Span::from("› ").fg(theme::blue()).bold(),
-            Span::from(editor.find.clone().unwrap_or_default()),
+}
+
+fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.viewer.height = area.height as usize;
+    if let Some(line) = app.viewer.goto.take() {
+        app.viewer.scroll = line.saturating_sub(area.height as usize / 3);
+    }
+    app.viewer.scroll_by(0);
+    let (scroll, end) = (app.viewer.scroll, (app.viewer.scroll + area.height as usize).min(app.viewer.row_count()));
+    let lines: Vec<Line> = (scroll..end).map(|i| app.viewer.decorated(i)).collect();
+    frame.render_widget(Paragraph::new(lines).style(Style::new().bg(theme::editor_bg())), area);
+}
+
+/// The bottom line: what you type, a question, or a message.
+fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
+    let input = |label: &str, text: &str, hint: &str| {
+        Line::from(vec![
+            Span::from(format!(" {label} ")).fg(theme::on_accent()).bg(theme::accent()).bold(),
+            Span::from(" › ").fg(theme::blue()).bold(),
+            Span::from(text.to_string()),
             Span::from("█").fg(theme::blue()),
-            Span::from("   ").fg(theme::muted()),
-        ];
-        let mut spans = footer_spans("FIND IN FILE", theme::accent(), &[("⏎", "next"), ("shift-⏎", "previous"), ("esc", "done")], &[]);
-        spans.splice(2..2, input);
-        frame.render_widget(Line::from(spans), area);
-        return;
-    }
-    // In a terminal, the keys come from the keymap.
-    let focus = [Action::FocusLeft, Action::FocusUp, Action::FocusRight, Action::FocusDown];
-    let terminal_keys: Vec<(String, &str)> = [
-        (keymap.prefix_label(), "prefix"),
-        (keymap.hint(&focus), "panes"),
-        (keymap.hint(&TABS), "tabs"),
-        (keymap.hint(&[Action::SplitBeside, Action::SplitBelow]), "split"),
-        (keymap.hint(&[Action::NewTab]), "new tab"),
-        (keymap.hint(&[Action::ClosePane]), "close"),
-        (keymap.hint(&[Action::Zoom]), if app.zoomed { "unzoom" } else { "zoom" }),
-        ("shift-⏎".to_string(), "new line"),
-        (keymap.hint(&[Action::Help]), "keys"),
-    ]
-    .into_iter()
-    .filter(|(key, _)| !key.trim().is_empty())
-    .collect();
-    let terminal_keys: Vec<(&str, &str)> = terminal_keys.iter().map(|(key, label)| (key.as_str(), *label)).collect();
-    let prefix = keymap.prefix_label();
-    // Where you are, then the keys that work there, then the global ones.
-    let (badge, keys): (&str, &[(&str, &str)]) = match app.focus {
-        Focus::Editor => (
-            "EDIT",
-            &[
-                ("ctrl-s", "save"),
-                ("esc", "close"),
-                ("ctrl-z/y", "undo/redo"),
-                ("shift-arrows", "select"),
-                ("ctrl-c/x/v", "copy/cut/paste"),
-                ("ctrl-f", "find"),
-                ("ctrl-g", "next"),
-            ],
-        ),
-        // Every key goes to the editor; micro's, or how to come back.
-        Focus::Terminal if app.in_editor() => (
-            "EDITOR",
-            match app.term().map(|t| t.info.name.as_str()) {
-                Some("micro") => &[
-                    ("ctrl-s", "save and close"),
-                    ("ctrl-q", "close (asks to save)"),
-                    ("ctrl-z", "undo"),
-                    ("ctrl-y", "redo"),
-                    ("ctrl-f", "find"),
-                    ("ctrl-c ctrl-x ctrl-v", "copy, cut, paste"),
-                    ("shift-arrows", "select"),
-                ],
-                _ => &[("quit the editor", "to come back to Pulpo")],
-            },
-        ),
-        Focus::Terminal => ("TERMINAL", &terminal_keys),
-        Focus::Workspaces => ("WORKSPACES", &[("j/k", "switch"), ("x", "remove")]),
-        Focus::Sessions if app.isolated_current().is_some() => {
-            ("SESSIONS", &[("j/k", "switch"), ("⏎", "its terminal"), ("n t", "new terminal in it"), ("x x", "delete")])
-        }
-        Focus::Sessions => ("SESSIONS", &[("j/k", "switch"), ("⏎", "its terminal"), ("n t", "new terminal in it")]),
-        Focus::Changes => ("CHANGES", &[("j/k", "move"), ("⏎", "read diff"), ("e", "edit"), ("y", "copy path")]),
-        Focus::Graph => ("GRAPH", &[("j/k", "move"), ("⏎", "a commit's files / read a diff"), ("h/l", "fold")]),
-        Focus::Viewer => match (app.viewer.is_diff(), app.viewer.expanded) {
-            (true, true) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "split view"), ("esc", "back")]),
-            (true, false) => ("CHANGE", &[("n/p", "next/prev change"), ("j/k h/l", "scroll"), ("/", "find"), ("⏎", "full height"), ("esc", "back")]),
-            (false, true) => ("VIEWER", &[("j/k h/l", "scroll"), ("/", "find in file"), ("e", "edit"), ("⏎", "split view"), ("esc", "back")]),
-            (false, false) => ("VIEWER", &[("j/k h/l", "scroll"), ("/", "find in file"), ("e", "edit"), ("⏎", "full height"), ("esc", "back")]),
-        },
+            Span::from(format!("   {hint}")).fg(theme::muted()),
+        ])
     };
-    let global: &[(&str, &str)] = match app.focus {
-        Focus::Terminal | Focus::Editor => &[],
-        // In the viewer, / finds in the file instead.
-        Focus::Viewer => &[("w s c f t", "go to panel"), (&prefix, "prefix"), ("?", "all keys"), ("q", "quit")],
-        _ => &[("w s c g f t", "go to panel"), ("n", "new"), (&prefix, "prefix"), ("?", "all keys"), ("q", "quit")],
-    };
-    let color = if app.focus == Focus::Terminal { theme::yellow() } else { theme::accent() };
-    frame.render_widget(Line::from(footer_spans(badge, color, keys, global)), area);
-}
-
-fn footer_spans(badge: &str, color: Color, keys: &[(&str, &str)], global: &[(&str, &str)]) -> Vec<Span<'static>> {
-    // Text on the indigo accent is white, on lighter badges dark; keys use the
-    // lighter blue where the accent would be too dark to read.
-    let (badge_fg, key) = if color == theme::accent() { (theme::on_accent(), theme::blue()) } else { (theme::bg(), color) };
-    let mut spans = vec![Span::styled(format!(" {badge} "), Style::default().fg(badge_fg).bg(color).bold()), Span::from(" ")];
-    let key_color = key;
-    for (i, (key, label)) in keys.iter().chain(global).enumerate() {
-        if i == keys.len() && !global.is_empty() {
-            spans.push(Span::from("│ ").fg(theme::dim()));
-        }
-        spans.push(Span::from(key.to_string()).fg(key_color).bold());
-        spans.push(Span::from(format!(" {label}  ")).fg(theme::muted()));
-    }
-    spans
-}
-
-/// Each panel's own keys. The prefix layer and the chords come from the
-/// keymap (`help_sections`).
-const HELP: &[(&str, &[(&str, &str)])] = &[
-    (
-        "Go to a panel",
-        &[
-            ("w s c g f v", "Workspaces, Sessions, Changes, Graph, Files, Viewer (g: not from the viewer)"),
-            ("t", "into the current terminal (opens a shell if there is none)"),
-            ("/", "search inside files (in the viewer: find in this file); tab switches to Files and back"),
-            ("z / ctrl-f", "into the current shell, full height (hides the viewer)"),
-            ("tab / shift-tab", "next / previous panel"),
-        ],
-    ),
-    (
-        "In a panel",
-        &[
-            ("n w  n t  n f", "new workspace / terminal in this session / file or folder, by the file on screen (end the name with /)"),
-            ("n s", "new session, with its own copy, Docker, ports and database"),
-            ("e", "edit the file here, looking just as in the viewer ($PULPO_EDITOR: your own editor instead)"),
-            ("y", "copy the file's path, relative to the workspace"),
-            ("x x", "remove a workspace from the list (files kept) / delete a task session / close the terminal"),
-            ("j k  ↑ ↓  ⏎", "move, open (a session's terminal, a file, a diff, a commit's files)"),
-            ("h l", "fold / unfold a commit's files in Graph"),
-            ("1-9  [ ]", "enter the session's terminal N / previous, next terminal"),
-            ("r", "refresh"),
-            ("q q", "quit Pulpo; terminals keep running, and come back next time"),
-            ("Q Q", "quit Pulpo and stop every terminal (ctrl-c, then hang up)"),
-        ],
-    ),
-    (
-        "Files (f)",
-        &[
-            ("↑ ↓  ← →  ⏎", "move / fold, unfold a folder / open a file, fold a folder"),
-            ("type", "filter the tree by name; ⏎ on a folder shows it in the tree"),
-            ("esc", "in a file opened from here: back to how things were (zoomed terminal, previewed file)"),
-            ("tab", "search inside files instead (and back)"),
-            ("ctrl-e  ctrl-y", "edit the file / copy its path, relative to the workspace"),
-            ("ctrl-x ctrl-x", "delete the file or folder"),
-        ],
-    ),
-    (
-        "In the viewer",
-        &[
-            ("⏎ / esc", "full height or split view / back to where you were"),
-            ("/  n p", "find in this file / next, previous match (or change, in a diff)"),
-            ("d u  g G", "page down, up / top, bottom"),
-            ("h l  ← →  0", "scroll sideways / back to the start (also shift + wheel, trackpad)"),
-            ("click", "focus a panel, pick an item; shift-drag selects text"),
-        ],
-    ),
-    (
-        "In the editor",
-        &[
-            ("ctrl-s  esc", "save / close (asks again with unsaved changes)"),
-            ("shift + moves", "select; alt or ctrl + ← → moves by word, ctrl + home end to the file's ends"),
-            ("ctrl-c x v  a", "copy, cut, paste (a whole line without a selection) / select all"),
-            ("ctrl-z  ctrl-y", "undo / redo"),
-            ("tab  shift-tab", "indent (the selected lines) / unindent"),
-            ("ctrl-f  ctrl-g", "find / next match (shift: previous)"),
-            ("click  drag", "place the cursor / select"),
-        ],
-    ),
-];
-
-/// Every key, by where it works: the keymap's first, then the panels'.
-fn help_sections(app: &App) -> Vec<(String, Vec<(String, String)>)> {
-    let keymap = &app.keymap;
-    let prefix = keymap.prefix.iter().map(ToString::to_string).collect::<Vec<_>>().join(" or ");
-    let mut sections: Vec<(String, Vec<(String, String)>)> = Group::ALL
-        .iter()
-        .map(|&group| {
-            let rows = keymap.rows(group).into_iter().map(|(keys, label)| (keys, label.to_string())).collect();
-            (format!("{prefix}, then: {}", group.title().to_lowercase()), rows)
-        })
-        .collect();
-    sections.push(("Anywhere, without the prefix".into(), keymap.chord_rows()));
-    let mut terminal = vec![
-        ("shift-⏎".to_string(), "new line in a Claude prompt".to_string()),
-        (format!("{0} {0}", keymap.prefix_label()), "the prefix itself, for the program".to_string()),
-        ("claude".to_string(), "type it in a shell to start an agent; the terminal is named after it".to_string()),
-        ("ctrl-click".to_string(), "open the link under the mouse, or show the file (path:line) in the viewer; right-click offers it too".to_string()),
-        ("drag a border".to_string(), "resize the panes on each side of it".to_string()),
-    ];
-    if keymap.legacy {
-        terminal.push((
-            "ctrl-s f n q [ ] 1-9".to_string(),
-            "the old keys (sidebar, viewer, shell, close, switch); they go back to the programs in the next release".to_string(),
-        ));
-    }
-    sections.push(("Inside a terminal".into(), terminal));
-    sections.extend(HELP.iter().map(|(title, keys)| (title.to_string(), keys.iter().map(|(k, t)| (k.to_string(), t.to_string())).collect())));
-    sections
-}
-
-fn draw_help(frame: &mut Frame, app: &App) {
-    let Some(filter) = &app.help else { return };
-    // What you typed, in a key, its text or its section's title.
-    let needle = filter.to_lowercase();
-    let sections: Vec<(String, Vec<(String, String)>)> = help_sections(app)
-        .into_iter()
-        .filter_map(|(title, rows)| {
-            if title.to_lowercase().contains(&needle) {
-                return Some((title, rows));
+    let line = if app.prefixed {
+        Line::from(vec![
+            Span::from(format!(" {} ", app.keymap.label())).fg(theme::on_accent()).bg(theme::accent()).bold(),
+            Span::from("  ? keybinds").fg(theme::muted()),
+        ])
+    } else if let Some(prompt) = &app.prompt {
+        match &prompt.ask {
+            Ask::Session => input("new session", &prompt.text, "a copy of the repository from its last commit · ⏎ make it · esc cancel"),
+            Ask::File(dir) => {
+                let dir = dir.strip_prefix(&app.ws().root).unwrap_or(dir).display().to_string();
+                let at = if dir.is_empty() { String::new() } else { format!("in {dir}/ · ") };
+                input("new file", &prompt.text, &format!("{at}end with / for a folder · ⏎ make it · esc cancel"))
             }
-            let rows: Vec<_> = rows.into_iter().filter(|(k, t)| k.to_lowercase().contains(&needle) || t.to_lowercase().contains(&needle)).collect();
-            (!rows.is_empty()).then_some((title, rows))
-        })
-        .collect();
-    let to_lines = |sections: &[(String, Vec<(String, String)>)]| -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        for (title, keys) in sections {
-            lines.push(Line::from(format!(" {title}")).bold());
-            for (key, text) in keys {
-                lines.push(Line::from(vec![Span::from(format!("   {key:<16}")).fg(theme::blue()).bold(), Span::from(text.clone())]));
-            }
-            lines.push(Line::default());
+            Ask::Rename(_) => input("rename", &prompt.text, "⏎ rename · esc cancel"),
         }
-        lines
+    } else if let Some((question, _)) = &app.asking {
+        // Its answers, as keys and buttons: y (or a click on yes), anything
+        // else no.
+        let text = format!(" {question}  ");
+        let at = area.x + text.chars().count() as u16;
+        app.areas.yes = Rect { x: at, y: area.y, width: 7, height: 1 };
+        Line::from(vec![
+            Span::from(text).fg(theme::yellow()).bold(),
+            Span::from(" y yes ").fg(theme::on_accent()).bg(theme::accent()).bold(),
+            Span::from(" "),
+            Span::from(" n no ").fg(theme::fg()).bg(theme::hover()),
+        ])
+    } else if let Some(editor) = app.editor.as_ref().filter(|e| e.find_typing && app.focus == Focus::Files) {
+        input("find", editor.find.as_deref().unwrap_or_default(), "⏎ next · ⇧⏎ previous · esc done")
+    } else if let Some(message) = &app.message {
+        Line::from(format!(" {message}")).fg(theme::yellow()).bold()
+    } else {
+        Line::default()
     };
-    // Two columns when there's room, so it all fits on a laptop, split
-    // where the lines are about even; long lines wrap.
-    let area = frame.area();
-    let total: usize = sections.iter().map(|(_, rows)| rows.len() + 2).sum();
-    let mut split = sections.len();
-    if area.width >= 160 {
-        let mut count = 0;
-        let half = sections.iter().position(|(_, rows)| {
-            count += rows.len() + 2;
-            count * 2 >= total
-        });
-        split = half.map_or(sections.len(), |i| i + 1);
-    }
-    let texts: Vec<Vec<Line>> = if split < sections.len() { vec![to_lines(&sections[..split]), to_lines(&sections[split..])] } else { vec![to_lines(&sections)] };
-    let width = area.width.min(100 * texts.len() as u16);
-    let column = (width.saturating_sub(2) / texts.len() as u16).max(1) as usize;
-    // Rows once wrapped, give or take a word per row.
-    let rows = |lines: &Vec<Line>| lines.iter().map(|l| l.width().max(1).div_ceil(column.saturating_sub(8).max(1))).sum::<usize>();
-    let height = texts.iter().map(rows).max().unwrap_or(0).max(1) as u16 + 4;
-    let popup = centered(area, width, height);
-    frame.render_widget(Clear, popup);
-    frame.render_widget(Block::new().style(Style::new().fg(theme::fg()).bg(theme::bg())), popup);
-    let block = block("Keyboard shortcuts", true).title_bottom(Line::from(" type to filter · esc closes ").fg(theme::dim()));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-    let [input, _, body] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
-    let status = if sections.is_empty() { "   nothing matches".to_string() } else { String::new() };
-    frame.render_widget(
-        Line::from(vec![Span::from(" › ").fg(theme::blue()).bold(), Span::from(filter.clone()), Span::from("█").fg(theme::blue()), Span::from(status).fg(theme::muted())]),
-        input,
-    );
-    let areas = Layout::horizontal(vec![Constraint::Fill(1); texts.len()]).split(body);
-    for (lines, area) in texts.into_iter().zip(areas.iter()) {
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), *area);
-    }
-}
-
-/// What can follow the prefix, shown a moment after it: the keymap's
-/// groups side by side, and the chords that need no prefix under them.
-fn draw_prefix(frame: &mut Frame, app: &App) {
-    if !app.prefix_panel() || app.help.is_some() {
-        return;
-    }
-    let keymap = &app.keymap;
-    let groups: Vec<(&str, Vec<(String, &str)>)> = Group::ALL.iter().map(|&g| (g.title(), keymap.rows(g))).collect();
-    let tall = groups.iter().map(|(_, rows)| rows.len()).max().unwrap_or(0) as u16;
-    let area = frame.area();
-    // Over the bottom of the screen, just above the footer.
-    let height = (tall + 5).min(area.height.saturating_sub(1));
-    let popup = Rect { x: area.x, y: area.bottom().saturating_sub(height + 1), width: area.width, height };
-    frame.render_widget(Clear, popup);
-    let title = Line::from(vec![Span::from(format!(" {} ", keymap.prefix_label())).fg(theme::yellow()).bold(), Span::from("then ").fg(theme::muted())]);
-    let block = Block::bordered()
-        .title(title)
-        .title_bottom(Line::from(" esc cancels · another key does what it does on its own ").fg(theme::dim()))
-        .border_style(border(true))
-        .style(Style::new().bg(theme::bg()));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-    let [columns, _, chords] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(inner);
-    let areas = Layout::horizontal(vec![Constraint::Fill(1); groups.len()]).split(columns);
-    for ((title, rows), area) in groups.iter().zip(areas.iter()) {
-        let mut lines = vec![Line::from(format!(" {title}")).fg(theme::dim()).bold()];
-        lines.extend(rows.iter().map(|(keys, label)| Line::from(vec![Span::from(format!(" {keys:<6} ")).fg(theme::blue()).bold(), Span::from(*label)])));
-        frame.render_widget(Paragraph::new(lines), *area);
-    }
-    let mut spans = vec![Span::from(" WITHOUT IT ").fg(theme::dim()).bold()];
-    for (keys, label) in keymap.chord_rows() {
-        spans.push(Span::from(format!(" {keys} ")).fg(theme::blue()).bold());
-        spans.push(Span::from(format!("{label}  ")).fg(theme::muted()));
-    }
-    frame.render_widget(Line::from(spans), chords);
+    frame.render_widget(line, area);
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -1026,114 +504,34 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect { x: area.x + (area.width - width) / 2, y: area.y + (area.height - height) / 3, width, height }
 }
 
-/// Go to, or the menu, over everything else.
-fn draw_picker(frame: &mut Frame, app: &mut App) {
-    let Some(picker) = &mut app.picker else { return };
-    let area = frame.area();
-    let popup = match picker.at {
-        // Under the mouse, kept on screen.
-        Some((x, y)) => {
-            let (width, height) = (64.min(area.width), (picker.rows.len() as u16 + 5).min(area.height));
-            Rect { x: x.min(area.right().saturating_sub(width)), y: y.min(area.bottom().saturating_sub(height)), width, height }
-        }
-        None => centered(area, (area.width * 7 / 10).max(60), (area.height * 7 / 10).max(12)),
-    };
-    frame.render_widget(Clear, popup);
-    let goto = picker.kind == Kind::Goto;
-    let (title, hint) = match picker.kind {
-        Kind::Goto => ("Go to", " type to filter · ⇥ which terminals · ↑↓ move · ⏎ go there · esc close "),
-        Kind::Menu => ("Menu", " type to filter · ↑↓ move · ⏎ do it · esc close "),
-        Kind::Theme => ("Theme", " type to filter · ↑↓ try it · ⏎ keep it · esc put the old one back "),
-    };
-    let block = block(title, true).title_bottom(Line::from(hint).fg(theme::dim()));
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-    let [input, _, list, _, detail] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(u16::from(goto)),
-        Constraint::Length(u16::from(goto)),
-    ])
-    .areas(inner);
-
-    let mut spans = vec![Span::from(" › ").fg(theme::blue()).bold(), Span::from(picker.query.clone()), Span::from("█").fg(theme::blue()), Span::from("   ")];
-    if goto {
-        for show in Show::ALL {
-            let chip = Span::from(format!(" {} ", show.label()));
-            spans.push(if show == picker.show { chip.fg(theme::bg()).bg(theme::blue()).bold() } else { chip.fg(theme::muted()) });
-            spans.push(Span::from(" "));
-        }
-    }
-    spans.push(Span::from(format!("  {} of {}", picker.shown(), picker.entries.len())).fg(theme::dim()));
-    frame.render_widget(Line::from(spans), input);
-
-    let items: Vec<ListItem> = picker
-        .rows
-        .iter()
-        .map(|row| match row {
-            // The repository's name, then where it is.
-            picker::Row::Heading(group) => {
-                let (name, rest) = group.split_once("  ").unwrap_or((group, ""));
-                ListItem::new(Line::from(vec![Span::from(format!(" {}", name.to_uppercase())).fg(theme::muted()).bold(), Span::from(format!("  {rest}")).fg(theme::dim())]))
-            }
-            picker::Row::Entry(i) => {
-                let entry = &picker.entries[*i];
-                let line = if goto {
-                    let state = entry.state.unwrap_or(State::Idle);
-                    let (icon, color) = state_icon(state);
-                    let said = if matches!(state, State::Waiting | State::Done) { theme::magenta() } else { theme::muted() };
-                    Line::from(vec![
-                        Span::from(format!("   {icon} ")).fg(color).bold(),
-                        Span::from(format!("{:<14} ", entry.text)).fg(theme::fg()),
-                        Span::from(format!("{:<22} ", entry.place)).fg(theme::muted()),
-                        Span::from(format!("{:>4}  ", entry.age)).fg(theme::dim()),
-                        Span::from(entry.detail.replace('\n', " ")).fg(said),
-                    ])
-                } else {
-                    Line::from(vec![Span::from(format!("   {:<52} ", entry.text)), Span::from(entry.place.clone()).fg(theme::blue()).bold()])
-                };
-                ListItem::new(line)
-            }
-        })
-        .collect();
-    frame.render_stateful_widget(List::new(items).highlight_style(highlight(true)), list, &mut picker.state);
-    if goto && let Some(entry) = picker.selected() {
-        frame.render_widget(Line::from(format!(" {}", entry.path)).fg(theme::muted()), detail);
-    }
-}
-
-/// The search popup over everything else.
+/// Searching the session, over everything else: its files as a tree
+/// (filtered as you type), or what's inside them.
 fn draw_search(frame: &mut Frame, app: &mut App) {
     let Some(search) = &mut app.search else { return };
     let area = frame.area();
     let popup = centered(area, (area.width * 7 / 10).max(40), (area.height * 7 / 10).max(10));
     frame.render_widget(Clear, popup);
-    frame.render_widget(Block::new().style(Style::new().fg(theme::fg()).bg(theme::bg())), popup);
     let (title, hint) = match search.mode {
-        Mode::Files => (
-            " Files ",
-            " tab: search inside files · ←→ fold · ⏎ open · ctrl-e edit · ctrl-y copy path · ctrl-x delete · esc close ",
-        ),
-        Mode::Text => (" Search inside files ", " tab: search file names · ↑↓ move · ⏎ open · esc close "),
-        Mode::Repos => (" Add a workspace ", " git repositories in your home folder · type to filter, or a path (~/…) · ⏎ add · esc close "),
+        Mode::Text => (" Search inside files ", " tab: file names · ↑↓ move · ⏎ open · esc close "),
+        _ => (" Files ", " tab: search inside files · ←→ fold · ⏎ open · esc close "),
     };
-    let block = block(title.trim(), true).title_bottom(Line::from(hint).fg(theme::dim()));
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(title)
+        .title_style(Style::new().fg(theme::fg()).bold())
+        .title_bottom(Line::from(hint).fg(theme::dim()))
+        .border_style(border(true))
+        .style(Style::new().bg(theme::bg()));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    let [input, _, results] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(inner);
-
+    let [input, _, results] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    (app.areas.popup, app.areas.popup_list) = (popup, results);
     let status = match search.mode {
-        Mode::Repos if search.busy => "looking for git repositories in your home folder…".to_string(),
         _ if search.busy => "searching…".to_string(),
-        Mode::Repos => format!("{} found", search.hits.len()),
         Mode::Text if search.query.chars().count() < 2 => "type at least 2 characters".to_string(),
         Mode::Files if search.query.is_empty() => format!("{} files · type to filter", search.file_count()),
-        Mode::Files if search.hits.len() >= 500 => "500+ matches".to_string(),
-        Mode::Files => format!("{} matches", search.hits.len()),
-        Mode::Text if search.hits.len() >= 500 => "500+ matches".to_string(),
-        Mode::Text => format!("{} matches", search.hits.len()),
+        _ if search.hits.len() >= 500 => "500+ matches".to_string(),
+        _ => format!("{} matches", search.hits.len()),
     };
     frame.render_widget(
         Line::from(vec![
@@ -1144,47 +542,154 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
         ]),
         input,
     );
-
-    // The files: the workspace's tree, or the matches laid out as one.
+    // The files: the session's tree, or the matches laid out as one.
     if search.mode == Mode::Files {
         let ws = &mut app.workspaces[app.current];
         let changed: Vec<(PathBuf, char)> = ws.status.changes.iter().map(|c| (ws.root.join(&c.path), c.kind())).collect();
         let list = |items| List::new(items).highlight_style(highlight(true));
         if search.query.is_empty() {
-            frame.render_stateful_widget(list(file_items(&ws.tree.rows, &changed, false)), results, &mut ws.files_state);
+            frame.render_stateful_widget(list(file_items(&ws.tree.rows, &changed)), results, &mut ws.files_state);
         } else {
-            frame.render_stateful_widget(list(file_items(&search.tree, &changed, true)), results, &mut search.state);
+            frame.render_stateful_widget(list(file_items(&search.tree, &changed)), results, &mut search.state);
         }
         return;
     }
-
     let items: Vec<ListItem> = search
         .hits
         .iter()
-        .map(|hit| match hit.line {
-            Some(line) => ListItem::new(Line::from(vec![
+        .map(|hit| {
+            ListItem::new(Line::from(vec![
                 Span::from(format!(" {}", hit.rel)).fg(theme::muted()),
-                Span::from(format!(":{}", line + 1)).fg(theme::yellow()),
+                Span::from(format!(":{}", hit.line.unwrap_or(0) + 1)).fg(theme::yellow()),
                 Span::from(format!("  {}", hit.text)),
-            ])),
-            None => {
-                let path = Path::new(&hit.rel);
-                let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                let dir = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
-                ListItem::new(Line::from(vec![Span::from(format!(" {name}")).bold(), Span::from(format!("  {dir}")).fg(theme::muted())]))
-            }
+            ]))
         })
         .collect();
     frame.render_stateful_widget(List::new(items).highlight_style(highlight(true)), results, &mut search.state);
 }
 
-fn block(title: &str, focused: bool) -> Block<'static> {
-    Block::bordered()
+/// Every key, by where it works, over everything else (prefix ?).
+fn draw_help(frame: &mut Frame, app: &mut App) {
+    if !app.help {
+        return;
+    }
+    let p = app.keymap.label();
+    let prefixed = |keys: &str| format!("{p} {keys}");
+    // A ⌃ prefix pressed twice goes to the program (⌘ never does).
+    let twice = app.keymap.prefix.iter().find(|k| k.mods.contains(ratatui::crossterm::event::KeyModifiers::CONTROL)).map(|k| format!("{k} {k}"));
+    let sections: Vec<(&str, Vec<(String, &str)>)> = vec![
+        (
+            "Panels",
+            vec![
+                (prefixed("w s t"), "workspaces, sessions, the terminal"),
+                (prefixed("f c"), "files, changes"),
+                (prefixed("< >"), "hide or show the left side, the right side"),
+                (prefixed("[ ]"), "previous, next terminal tab"),
+                (prefixed("a"), "the next terminal waiting for you"),
+            ],
+        ),
+        (
+            "Make and close",
+            vec![
+                (prefixed("n"), "new workspace, session, terminal or file, by panel"),
+                (prefixed("x"), "remove the workspace, delete the session, close the terminal"),
+            ]
+            .into_iter()
+            .chain(twice.map(|keys| (keys, "the key itself, to the program")))
+            .collect(),
+        ),
+        (
+            "Files",
+            vec![
+                (prefixed("/"), "search: files by name, tab for inside them; opens full screen"),
+                (prefixed("n"), "new file (ending with / for a folder)"),
+                (prefixed("e r d"), "edit, rename, delete"),
+                ("↑↓ ←→ ⏎".into(), "move, fold, open full screen"),
+            ],
+        ),
+        (
+            "Full screen",
+            vec![
+                ("esc".into(), "back to the tree, then to the three columns"),
+                ("⏎ tab".into(), "from the tree into the file, and back"),
+                ("pgup pgdn".into(), "scroll the file"),
+                ("⌘s esc".into(), "editing: save, leave (twice to throw changes away)"),
+            ],
+        ),
+        (
+            "Mouse",
+            vec![
+                ("click".into(), "go there; double-click a file: full screen"),
+                ("drag".into(), "select to copy in a terminal; a border to resize"),
+                ("wheel swipe".into(), "scroll, and sideways in files"),
+                ("ctrl-click".into(), "open a link, or a path:line"),
+            ],
+        ),
+        ("Quit", vec![(prefixed("q"), "quit, terminals keep running"), (prefixed("Q"), "quit and stop every terminal")]),
+    ];
+    let mut lines = Vec::new();
+    for (title, keys) in sections {
+        lines.push(Line::from(format!(" {title}")).bold());
+        for (key, text) in keys {
+            lines.push(Line::from(vec![Span::from(format!("   {key:<12}")).fg(theme::blue()).bold(), Span::from(text).fg(theme::fg())]));
+        }
+        lines.push(Line::default());
+    }
+    lines.pop();
+    let area = frame.area();
+    let popup = centered(area, 80, lines.len() as u16 + 2);
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .title(format!(" {title} "))
-        .title_style(Style::new().fg(if focused { theme::fg() } else { theme::muted() }).bold())
-        .border_style(border(focused))
-        .style(Style::new().bg(theme::bg()))
+        .title(" Keybinds ")
+        .title_style(Style::new().fg(theme::fg()).bold())
+        .title_bottom(Line::from(" any key closes ").fg(theme::dim()))
+        .border_style(border(true))
+        .style(Style::new().bg(theme::bg()));
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
+}
+
+/// Picking a repository to add, over everything else.
+fn draw_repos(frame: &mut Frame, app: &mut App) {
+    let Some(search) = &mut app.repos else { return };
+    let area = frame.area();
+    let popup = centered(area, (area.width * 6 / 10).max(40), (area.height * 6 / 10).max(10));
+    frame.render_widget(Clear, popup);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(" New workspace ")
+        .title_style(Style::new().fg(theme::fg()).bold())
+        .title_bottom(Line::from(" git repositories in your home folder · type to filter, or a path (~/…) · ⏎ add · esc close ").fg(theme::dim()))
+        .border_style(border(true))
+        .style(Style::new().bg(theme::bg()));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let [input, _, results] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    (app.areas.popup, app.areas.popup_list) = (popup, results);
+    let status = if search.busy { "looking for git repositories in your home folder…".to_string() } else { format!("{} found", search.hits.len()) };
+    frame.render_widget(
+        Line::from(vec![
+            Span::from(" › ").fg(theme::blue()).bold(),
+            Span::from(search.query.clone()),
+            Span::from("█").fg(theme::blue()),
+            Span::from(format!("   {status}")).fg(theme::muted()),
+        ]),
+        input,
+    );
+    let items: Vec<ListItem> = search.hits.iter().map(|hit| ListItem::new(Line::from(format!(" {}", hit.rel)))).collect();
+    frame.render_stateful_widget(List::new(items).highlight_style(highlight(true)), results, &mut search.state);
+}
+
+/// How a terminal shows its state: a spinner while it works, a steady
+/// colored mark until you read what it finished or asks, a dim one after.
+fn state_icon(state: State) -> (&'static str, Color) {
+    const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    match state {
+        State::Running => (SPINNER[(now.as_millis() / 100) as usize % SPINNER.len()], theme::yellow()),
+        State::Waiting | State::Done => ("◆", theme::magenta()),
+        State::Idle => ("○", theme::dim()),
+    }
 }
 
 fn border(focused: bool) -> Style {

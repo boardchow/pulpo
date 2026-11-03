@@ -39,6 +39,9 @@ pub struct Session {
     pub ports: Vec<(String, u16)>,
     /// Services whose image main built, tagged for this project too.
     pub images: Vec<String>,
+    /// The commit it was copied at: its changes are what came after.
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 /// How sessions of one repository are set up, in
@@ -279,8 +282,8 @@ fn port_free(port: u16) -> bool {
     std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-/// Copy main into a new session and record it. Its setup runs next, in a
-/// terminal (`setup_script`).
+/// Copy main into a new session and record it. Its setup runs next, in
+/// the background (`setup_script`).
 pub fn create(repo: &Path, name: &str, config: &Config) -> Result<Session> {
     // Lowercase: Compose project names are, and two sessions mustn't share one.
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
@@ -293,6 +296,11 @@ pub fn create(repo: &Path, name: &str, config: &Config) -> Result<Session> {
     let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
     let parent = repo.parent().context("the repository has no parent folder")?;
     let root = parent.join(format!("{repo_name}.sessions")).join(name);
+    // A copy left half made (Pulpo quit while copying) is no session's: it
+    // goes, so the name can be used.
+    if root.exists() && is_copy(&root) && !all().iter().any(|s| s.root == root) {
+        fs::remove_dir_all(&root)?;
+    }
     if root.exists() {
         bail!("{} already exists", root.display());
     }
@@ -300,6 +308,13 @@ pub fn create(repo: &Path, name: &str, config: &Config) -> Result<Session> {
     clone(repo, &root)?;
     // Main's worktrees are main's, not the copy's.
     let _ = fs::remove_dir_all(root.join(".git/worktrees"));
+    let base = match fresh(&root) {
+        Ok(base) => base,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&root);
+            return Err(e);
+        }
+    };
 
     let main_project = compose_project(repo);
     let result = update(|sessions| {
@@ -313,6 +328,7 @@ pub fn create(repo: &Path, name: &str, config: &Config) -> Result<Session> {
             main_project: main_project.clone(),
             ports: config.ports.iter().cloned().zip(ports).collect(),
             images: config.images.clone(),
+            base: base.clone(),
         };
         sessions.push(session.clone());
         Ok(session)
@@ -321,6 +337,25 @@ pub fn create(repo: &Path, name: &str, config: &Config) -> Result<Session> {
         let _ = fs::remove_dir_all(&root);
     }
     result
+}
+
+/// A copy from its last commit: main's uncommitted work stays in main.
+/// Ignored files (.env, dependencies) stay in the copy. That commit.
+/// None without a commit yet; an error if the copy couldn't be reset (a
+/// lock main had at that moment, say), since it would hold main's work.
+fn fresh(root: &Path) -> Result<Option<String>> {
+    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(root).args(args).output();
+    let head = git(&["rev-parse", "-q", "--verify", "HEAD"])?;
+    if !head.status.success() {
+        return Ok(None);
+    }
+    for args in [&["reset", "-q", "--hard"][..], &["clean", "-qfd"]] {
+        let out = git(args)?;
+        if !out.status.success() {
+            bail!("could not start the copy from the last commit (git {}): {}", args[0], String::from_utf8_lossy(&out.stderr).trim());
+        }
+    }
+    Ok(Some(String::from_utf8_lossy(&head.stdout).trim().to_string()))
 }
 
 /// An APFS clone: every file at once, sharing disk blocks with the original
@@ -403,10 +438,10 @@ pub fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// The setup, run in the session's first terminal with its environment:
-/// main's images, its database, the containers, then `start` (a command,
-/// like an agent with its task), then a shell.
-pub fn setup_script(session: &Session, config: &Config, warnings: &[String], start: Option<&str>) -> String {
+/// The setup, run in the background with the session's environment while
+/// its first terminal is already yours: main's images, its database, the
+/// containers. It exits with an error if a step fails.
+pub fn setup_script(session: &Session, config: &Config, warnings: &[String]) -> String {
     let root = quote(&session.root.to_string_lossy());
     let main = &session.main_project;
     let mut s = String::from("step() { printf '\\n\\033[1m%s\\033[0m\\n' \"$1\"; }\nsetup() (\nset -e\nset -o pipefail\n");
@@ -419,10 +454,6 @@ pub fn setup_script(session: &Session, config: &Config, warnings: &[String], sta
     for warning in warnings {
         s += &format!("echo {}\n", quote(&format!("  ! {warning}")));
     }
-    // From its last commit: main's uncommitted work stays in main. Ignored
-    // files (.env, dependencies) stay in the copy.
-    s += "if git rev-parse -q --verify HEAD >/dev/null && [ -n \"$(git status --porcelain)\" ]; then\n";
-    s += "step \"Leaving main's uncommitted changes in main\"\ngit reset -q --hard\ngit clean -qfd\nfi\n";
     if compose_file(&session.root).is_some() {
         if !session.images.is_empty() {
             s += "step \"Reusing main's images\"\n";
@@ -459,15 +490,11 @@ pub fn setup_script(session: &Session, config: &Config, warnings: &[String], sta
         s += &format!("step 'Setup'\n{}\n", config.setup);
     }
     // Called on its own: in an `if`, the shell would ignore its `set -e`.
-    s += ")\nsetup\nif [ $? = 0 ]; then\nstep 'Ready.'\n";
+    s += ")\nsetup\nstatus=$?\nif [ $status = 0 ]; then\nstep 'Ready.'\n";
     for (var, port) in &session.ports {
         s += &format!("echo {}\n", quote(&format!("  {var}: localhost:{port}")));
     }
-    s += "else\nprintf '\\n\\033[31mThe setup stopped (see above). Fix it and run those steps here, or remove the session: x x in Sessions.\\033[0m\\n'\nfi\n";
-    match start {
-        Some(command) => s += &format!("exec \"${{SHELL:-/bin/zsh}}\" -l -c {}\n", quote(&format!("{command}; exec \"${{SHELL:-/bin/zsh}}\" -l"))),
-        None => s += "exec \"${SHELL:-/bin/zsh}\" -l\n",
-    }
+    s += "fi\nexit $status\n";
     s
 }
 
@@ -576,6 +603,7 @@ mod tests {
             main_project: "backbone".into(),
             ports: vec![("APP_PORT".into(), 20002)],
             images: vec!["app".into()],
+            base: None,
         };
         let config = Config { db: "mysql".into(), db_service: "db".into(), ..Config::default() };
         let teardown = teardown_script(&session, &config, Path::new("/bin/pulpo"));
@@ -600,6 +628,7 @@ mod tests {
             main_project: "r".into(),
             ports: Vec::new(),
             images: Vec::new(),
+            base: None,
         };
         let run = |teardown: &str| {
             fs::create_dir_all(&root).unwrap();
@@ -648,22 +677,18 @@ mod tests {
             main_project: String::new(),
             ports: vec![],
             images: vec![],
+            base: None,
         };
-        let script = setup_script(&session, &Config::default(), &[], None);
-        std::process::Command::new("sh").args(["-c", &script]).env("SHELL", "/usr/bin/true").output().unwrap();
+        assert!(fresh(&t.join("copy")).unwrap().is_some_and(|base| base.len() == 40));
+        let script = setup_script(&session, &Config::default(), &[]);
+        let setup = std::process::Command::new("sh").args(["-c", &script]).stdin(std::process::Stdio::null()).output().unwrap();
+        assert!(setup.status.success());
         assert_eq!(fs::read_to_string(t.join("copy/a.txt")).unwrap(), "committed");
         assert!(!t.join("copy/new.txt").exists());
         assert!(t.join("copy/.env").exists());
         // Main keeps its work.
         assert_eq!(fs::read_to_string(t.join("main/a.txt")).unwrap(), "edited");
         assert!(t.join("main/new.txt").exists());
-        // Then what it starts, before the shell (an agent with its task).
-        let marker = t.join("started");
-        let start = format!(r"echo 'it'\''s on' > {}", quote(&marker.to_string_lossy()));
-        let script = setup_script(&session, &Config::default(), &[], Some(&start));
-        let mut shell = std::process::Command::new("sh");
-        shell.args(["-c", &script]).env("SHELL", "/bin/sh").stdin(std::process::Stdio::null()).output().unwrap();
-        assert_eq!(fs::read_to_string(&marker).unwrap(), "it's on\n");
         fs::remove_dir_all(&t).unwrap();
     }
 
@@ -697,6 +722,7 @@ mod tests {
             main_project: String::new(),
             ports: vec![],
             images: vec![],
+            base: None,
         };
         assert_eq!(unsaved(&session), ["1 uncommitted change(s)", "1 commit(s) not pushed"]);
         // A commit on a detached HEAD, and a stash, are lost too.

@@ -6,153 +6,189 @@ use std::time::{Duration, Instant};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
-use ratatui::widgets::{Block, ListState};
+use ratatui::widgets::ListState;
 
 use crate::Msg;
 use crate::agents::{Agents, State};
 use crate::client::{self, Link};
 use crate::editor::Editor;
 use crate::git;
-use crate::keymap::{Action, Group, Key, Keymap};
-use crate::layout::{self, Layout};
 use crate::input;
-use crate::pane::{self, Dir, Divider, Node, Pane, SavedTab, Tab};
-use crate::picker::{self, Entry, Kind, Picker, Show, Target};
-use crate::procs;
+use crate::keymap::{Key, Keymap};
+use crate::layout::{self, Layout};
 use crate::proto::{PROTOCOL, ToClient, ToServer};
+use crate::review::Changes;
 use crate::search::{Mode, Search};
 use crate::session;
 use crate::status::Status;
 use crate::term::Term;
 use crate::viewer::{Source, Viewer};
-use crate::workspace::{self, GraphItem, Workspace};
+use crate::workspace::{self, Workspace};
 
 /// At most one desktop notification per terminal this often.
 const NOTICE_EVERY: Duration = Duration::from_secs(10);
-/// How long a message stays in the footer, unless it asks something.
+/// How long a message stays on the bottom line, unless it asks something.
 const MESSAGE_FOR: Duration = Duration::from_secs(5);
-/// How long after the prefix its panel shows, so quick hands never see it.
-const PREFIX_PANEL_AFTER: Duration = Duration::from_millis(300);
+/// Said when unsaved changes in the editor keep you where you are.
+const UNSAVED: &str = "unsaved changes in the editor: ⌘s saves them, esc twice throws them away";
+/// How long the prefix waits for its key.
+const PREFIX_FOR: Duration = Duration::from_secs(3);
+/// Two clicks on the same row this close together open it.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
-#[derive(Clone, Copy, PartialEq)]
+/// Where the keys go. The prefix then w s t f c moves it.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
     Workspaces,
     Sessions,
-    Changes,
-    Graph,
-    Viewer,
     Terminal,
-    /// The built-in editor (`editor.rs`).
-    Editor,
+    Files,
+    Changes,
 }
 
-/// Where you were before opening a file from the files popup: esc in the
-/// viewer comes back to it, terminal zoomed or file previewed alike.
-struct Back {
-    focus: Focus,
-    zoomed: bool,
-    viewer: Viewer,
+/// A name typed on the bottom line.
+pub enum Ask {
+    /// A new task session of the repository.
+    Session,
+    /// A new file or folder (ending with /) in this folder.
+    File(PathBuf),
+    /// A new name for this file or folder.
+    Rename(PathBuf),
 }
 
-/// A file or folder about to be made in `dir`; a name ending in / is a folder.
-/// Or, with `session`, a new isolated session of the repository.
-pub struct Create {
-    pub dir: PathBuf,
-    pub name: String,
-    pub session: bool,
+pub struct Prompt {
+    pub ask: Ask,
+    pub text: String,
 }
 
-/// Where each panel was drawn, for mouse hit-testing.
+/// What y on the bottom line does.
+pub enum Confirm {
+    RemoveWorkspace(PathBuf),
+    DeleteSession(PathBuf),
+    CloseTerminal(usize),
+    DeleteFile(PathBuf),
+    StopAll,
+}
+
+/// Where each part was drawn, for the mouse.
 #[derive(Default, Clone)]
 pub struct Areas {
+    pub counts: Rect,
+    /// The rows of the two lists.
     pub workspaces: Rect,
     pub sessions: Rect,
-    pub changes: Rect,
-    pub graph: Rect,
-    /// The panes of the tab on screen, and the tabs in the sidebar.
-    pub panes: Vec<(Pane, Rect)>,
-    pub tabs: Vec<(usize, Rect)>,
-    /// What the terminals are doing, by the pulpo: a click shows them.
-    pub counts: Vec<(Show, Rect)>,
-    /// The borders between the panes on screen, to drag.
-    pub dividers: Vec<Divider>,
-    pub viewer: Rect,
-    /// The editor's text (inside its border).
+    /// Each tab of the session's terminals, and the + after them.
+    pub tabs: Vec<(Option<usize>, Rect)>,
+    /// The terminal on screen, inside its frame.
+    pub term: Rect,
+    pub files_tree: Rect,
+    pub files_file: Rect,
+    pub changes_tree: Rect,
+    pub changes_file: Rect,
+    /// The marks down the right of the diff: a click goes there.
+    pub changes_ruler: Rect,
+    /// The editor's text, without its line numbers' gutter accounted.
     pub editor: Rect,
-    /// The viewer's overview ruler.
-    pub ruler: Rect,
+    /// The borders to drag: the sidebar's, the right side's, and the line
+    /// between a tree and its file (with where the tree starts).
+    pub left_divider: Rect,
+    pub divider: Rect,
+    pub tree_dividers: Vec<(Rect, u16)>,
+    /// Yes on the bottom line, while it asks.
+    pub yes: Rect,
+    /// The search popup or the repository picker, and its list.
+    pub popup: Rect,
+    pub popup_list: Rect,
+    /// The whole screen's width, to turn a drag into the right side's.
+    pub width: u16,
 }
 
-/// Scrolling back through a terminal, and finding in it.
-pub struct Scroll {
+/// A border being dragged.
+#[derive(Clone, Copy)]
+enum Drag {
+    Sidebar,
+    Right,
+    /// Between a tree and its file; the tree starts at this column.
+    Tree(u16),
+}
+
+/// Text selected in a terminal with the mouse: its id, the cells (row,
+/// column) where the drag started and is now, and whether it still goes on.
+pub struct Selecting {
     pub id: usize,
-    /// The line you're on, and where a selection starts, counted from the
-    /// oldest line of the terminal's history.
-    pub cursor: usize,
-    pub anchor: Option<usize>,
-    pub query: String,
-    /// Typing what to find.
-    pub typing: bool,
-    /// Whether the last find found it.
-    pub found: Option<bool>,
+    pub from: (u16, u16),
+    pub to: (u16, u16),
+    pub dragging: bool,
 }
-
-/// A session's tabs, and the one on screen.
-#[derive(Default)]
-pub struct Tabs {
-    pub list: Vec<Tab>,
-    pub active: usize,
-}
-
-/// A terminal asked of the server: whether to go into it, and the pane to
-/// split for it (and whether beside), else it gets a tab of its own.
-type Spawning = (bool, Option<(Pane, bool)>);
 
 pub struct App {
     pub workspaces: Vec<Workspace>,
-    /// The isolated sessions among them: copies of a main checkout with
-    /// their own Docker project and ports.
+    /// The task sessions among them: copies of a main checkout with their
+    /// own Docker project and ports.
     pub isolated: Vec<session::Session>,
     pub current: usize,
     pub workspaces_state: ListState,
+    pub sessions_state: ListState,
     /// Shown when no repository is registered yet.
     scratch: PathBuf,
     pub focus: Focus,
-    /// The sidebar list to return to when leaving the terminal or viewer.
-    sidebar_focus: Focus,
     pub agents: Agents,
-    /// Every terminal, of every session; each belongs to the checkout it
-    /// was started in.
+    /// Every terminal, of every session, in the order of their tabs; each
+    /// belongs to the checkout it was started in.
     pub terms: Vec<Term>,
-    /// The terminal the keys go to: the one last in focus in the tab on
-    /// screen.
+    /// The terminal on screen in the current session.
     pub active: Option<usize>,
-    /// Each session's tabs (`pane.rs`), by its folder.
-    pub tabs: HashMap<PathBuf, Tabs>,
-    /// The tabs layout.json had are back; until then it keeps them.
-    tabs_restored: bool,
-    /// Naming the tab on screen.
-    pub renaming: Option<String>,
-    /// Go to, the menu, or the themes.
-    pub picker: Option<Picker>,
-    /// The themes the theme picker lists, and the one to put back on esc.
-    themes: Vec<String>,
-    theme_before: String,
-    /// The session and terminal on screen, and the ones before them.
-    here: Option<(PathBuf, Option<usize>)>,
-    back: Option<(PathBuf, Option<usize>)>,
-    pub sidebar_hidden: bool,
-    /// Every terminal of the repository tiled, instead of the tab.
-    pub board: bool,
-    /// Typing a swarm: how many, and their task.
-    pub swarm: Option<String>,
-    pub scrolling: Option<Scroll>,
-    /// The border being dragged.
-    dragging: Option<Divider>,
-    /// The link or file under the last right click in a terminal.
-    link_at: Option<(String, PathBuf)>,
-    /// The last edit a review pane went to.
-    followed: u64,
+    /// The prefix was pressed: the next key is Pulpo's, if it comes soon.
+    pub prefixed: bool,
+    prefixed_at: Option<Instant>,
+    /// A click said yes to quitting (Q): the loop ends.
+    pub quit: bool,
+    /// Every shortcut, in a popup (prefix ?).
+    pub help: bool,
+    /// The sidebar or the right side hidden (prefix < and >).
+    pub left_hidden: bool,
+    pub right_hidden: bool,
+    pub prompt: Option<Prompt>,
+    /// A question on the bottom line, and what y does.
+    pub asking: Option<(String, Confirm)>,
+    pub message: Option<String>,
+    message_since: Option<(String, Instant)>,
+    /// Searching the session's files (names, then lines), in the Files panel.
+    pub search: Option<Search>,
+    /// Picking a repository to add as a workspace.
+    pub repos: Option<Search>,
+    /// The file selected in Files, and the editor in its place.
+    pub viewer: Viewer,
+    pub editor: Option<Editor>,
+    /// Esc was pressed once in the editor with unsaved changes.
+    discard: bool,
+    /// The file takes the whole right side while you're in that panel.
+    pub files_expanded: bool,
+    pub changes_expanded: bool,
+    /// In a panel opened wide, the keys go to its file instead of its tree
+    /// (⏎ on a file, or tab).
+    pub reading: bool,
+    /// What the current session changed.
+    pub changes: Option<Changes>,
+    /// Columns of the sidebar, the right side and the trees in Files and
+    /// Changes, once their border was dragged.
+    pub left_width: Option<u16>,
+    pub right_width: Option<u16>,
+    pub tree_width: Option<u16>,
+    dragging: Option<Drag>,
+    pub selecting: Option<Selecting>,
+    /// The last click, to tell a double click.
+    last_click: Option<(Position, Instant)>,
+    pub keymap: Keymap,
+    pub areas: Areas,
+    /// Sessions being set up or removed in the background, and those whose
+    /// setup failed (with its log).
+    /// The setups by session, with their process (its own group).
+    pub setting_up: HashMap<PathBuf, u32>,
+    pub setup_failed: HashMap<PathBuf, PathBuf>,
+    /// Sessions being copied: their repository and name.
+    copying: HashSet<(PathBuf, String)>,
+    removing: HashSet<PathBuf>,
     /// The terminal (its tag) last on screen in each session, and the
     /// session last used in each repository.
     last_term: HashMap<PathBuf, String>,
@@ -163,58 +199,21 @@ pub struct App {
     ready: bool,
     /// Terminals being brought back after a restart: token → old tag.
     reopening: HashMap<u64, String>,
-    /// The server that runs the terminals.
     link: Link,
-    /// Terminals asked of the server and not shown yet, and where they go.
-    /// Its token stands in for its id until then.
-    spawning: HashMap<u64, Spawning>,
+    /// Terminals asked of the server and not shown yet, and whether to go
+    /// into them. Its token stands in for its id until then.
+    spawning: HashMap<u64, bool>,
     next_token: u64,
-    /// Upgrading the server was asked once already.
     upgrade_asked: bool,
     /// Connected again after the server went away (an upgrade, or it
     /// stopped), with this many terminals before; and when.
     reconnected: Option<usize>,
     last_reconnect: Option<Instant>,
-    /// The server stopped twice in a row, or couldn't start: tried again on r.
+    /// The server stopped twice in a row, or couldn't start: tried again
+    /// when you go to the terminal.
     offline: bool,
     /// Rows and columns available to terminals, set when drawing.
     term_size: (u16, u16),
-    pub viewer: Viewer,
-    pub sessions_state: ListState,
-    pub areas: Areas,
-    pub message: Option<String>,
-    /// The message on screen, and since when.
-    message_since: Option<(String, Instant)>,
-    pub search: Option<Search>,
-    /// The full list of shortcuts is shown, filtered by what you typed.
-    pub help: Option<String>,
-    /// Pulpo's keys beyond the panels' own (`keymap.rs`).
-    pub keymap: Keymap,
-    /// The prefix was pressed, at this time: the next key is Pulpo's.
-    pub prefix: Option<Instant>,
-    /// The old ctrl keys inside terminals already said what replaces them.
-    legacy_hinted: HashSet<char>,
-    /// n was pressed: w, s or f next says what to make.
-    pub new_menu: bool,
-    /// Typing the name of a new file or folder.
-    pub creating: Option<Create>,
-    /// The terminal editing a file: its id, the file, and the panel to go
-    /// back to when the editor quits.
-    editing: Option<(usize, PathBuf, Focus)>,
-    /// Sessions being removed in the background, already off the list.
-    removing: HashSet<PathBuf>,
-    /// A file being edited in Pulpo, and the panel to go back to after.
-    pub editor: Option<Editor>,
-    editor_back: Focus,
-    /// Set while a file opened from the files popup is in the viewer.
-    files_back: Option<Back>,
-    /// What the pending x deletes, so the selection can't change under it.
-    deleting: Option<PathBuf>,
-    /// The terminal takes the whole right side; the viewer comes back when
-    /// something is previewed.
-    pub zoomed: bool,
-    /// A key that must be pressed again to confirm (quit, close, delete).
-    pending: Option<char>,
     /// Workspaces with file changes not yet refreshed, and whether the
     /// worktree list itself may have changed.
     fs_dirty: HashSet<PathBuf>,
@@ -244,27 +243,46 @@ impl App {
             isolated: Vec::new(),
             current: 0,
             workspaces_state: ListState::default().with_selected(Some(0)),
+            sessions_state: ListState::default().with_selected(Some(0)),
             scratch,
-            focus: Focus::Sessions,
-            sidebar_focus: Focus::Sessions,
+            focus: Focus::Terminal,
             agents,
             terms: Vec::new(),
             active: None,
-            tabs: HashMap::new(),
-            tabs_restored: false,
-            renaming: None,
-            picker: None,
-            themes: Vec::new(),
-            theme_before: String::new(),
-            here: None,
-            back: None,
-            sidebar_hidden: false,
-            board: false,
-            swarm: None,
-            scrolling: None,
+            prefixed: false,
+            prefixed_at: None,
+            quit: false,
+            help: false,
+            left_hidden: false,
+            right_hidden: false,
+            prompt: None,
+            asking: None,
+            message: keys_error.or(theme_error).or_else(|| {
+                (!crate::agents::hooks_installed())
+                    .then(|| "run `pulpo hooks install` to see what Claude runs and asks in each terminal".into())
+            }),
+            message_since: None,
+            search: None,
+            repos: None,
+            viewer: Viewer::default(),
+            editor: None,
+            discard: false,
+            files_expanded: false,
+            changes_expanded: false,
+            reading: false,
+            changes: None,
+            left_width: None,
+            right_width: None,
+            tree_width: None,
             dragging: None,
-            link_at: None,
-            followed: 0,
+            selecting: None,
+            last_click: None,
+            keymap,
+            areas: Areas::default(),
+            setting_up: HashMap::new(),
+            setup_failed: HashMap::new(),
+            copying: HashSet::new(),
+            removing: HashSet::new(),
             last_term: layout.terminals.clone().into_iter().collect(),
             last_session: layout.sessions.clone().into_iter().collect(),
             saved: layout.clone(),
@@ -279,29 +297,6 @@ impl App {
             last_reconnect: None,
             offline: false,
             term_size: (24, 80),
-            viewer: Viewer::default(),
-            sessions_state: ListState::default().with_selected(Some(0)),
-            areas: Areas::default(),
-            message: keys_error.or(theme_error).or_else(|| {
-                (!crate::agents::hooks_installed())
-                    .then(|| "run `pulpo hooks install` to see what Claude runs and asks in each terminal".into())
-            }),
-            message_since: None,
-            search: None,
-            help: None,
-            keymap,
-            prefix: None,
-            legacy_hinted: HashSet::new(),
-            new_menu: false,
-            creating: None,
-            editing: None,
-            editor: None,
-            editor_back: Focus::Sessions,
-            removing: HashSet::new(),
-            deleting: None,
-            files_back: None,
-            zoomed: false,
-            pending: None,
             fs_dirty: HashSet::new(),
             reload_list: false,
             watcher,
@@ -320,9 +315,8 @@ impl App {
             }),
             None => layout.current.as_deref().and_then(at),
         };
-        if let Some(i) = start {
-            app.set_current(i);
-        }
+        app.current = usize::MAX;
+        app.set_current(start.unwrap_or(0));
         Ok(app)
     }
 
@@ -334,7 +328,7 @@ impl App {
         &mut self.workspaces[self.current]
     }
 
-    // Workspaces
+    // Workspaces and sessions
 
     /// Rebuild the list from the registry and git, keeping existing state.
     fn load_workspaces(&mut self) {
@@ -364,7 +358,7 @@ impl App {
             self.workspaces.push(reuse(scratch.clone(), &scratch));
         }
         match current.as_ref().map(|c| self.workspaces.iter().position(|w| &w.root == c)) {
-            None => self.current = 0,
+            None => self.current = self.current.min(self.workspaces.len() - 1),
             Some(Some(i)) => self.current = i,
             // Gone: its repository's main checkout, or the first, as if picked.
             Some(None) => {
@@ -388,21 +382,47 @@ impl App {
         self.watched = wanted;
     }
 
-    /// Make session `i` current: its files, changes and graph, and its
-    /// terminals, on the one you last had on screen there.
-    fn set_current(&mut self, i: usize) {
+    /// Make session `i` current: its terminals, on the one you last had on
+    /// screen there, its files and its changes. Not with unsaved changes in
+    /// the editor.
+    /// False when it stays where it was (unsaved changes).
+    fn set_current(&mut self, i: usize) -> bool {
         if i >= self.workspaces.len() {
-            return;
+            return false;
         }
         if i != self.current {
+            // The session on screen is still there to keep its editor.
+            if self.current < self.workspaces.len() && self.editing() {
+                self.message = Some(UNSAVED.into());
+                self.sync_lists();
+                return false;
+            }
             self.current = i;
+            self.editor = None;
             self.viewer.close();
+            self.search = None;
+            self.files_expanded = false;
+            self.changes_expanded = false;
+            self.selecting = None;
             self.workspaces[i].refresh();
+            let base = self.isolated.iter().find(|s| s.root == self.workspaces[i].root).and_then(|s| s.base.clone());
+            self.changes = Some(Changes::new(&self.workspaces[i].root, base));
+            self.reload_changes();
             self.restore_term();
+            self.preview();
+            if let Some(log) = self.setup_failed.get(&self.workspaces[i].root) {
+                self.message = Some(format!("this session's setup stopped: see {}", log.display()));
+            }
         }
         let ws = &self.workspaces[i];
         self.last_session.insert(ws.repo.clone(), ws.root.clone());
         self.sync_lists();
+        true
+    }
+
+    /// The editor has changes not saved yet.
+    fn editing(&self) -> bool {
+        self.editor.as_ref().is_some_and(|e| e.dirty)
     }
 
     /// The repositories: the first checkout of each (its main one), in order.
@@ -476,6 +496,11 @@ impl App {
         if dirty.contains(&self.ws().root) {
             let root = self.ws().root.clone();
             self.viewer.reload(&root);
+            // Changes follow what the agents do.
+            self.reload_changes();
+            if let Some(search) = &mut self.search {
+                search.rescan(&self.tx);
+            }
             // An agent changed the file being edited: take it, unless you
             // changed it too.
             if let Some(editor) = &mut self.editor
@@ -486,14 +511,19 @@ impl App {
         }
     }
 
-    pub fn refresh(&mut self) {
-        self.retry_server();
-        self.load_workspaces();
-        for w in &mut self.workspaces {
-            w.refresh();
+    /// Read what the session changed again, in the background (`on_changes`).
+    fn reload_changes(&mut self) {
+        let Some(changes) = &mut self.changes else { return };
+        let (request, tx) = (changes.request(), self.tx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Changes(Box::new(request.read())));
+        });
+    }
+
+    pub fn on_changes(&mut self, read: crate::review::Read) {
+        if let Some(changes) = &mut self.changes {
+            changes.apply(read);
         }
-        let root = self.ws().root.clone();
-        self.viewer.reload(&root);
     }
 
     fn add_repo(&mut self, input: &str) {
@@ -513,37 +543,25 @@ impl App {
         }
     }
 
-    /// Take the current repository off the list; its files are untouched.
-    fn remove_workspace(&mut self) {
-        let (repo, name) = (self.ws().repo.clone(), self.ws().name.clone());
-        workspace::unregister(&repo);
-        self.message = Some(format!("removed {name} from the list (files kept)"));
-        self.load_workspaces();
-    }
-
     // Terminals
 
-    pub fn spawn(&mut self, program: &str, focus: bool) {
-        self.run(program, &[], focus);
-    }
-
-    /// Start `program` in a new terminal. The server shows it shortly; until
-    /// then the returned token stands in for its id.
-    fn run(&mut self, program: &str, args: &[String], focus: bool) -> Option<usize> {
-        let cwd = self.ws().root.clone();
-        Some(self.spawn_in(cwd, program, args, focus) as usize)
-    }
-
-    /// Start `program` in a new terminal working in `cwd`; its token.
+    /// Start `program` in a new terminal working in `cwd`; its token. The
+    /// server shows it shortly; until then the token stands in for its id.
     fn spawn_in(&mut self, cwd: PathBuf, program: &str, args: &[String], focus: bool) -> u64 {
         let token = self.next_token;
         self.next_token += 1;
         let (rows, cols) = self.term_size;
-        // An isolated session's terminals get its Compose project and ports.
+        // A task session's terminals get its Compose project and ports.
         let env = self.isolated.iter().find(|s| s.root == cwd).map(session::env).unwrap_or_default();
         self.link.send(&ToServer::Spawn { token, program: program.into(), args: args.to_vec(), cwd, rows, cols, env });
-        self.spawning.insert(token, (focus, None));
+        self.spawning.insert(token, focus);
         token
+    }
+
+    /// A shell in a new tab of the current session.
+    fn new_terminal(&mut self, focus: bool) {
+        let cwd = self.ws().root.clone();
+        self.spawn_in(cwd, &shell(), &[], focus);
     }
 
     /// The server came back with no terminals (a reboot, or it stopped):
@@ -572,24 +590,10 @@ impl App {
             .iter()
             .map(|t| layout::Open { cwd: t.info.cwd.clone(), tag: t.info.tag.clone(), claude: self.agents.session_for_tab(&t.info.tag).map(String::from) })
             .collect();
-        let tabs = if self.tabs_restored {
-            let tag = |id: usize| self.terms.iter().find(|t| t.id == id).map(|t| t.info.tag.clone());
-            self.tabs
-                .iter()
-                .map(|(root, tabs)| {
-                    let saved = tabs.list.iter().filter_map(|tab| Some(SavedTab { root: tab.root.save(&tag)?, name: tab.name.clone() }));
-                    (root.clone(), saved.collect::<Vec<_>>())
-                })
-                .filter(|(_, saved)| !saved.is_empty())
-                .collect()
-        } else {
-            self.saved.tabs.clone()
-        };
         Layout {
             current: Some(self.ws().root.clone()),
             sessions: self.last_session.clone().into_iter().collect(),
             terminals: self.last_term.clone().into_iter().collect(),
-            tabs,
             open,
         }
     }
@@ -605,52 +609,33 @@ impl App {
                 let i = self.terms.len() - 1;
                 self.terms[i].resize(self.term_size.0, self.term_size.1);
                 let session = self.session_of(&self.terms[i]);
-                // Brought back after a restart: it stands for the old one, and
-                // the session shows the one you had on screen.
+                // Brought back after a restart: it stands for the old one.
                 if let Some(old) = token.and_then(|t| self.reopening.remove(&t)) {
                     let new = self.terms[i].info.tag.clone();
                     for tag in self.last_term.values_mut().filter(|tag| **tag == old) {
                         *tag = new.clone();
                     }
-                    for saved in self.saved.tabs.values_mut().flatten() {
-                        saved.root.rename(&old, &new);
-                    }
                     self.spawning.remove(&token.unwrap_or_default());
-                    // All back: their tabs too.
                     if self.reopening.is_empty() || session.is_none_or(|s| s == self.current) {
                         self.restore_term();
                     }
                     return;
                 }
-                let Some((focus, split)) = token.and_then(|t| self.spawning.remove(&t)) else {
-                    // One that kept running is shown once all are in (`Ready`),
-                    // the way you left it. Another Pulpo's, if this session has
-                    // nothing on screen.
+                let Some(focus) = token.and_then(|t| self.spawning.remove(&t)) else {
+                    // One that kept running is shown once all are in (`Ready`).
                     if self.ready && self.active.is_none() && session.is_none_or(|s| s == self.current) {
                         self.restore_term();
                     }
                     return;
                 };
-                // Ours: what waited for its id gets it.
-                let token = token.unwrap_or_default() as usize;
-                if let Some((editing, ..)) = &mut self.editing
-                    && *editing == token
-                {
-                    *editing = id;
-                }
-                // Split off a pane, if that pane is still there.
-                if let Some((at, beside)) = split {
-                    let root = session.map_or_else(|| self.ws().root.clone(), |s| self.workspaces[s].root.clone());
-                    if let Some(tab) = self.tabs.get_mut(&root).and_then(|t| t.list.iter_mut().find(|tab| tab.root.contains(at))) {
-                        tab.root.split(at, Pane::Term(id), beside, 50);
-                    }
-                }
-                self.sync_tabs();
                 // Ours: show it, in its session (you may have moved on since).
-                if focus && let Some(session) = session {
-                    self.set_current(session);
+                // Refused (unsaved changes): it waits in its own session.
+                if focus && let Some(session) = session
+                    && !self.set_current(session)
+                {
+                    return;
                 }
-                if focus || session.is_none_or(|s| s == self.current) {
+                if focus || (self.active.is_none() && session.is_none_or(|s| s == self.current)) {
                     self.select_term(id);
                 }
                 if focus {
@@ -670,7 +655,7 @@ impl App {
                     self.message = Some(format!("the Pulpo server stopped (see {}){reopened}", log.display()));
                 }
                 if self.session_terms().is_empty() && self.spawning.is_empty() {
-                    self.spawn(&shell(), false);
+                    self.new_terminal(false);
                 }
                 self.ready = true;
                 self.restore_term();
@@ -685,7 +670,7 @@ impl App {
                     term.set_size(rows, cols);
                 }
             }
-            ToClient::Exit { id } => self.on_exit(id as usize),
+            ToClient::Exit { id } => self.remove_term(id as usize),
             ToClient::Error { message } => self.message = Some(message),
         }
     }
@@ -713,23 +698,14 @@ impl App {
     /// the terminals with it. Connect again; what comes back tells which.
     pub fn on_server_gone(&mut self) {
         let had = self.terms.len();
-        // Keep what was open on disk until the server says what it still has,
-        // and the tabs by their terminals' tags.
-        if self.tabs_restored {
-            self.saved.tabs = self.layout().tabs;
-        }
-        self.tabs.clear();
-        self.tabs_restored = false;
         self.ready = false;
         self.terms.clear();
         self.spawning.clear();
         self.active = None;
-        if self.focus == Focus::Terminal {
-            self.set_focus(self.sidebar_focus);
-        }
+        self.selecting = None;
         if self.last_reconnect.is_some_and(|at| at.elapsed() < Duration::from_secs(2)) {
             self.offline = true;
-            self.message = Some("the Pulpo server keeps stopping (its log: ~/.local/state/pulpo/server/log); r tries again".into());
+            self.message = Some(format!("the Pulpo server keeps stopping (its log: ~/.local/state/pulpo/server/log); {} t tries again", self.keymap.label()));
             return;
         }
         self.last_reconnect = Some(Instant::now());
@@ -740,13 +716,13 @@ impl App {
             }
             Err(e) => {
                 self.offline = true;
-                self.message = Some(format!("{e:#}; r tries again"));
+                self.message = Some(format!("{e:#}; {} t tries again", self.keymap.label()));
             }
         }
     }
 
-    /// On r: if the server was given up on, try it again. Not on every
-    /// key: starting it can take seconds.
+    /// If the server was given up on, try it again. Not on every key:
+    /// starting it can take seconds.
     fn retry_server(&mut self) {
         if std::mem::take(&mut self.offline) {
             self.last_reconnect = None;
@@ -754,35 +730,13 @@ impl App {
         }
     }
 
-    fn on_exit(&mut self, id: usize) {
-        self.remove_term(id);
-        // The editor quit: show the file where you were.
-        if self.editing.as_ref().is_some_and(|(e, ..)| *e == id)
-            && let Some((_, path, back)) = self.editing.take()
-        {
-            let root = self.ws().root.clone();
-            if path.is_file() {
-                self.viewer.open(Source::File(path), &root);
-                self.viewer.reload(&root);
-            }
-            self.zoomed = false;
-            self.set_focus(back);
-        }
-    }
-
     pub fn on_paste(&mut self, text: &str) {
-        if let Some(create) = &mut self.creating {
-            create.name.push_str(text.trim());
-        } else if let Some(name) = &mut self.renaming {
-            name.push_str(text.trim());
-        } else if let Some(swarm) = &mut self.swarm {
-            swarm.push_str(text.trim());
-        } else if let Some(search) = &mut self.search {
+        if let Some(prompt) = &mut self.prompt {
+            prompt.text.push_str(text.trim());
+        } else if let Some(search) = self.repos.as_mut().or(self.search.as_mut()) {
             search.query.push_str(text.trim());
             search.update(&self.tx);
-        } else if self.viewer.find.as_ref().is_some_and(|f| f.typing) {
-            self.viewer.edit_find(|q| q.push_str(text.trim()));
-        } else if self.focus == Focus::Editor
+        } else if self.focus == Focus::Files
             && let Some(editor) = &mut self.editor
         {
             if editor.find_typing {
@@ -798,15 +752,14 @@ impl App {
         }
     }
 
-    /// The size new terminals start at: the room on the right.
+    /// The size new terminals start at: the room in the middle.
     pub fn set_term_size(&mut self, rows: u16, cols: u16) {
         self.term_size = (rows.max(1), cols.max(1));
     }
 
     /// Working while the program prints on its own; then, until you look at
     /// it, waiting with something to read. A program that reports its
-    /// status (OSC 7501) is taken at its word. What it runs or asks goes in
-    /// the notification, not here.
+    /// status (OSC 7501) is taken at its word.
     pub fn term_state(&self, term: &Term) -> State {
         match term.status().map(|(status, _)| status) {
             Some(Status::Working) => State::Running,
@@ -818,31 +771,18 @@ impl App {
     }
 
     /// Before each draw: runs that ended and agents that stopped or asked
-    /// leave something to read, unless you are in that terminal.
+    /// leave something to read, unless that terminal is on screen.
     pub fn tick(&mut self) {
-        self.sync_tabs();
-        if let Some(scroll) = &self.scrolling
-            && (self.focus != Focus::Terminal || self.active != Some(scroll.id))
-        {
-            let id = scroll.id;
-            self.scrolling = None;
-            if let Some(term) = self.terms.iter_mut().find(|t| t.id == id) {
-                term.scroll_to(0);
-            }
-        }
-        self.follow_edits();
-        let now = (self.ws().root.clone(), self.active);
-        if self.here.as_ref() != Some(&now) {
-            self.back = self.here.replace(now);
+        if self.prefixed_at.is_some_and(|at| at.elapsed() >= PREFIX_FOR) {
+            self.prefixed = false;
+            self.prefixed_at = None;
         }
         // Messages go after a while; a question stays until answered, and
-        // the server being down until r.
+        // the server being down until it's back.
         match &self.message {
             None => self.message_since = None,
             Some(m) if self.message_since.as_ref().is_none_or(|(shown, _)| shown != m) => self.message_since = Some((m.clone(), Instant::now())),
-            Some(_) if self.pending.is_none() && !self.offline && self.message_since.as_ref().is_some_and(|(_, at)| at.elapsed() >= MESSAGE_FOR) => {
-                self.message = None;
-            }
+            Some(_) if !self.offline && self.message_since.as_ref().is_some_and(|(_, at)| at.elapsed() >= MESSAGE_FOR) => self.message = None,
             Some(_) => {}
         }
         if self.ready {
@@ -881,27 +821,9 @@ impl App {
         }
     }
 
-    /// A session's removal ended: if it failed, the session is back.
-    pub fn on_removed(&mut self, root: PathBuf, log: PathBuf, ok: bool) {
-        self.removing.remove(&root);
-        self.load_workspaces();
-        if ok {
-            let _ = std::fs::remove_file(&log);
-        } else {
-            let name = root.file_name().unwrap_or_default().to_string_lossy();
-            self.message = Some(format!("could not delete session {name}; see {}", log.display()));
-        }
-    }
-
     /// Something is working, so its spinner needs frequent redraws.
     pub fn animating(&self) -> bool {
-        // Or the prefix panel is about to show.
-        self.prefix.is_some() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
-    }
-
-    /// The prefix was pressed a moment ago and no key followed: show what can.
-    pub fn prefix_panel(&self) -> bool {
-        self.prefix.is_some_and(|at| at.elapsed() >= PREFIX_PANEL_AFTER)
+        !self.setting_up.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
     }
 
     /// The session a terminal belongs to: the checkout it started in.
@@ -909,8 +831,9 @@ impl App {
         self.workspaces.iter().position(|w| w.root == term.info.cwd)
     }
 
-    /// The current session's terminals, as indexes into `terms`. One started
-    /// outside every checkout shows in all of them, so it stays reachable.
+    /// The current session's terminals, in tab order, as indexes into
+    /// `terms`. One started outside every checkout shows in all of them, so
+    /// it stays reachable.
     pub fn session_terms(&self) -> Vec<usize> {
         (0..self.terms.len()).filter(|&i| self.session_of(&self.terms[i]).is_none_or(|s| s == self.current)).collect()
     }
@@ -931,1187 +854,51 @@ impl App {
         self.active.and_then(|id| self.terms.iter_mut().find(|t| t.id == id))
     }
 
-    /// Make terminal `id` the one keys go to, and its tab the one on screen.
+    /// Make terminal `id` the tab on screen.
     fn select_term(&mut self, id: usize) {
         self.active = Some(id);
-        for tabs in self.tabs.values_mut() {
-            if let Some(i) = tabs.list.iter().position(|t| t.root.contains(Pane::Term(id))) {
-                tabs.active = i;
-                tabs.list[i].set_focus(Pane::Term(id));
-            }
-        }
+        self.selecting = None;
         if let Some(term) = self.terms.iter().find(|t| t.id == id) {
             self.last_term.insert(self.ws().root.clone(), term.info.tag.clone());
         }
     }
 
-    /// Show the tab with the terminal this session last had on screen.
+    /// Show the terminal this session last had on screen, or its first.
     fn restore_term(&mut self) {
-        self.sync_tabs();
         let root = self.ws().root.clone();
         let terms: Vec<&Term> = self.session_terms().into_iter().map(|i| &self.terms[i]).collect();
-        let last = self.last_term.get(&root).and_then(|tag| terms.iter().find(|t| &t.info.tag == tag)).map(|t| t.id);
-        if !self.tabs_restored {
-            self.active = last.or(terms.first().map(|t| t.id));
-            return;
-        }
-        let tabbed = |id: usize| self.tabs.get(&root).is_some_and(|t| t.list.iter().any(|tab| tab.root.contains(Pane::Term(id))));
-        match last.filter(|&id| tabbed(id)) {
-            Some(id) => self.select_term(id),
-            None => self.active = self.tab().and_then(|t| t.term),
-        }
+        let last = self.last_term.get(&root).and_then(|tag| terms.iter().find(|t| &t.info.tag == tag));
+        self.active = last.or(terms.first()).map(|t| t.id);
     }
 
-    /// Take a terminal off the list. Another pane of its tab takes its
-    /// room, or else the next tab.
+    /// Take a terminal off the list; the tab after it (or before) shows.
     fn remove_term(&mut self, id: usize) {
+        let tabs: Vec<usize> = self.session_terms().into_iter().map(|i| self.terms[i].id).collect();
         self.terms.retain(|t| t.id != id);
         if self.active == Some(id) {
+            let at = tabs.iter().position(|&t| t == id).unwrap_or(0);
+            let next = tabs.get(at + 1).or(at.checked_sub(1).and_then(|p| tabs.get(p))).copied();
             self.active = None;
-        }
-        self.sync_tabs();
-        if let Some(next) = self.active {
-            self.select_term(next);
-        }
-        if self.active.is_none() && self.focus == Focus::Terminal {
-            let file = self.tab().is_some_and(|t| t.root.contains(Pane::File));
-            if file { self.focus_pane(Pane::File) } else { self.set_focus(self.sidebar_focus) }
-        }
-    }
-
-    // Tabs and panes
-
-    /// The current session's tabs.
-    pub fn tabs(&self) -> Option<&Tabs> {
-        self.tabs.get(&self.ws().root)
-    }
-
-    /// The tab on screen.
-    pub fn tab(&self) -> Option<&Tab> {
-        self.tabs().and_then(|t| t.list.get(t.active))
-    }
-
-    fn tab_mut(&mut self) -> Option<&mut Tab> {
-        let root = self.ws().root.clone();
-        self.tabs.get_mut(&root).and_then(|t| t.list.get_mut(t.active))
-    }
-
-    /// The pane shown alone: the file pane when you read or edit it full
-    /// height, or the terminal you zoomed.
-    pub fn zoomed_pane(&self) -> Option<Pane> {
-        let tab = self.tab()?;
-        let in_file = matches!(self.focus, Focus::Viewer | Focus::Editor);
-        if in_file && self.viewer.expanded && tab.root.contains(Pane::File) {
-            return Some(Pane::File);
-        }
-        self.active.filter(|_| self.zoomed && !in_file).map(Pane::Term)
-    }
-
-    /// The pane keys go to, when they go to the right side.
-    pub fn focused_pane(&self) -> Option<Pane> {
-        match self.focus {
-            Focus::Terminal => self.active.map(Pane::Term),
-            Focus::Viewer | Focus::Editor => Some(Pane::File),
-            _ => None,
-        }
-    }
-
-    /// Every terminal in a tab of its session, and while a file is open,
-    /// the file pane in the tab on screen; the terminal keys go to is that
-    /// tab's. Waits until the server has shown what it has, so the tabs
-    /// you had come back as they were.
-    fn sync_tabs(&mut self) {
-        if !self.ready || !self.reopening.is_empty() {
-            return;
-        }
-        if !self.tabs_restored {
-            self.restore_tabs();
-        }
-        let ids: HashSet<usize> = self.terms.iter().map(|t| t.id).collect();
-        let current = self.ws().root.clone();
-        let file_open = self.viewer.is_open() || self.editor.is_some();
-
-        // What is gone, and empty tabs, go; the tab on screen stays where
-        // it was, or its neighbor takes its place.
-        for (root, tabs) in &mut self.tabs {
-            let (on_screen, mut active) = (tabs.active, tabs.active);
-            let mut kept = Vec::new();
-            for (i, mut tab) in std::mem::take(&mut tabs.list).into_iter().enumerate() {
-                let here = *root == current && i == on_screen;
-                let gone: Vec<Pane> = tab
-                    .root
-                    .panes()
-                    .into_iter()
-                    .filter(|&p| match p {
-                        Pane::Term(id) => !ids.contains(&id),
-                        Pane::File => !(file_open && here),
-                    })
-                    .collect();
-                if gone.into_iter().all(|pane| tab.remove(pane)) {
-                    kept.push(tab);
-                } else if i < on_screen {
-                    active -= 1;
-                }
-            }
-            tabs.active = active.min(kept.len().saturating_sub(1));
-            tabs.list = kept;
-        }
-        self.tabs.retain(|_, tabs| !tabs.list.is_empty());
-
-        // New terminals get a tab of their own, in their session.
-        let tabbed: HashSet<usize> = self.tabs.values().flat_map(|t| t.list.iter().flat_map(Tab::terms)).collect();
-        let new: Vec<(usize, PathBuf)> = self
-            .terms
-            .iter()
-            .filter(|t| !tabbed.contains(&t.id))
-            .map(|t| (t.id, self.session_of(t).map_or_else(|| current.clone(), |i| self.workspaces[i].root.clone())))
-            .collect();
-        for (id, root) in new {
-            let tabs = self.tabs.entry(root).or_default();
-            match tabs.list.get_mut(tabs.active) {
-                // A file open on its own: the terminal goes above it.
-                Some(tab) if tab.root == Node::Leaf(Pane::File) => {
-                    tab.root = Node::Split { beside: false, ratio: 55, a: Box::new(Node::Leaf(Pane::Term(id))), b: Box::new(Node::Leaf(Pane::File)) };
-                    tab.term = Some(id);
-                }
-                _ => tabs.list.push(Tab::new(Pane::Term(id))),
-            }
-        }
-
-        // The file pane, under the terminal you were in, as the viewer
-        // always was.
-        if file_open {
-            let tabs = self.tabs.entry(current).or_default();
-            match tabs.list.get_mut(tabs.active) {
-                Some(tab) if !tab.root.contains(Pane::File) => {
-                    let at = tab.term.map_or(tab.focus, Pane::Term);
-                    tab.root.split(at, Pane::File, false, 55);
-                }
-                Some(_) => {}
-                None => {
-                    tabs.list.push(Tab::new(Pane::File));
-                    tabs.active = tabs.list.len() - 1;
-                }
-            }
-        }
-        // On the board you may be in another session's terminal.
-        if !(self.board && self.active.is_some_and(|id| ids.contains(&id))) {
-            self.active = self.tab().and_then(|t| t.term);
-        }
-    }
-
-    /// The tabs layout.json had, with the terminals the server still has.
-    fn restore_tabs(&mut self) {
-        self.tabs_restored = true;
-        let ids: HashMap<String, usize> = self.terms.iter().map(|t| (t.info.tag.clone(), t.id)).collect();
-        let id = |tag: &str| ids.get(tag).copied();
-        for (root, saved) in &self.saved.tabs {
-            let list: Vec<Tab> = saved
-                .iter()
-                .filter_map(|saved| {
-                    let mut tab = Tab::new(Pane::File);
-                    tab.root = saved.root.load(&id)?;
-                    tab.name = saved.name.clone();
-                    tab.fix();
-                    Some(tab)
-                })
-                .collect();
-            if !list.is_empty() {
-                self.tabs.insert(root.clone(), Tabs { list, active: 0 });
+            if let Some(next) = next {
+                self.select_term(next);
             }
         }
     }
 
-    /// Tab `n` (from 0) of the session on screen; with `enter`, or when
-    /// you were on the right side, into the pane you were last in there.
-    fn show_tab(&mut self, n: usize, enter: bool) {
-        let root = self.ws().root.clone();
-        let right = self.focused_pane().is_some();
-        let Some(tabs) = self.tabs.get_mut(&root).filter(|t| n < t.list.len()) else { return };
-        tabs.active = n;
-        // The file pane comes along.
-        self.sync_tabs();
-        if let Some(id) = self.active
-            && let Some(term) = self.terms.iter().find(|t| t.id == id)
-        {
-            self.last_term.insert(root, term.info.tag.clone());
-        }
-        if (enter || right)
-            && let Some(pane) = self.tab().map(|t| t.focus)
-        {
-            self.focus_pane(pane);
-        }
-    }
-
-    /// The next or previous tab, wrapping around.
+    /// The next or previous tab, wrapping around, and into it.
     fn cycle_tab(&mut self, dir: isize) {
-        let Some(tabs) = self.tabs().filter(|t| !t.list.is_empty()) else { return };
-        let n = (tabs.active as isize + dir).rem_euclid(tabs.list.len() as isize) as usize;
-        self.show_tab(n, false);
-    }
-
-    fn focus_pane(&mut self, pane: Pane) {
-        match pane {
-            Pane::Term(id) => {
-                self.select_term(id);
-                self.set_focus(Focus::Terminal);
-            }
-            Pane::File => self.set_focus(if self.editor.is_some() { Focus::Editor } else { Focus::Viewer }),
-        }
-    }
-
-    /// A shell next to the pane you're in: beside it, or under it.
-    fn split(&mut self, beside: bool) {
-        let at = self.focused_pane().or_else(|| self.tab().map(|t| t.focus));
-        let cwd = self.ws().root.clone();
-        let token = self.spawn_in(cwd, &shell(), &[], true);
-        if let (Some(at), Some(spawning)) = (at, self.spawning.get_mut(&token)) {
-            spawning.1 = Some((at, beside));
-        }
-    }
-
-    fn swap(&mut self, dir: Dir) {
-        let Some(from) = self.focused_pane() else { return };
-        let Some(to) = pane::neighbor(&self.areas.panes, from, dir) else { return };
-        if let Some(tab) = self.tab_mut() {
-            tab.root.swap(from, to);
-        }
-    }
-
-    fn resize_pane(&mut self, dir: Dir) {
-        let Some(at) = self.focused_pane() else { return };
-        if let Some(tab) = self.tab_mut() {
-            tab.root.resize(at, dir, 5);
-        }
-    }
-
-    /// Close every terminal of the tab on screen once `key_name` is
-    /// pressed again.
-    fn close_tab(&mut self, pending: Option<char>, key_name: &str) {
-        let Some(ids) = self.tab().map(Tab::terms) else { return };
-        if ids.is_empty() {
-            self.viewer.close();
-            self.editor = None;
+        let tabs: Vec<usize> = self.session_terms().into_iter().map(|i| self.terms[i].id).collect();
+        if tabs.is_empty() {
             return;
         }
-        if pending != Some('k') {
-            let running: Vec<String> = self.terms.iter().filter(|t| ids.contains(&t.id)).filter_map(|t| t.info.running.clone()).collect();
-            let running = if running.is_empty() { String::new() } else { format!(", with {} running", running.join(", ")) };
-            self.confirm('k', format!("press {key_name} again to close this tab: {} terminal(s){running}", ids.len()));
-            return;
-        }
-        for id in ids {
-            self.link.send(&ToServer::Close { id: id as u32 });
-            self.remove_term(id);
-        }
-    }
-
-    // Input
-
-    /// Returns true when the app should quit.
-    pub fn on_key(&mut self, key: KeyEvent) -> bool {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        if let Some(filter) = &mut self.help {
-            match key.code {
-                KeyCode::Esc => self.help = None,
-                KeyCode::Char('?') if filter.is_empty() => self.help = None,
-                _ => {
-                    input::edit(filter, key);
-                }
-            }
-            return false;
-        }
-        if self.new_menu {
-            self.new_menu = false;
-            match key.code {
-                KeyCode::Char('w') => self.open_repo_picker(),
-                // A new session: a copy of main with its own Docker; a new terminal in this one.
-                KeyCode::Char('s') => self.creating = Some(Create { dir: self.ws().repo.clone(), name: String::new(), session: true }),
-                KeyCode::Char('t') => self.spawn(&shell(), true),
-                KeyCode::Char('f') => self.start_create(),
-                _ => {}
-            }
-            return false;
-        }
-        if let Some(create) = &mut self.creating {
-            match key.code {
-                KeyCode::Esc => self.creating = None,
-                KeyCode::Enter => self.create(),
-                // Session names are lowercase, like Compose projects.
-                KeyCode::Char(c) if !ctrl && create.session => create.name.push(c.to_ascii_lowercase()),
-                _ => {
-                    input::edit(&mut create.name, key);
-                }
-            }
-            return false;
-        }
-        if self.picker.is_some() {
-            return self.picker_key(key);
-        }
-        if let Some(name) = &mut self.renaming {
-            match key.code {
-                KeyCode::Esc => self.renaming = None,
-                KeyCode::Enter => {
-                    let name = self.renaming.take().unwrap_or_default().trim().to_string();
-                    if let Some(tab) = self.tab_mut() {
-                        tab.name = (!name.is_empty()).then_some(name);
-                    }
-                }
-                _ => {
-                    input::edit(name, key);
-                }
-            }
-            return false;
-        }
-        if let Some(text) = &mut self.swarm {
-            match key.code {
-                KeyCode::Esc => self.swarm = None,
-                KeyCode::Enter => {
-                    let text = self.swarm.take().unwrap_or_default();
-                    self.start_swarm(&text);
-                }
-                _ => {
-                    input::edit(text, key);
-                }
-            }
-            return false;
-        }
-        if self.search.is_some() {
-            self.search_key(key);
-            return false;
-        }
-        if self.focus == Focus::Viewer && self.viewer.find.as_ref().is_some_and(|f| f.typing) {
-            match key.code {
-                KeyCode::Esc => self.viewer.clear_find(),
-                KeyCode::Enter => self.viewer.finish_find(),
-                _ => self.viewer.edit_find(|q| {
-                    input::edit(q, key);
-                }),
-            }
-            return false;
-        }
-        // The prefix, then the key that says what to do; or a chord.
-        let k = Key::of(key);
-        if self.prefix.take().is_some() {
-            return self.after_prefix(key, k);
-        }
-        if self.keymap.is_prefix(k) {
-            self.prefix = Some(Instant::now());
-            // Hints show the prefix you use.
-            self.keymap.prefix.retain(|&p| p != k);
-            self.keymap.prefix.insert(0, k);
-            return false;
-        }
-        if let Some(action) = self.keymap.chord(k) {
-            let pending = self.pending.take();
-            return self.act(action, pending);
-        }
-        if self.scrolling.is_some() && self.focus == Focus::Terminal {
-            self.scroll_key(key);
-            return false;
-        }
-        let pending = self.pending.take();
-        if self.focus == Focus::Terminal {
-            self.terminal_key(key, pending);
-            return false;
-        }
-        if self.focus == Focus::Editor && self.editor.is_some() {
-            self.editor_key(key, pending);
-            return false;
-        }
-
-        self.message = None;
-        match key.code {
-            // Panels, by their initial; t goes into the terminal.
-            KeyCode::Char('w') => self.set_focus(Focus::Workspaces),
-            KeyCode::Char('s') if !ctrl => self.set_focus(Focus::Sessions),
-            KeyCode::Char('c') => self.set_focus(Focus::Changes),
-            // In the viewer, g goes to the top instead.
-            KeyCode::Char('g') if self.focus != Focus::Viewer => self.set_focus(Focus::Graph),
-            // The editor, when open, is drawn where the viewer is.
-            KeyCode::Char('v') if self.editor.is_some() => self.set_focus(Focus::Editor),
-            KeyCode::Char('v') if self.viewer.is_open() => self.set_focus(Focus::Viewer),
-            // The files: a tree, filtered as you type; tab searches inside them, as / does.
-            KeyCode::Char('f') if !ctrl => self.open_search(Mode::Files),
-            // ctrl-s, as inside a terminal: back and forth.
-            KeyCode::Char('s') => self.toggle_terminal(),
-            KeyCode::Char('t') if self.active.is_some() => self.toggle_terminal(),
-            KeyCode::Char('t') => self.spawn(&shell(), true),
-            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.cycle_focus(-1),
-            KeyCode::Tab => self.cycle_focus(1),
-            KeyCode::BackTab => self.cycle_focus(-1),
-
-            // / finds in the file on screen, or else inside all the files.
-            KeyCode::Char('/') if self.focus == Focus::Viewer => self.viewer.start_find(),
-            KeyCode::Char('/') => self.open_search(Mode::Text),
-            // n / p: next, previous search match or change.
-            KeyCode::Char('n') if self.focus == Focus::Viewer && (self.viewer.find.is_some() || self.viewer.is_diff()) => {
-                self.viewer.next(1)
-            }
-            KeyCode::Char('p' | 'N')
-                if !ctrl && self.focus == Focus::Viewer && (self.viewer.find.is_some() || self.viewer.is_diff()) =>
-            {
-                self.viewer.next(-1)
-            }
-            KeyCode::Char('n') => self.new_menu = true,
-            // ctrl-f, or z for zoom: the current terminal, full height.
-            KeyCode::Char('z') => self.zoom_terminal(),
-            KeyCode::Char('f') if ctrl => self.zoom_terminal(),
-            KeyCode::Char('?') => self.help = Some(String::new()),
-            KeyCode::Char('r') => self.refresh(),
-            // Terminals keep running in the server; say which, and their ports.
-            KeyCode::Char('q' | 'Q') if self.editor.as_ref().is_some_and(|e| e.dirty) => {
-                self.message = Some("unsaved changes in the editor: ctrl-s saves them, esc there discards them".into());
-            }
-            KeyCode::Char('q') => {
-                if (self.terms.is_empty() && self.isolated.is_empty()) || pending == Some('q') {
-                    return true;
-                }
-                let mut running = self.still_running();
-                // Their containers run on their own, whatever the terminals do.
-                let docker: Vec<String> = self.isolated.iter().map(|s| s.name.clone()).collect();
-                if !docker.is_empty() {
-                    running.push_str(&format!("; Docker of session(s) {} (x x in Sessions removes one)", docker.join(", ")));
-                }
-                self.confirm('q', format!("press q again to quit; these keep running: {running} (Q stops the terminals)"));
-            }
-            KeyCode::Char('Q') => {
-                if self.terms.is_empty() {
-                    return true;
-                }
-                if pending == Some('Q') {
-                    for term in &self.terms {
-                        self.link.send(&ToServer::Close { id: term.info.id });
-                    }
-                    // Stopped on purpose: nothing to bring back next time.
-                    layout::save(&Layout { open: Vec::new(), tabs: Default::default(), ..self.layout() });
-                    return true;
-                }
-                let n = self.terms.len();
-                self.confirm('Q', format!("press Q again to stop {n} terminal(s) and quit (ctrl-c first, then hang up)"));
-            }
-            KeyCode::Char('x') if self.focus == Focus::Sessions => self.delete_session(pending, "x"),
-            KeyCode::Char('x') if self.focus == Focus::Workspaces => {
-                if pending == Some('x') {
-                    self.remove_workspace();
-                } else {
-                    let name = self.ws().name.clone();
-                    self.confirm('x', format!("press x again to remove {name} from the list (files are kept)"));
-                }
-            }
-            KeyCode::Char('x') => self.close_terminal('x', "x", pending),
-            KeyCode::Char('e') => self.edit(),
-            KeyCode::Char('y') => self.copy_path(),
-            KeyCode::Char(d @ '1'..='9') => self.show_tab_entering(d as usize - '1' as usize),
-            KeyCode::Char('[') => self.cycle_tab(-1),
-            KeyCode::Char(']') => self.cycle_tab(1),
-            KeyCode::Esc if self.focus == Focus::Viewer && self.viewer.find.is_some() => self.viewer.clear_find(),
-            KeyCode::Esc if self.focus == Focus::Viewer && self.files_back.is_some() => self.go_back(),
-            KeyCode::Esc if self.focus == Focus::Viewer => self.set_focus(self.sidebar_focus),
-            KeyCode::Esc => self.viewer.close(),
-            _ if self.focus == Focus::Viewer => self.viewer_key(key),
-            _ => self.list_key(key),
-        }
-        false
-    }
-
-    /// In a terminal every key goes to the program, except a few ctrl keys.
-    fn terminal_key(&mut self, key: KeyEvent, pending: Option<char>) {
-        // The editor gets every key; you come back by quitting it.
-        if self.in_editor() {
-            let save = key.code == KeyCode::Char('s') && key.modifiers.contains(KeyModifiers::CONTROL);
-            if let Some(term) = self.term_mut() {
-                term.key(key);
-                // In micro, saving also closes it: back to the file in the viewer.
-                if save && term.info.name == "micro" {
-                    term.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
-                }
-            }
-            return;
-        }
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        if pending.is_some() {
-            self.message = None;
-        }
-        // The ctrl keys Pulpo used to take, until they go back to the
-        // programs; each says once what replaces it.
-        let legacy = ctrl && self.keymap.legacy;
-        match key.code {
-            KeyCode::Char('s') if legacy => {
-                self.legacy_hint('s', &[Action::FocusLeft], "goes to the sidebar");
-                self.toggle_terminal();
-            }
-            KeyCode::Char('f') if legacy => {
-                self.legacy_hint('f', &[Action::Zoom], "zooms");
-                self.zoomed = !self.zoomed;
-            }
-            KeyCode::Char('n') if legacy => {
-                self.legacy_hint('n', &[Action::NewTab], "opens a shell");
-                self.spawn(&shell(), true);
-            }
-            KeyCode::Char('q') if legacy => {
-                self.legacy_hint('q', &[Action::ClosePane], "closes it");
-                self.close_terminal('Q', "ctrl-q", pending);
-            }
-            KeyCode::Char(d @ '1'..='9') if legacy => {
-                self.legacy_hint('1', &crate::keymap::TABS, "goes to a tab");
-                self.show_tab_entering(d as usize - '1' as usize);
-            }
-            KeyCode::Char('[') if legacy => {
-                self.legacy_hint('[', &[Action::PreviousTab, Action::NextTab], "switch tabs");
-                self.cycle_tab(-1);
-            }
-            KeyCode::Char(']') if legacy => {
-                self.legacy_hint('[', &[Action::PreviousTab, Action::NextTab], "switch tabs");
-                self.cycle_tab(1);
-            }
-            _ => {
-                if let Some(term) = self.term_mut() {
-                    term.key(key);
-                }
-            }
-        }
-    }
-
-    /// Focus the viewer at full height; Esc goes back to the split layout.
-    fn read_in_viewer(&mut self) {
-        self.set_focus(Focus::Viewer);
-        self.viewer.expanded = true;
-    }
-
-    fn zoom_terminal(&mut self) {
-        match self.active {
-            Some(_) => self.set_focus(Focus::Terminal),
-            None => self.spawn(&shell(), true),
-        }
-        self.zoomed = self.focus == Focus::Terminal;
-    }
-
-    /// Close the active terminal once the key is pressed again: x always,
-    /// ctrl-q only if a program runs in it (Claude, a server…).
-    fn close_terminal(&mut self, confirm_key: char, key_name: &str, pending: Option<char>) {
-        let Some(term) = self.term() else { return };
-        if pending == Some(confirm_key) {
-            return self.close_active();
-        }
-        let label = term.label().to_string();
-        match term.info.running.clone() {
-            Some(program) => self.confirm(confirm_key, format!("{program} is running in {label}: press {key_name} again to close it")),
-            None if confirm_key == 'x' => self.confirm('x', format!("press {key_name} again to close {label}")),
-            None => self.close_active(),
-        }
-    }
-
-    /// What keeps running when Pulpo quits: each terminal's program with
-    /// the ports it listens on, and Docker, whose ports belong to Docker's
-    /// own processes and don't show.
-    fn still_running(&self) -> String {
-        let table = procs::table();
-        let trees: Vec<Vec<&procs::Proc>> = self.terms.iter().map(|t| procs::tree(&table, t.info.pid)).collect();
-        let pids: Vec<i32> = trees.iter().flatten().map(|p| p.pid).collect();
-        let ports = procs::listening(&pids);
-        // By session: "pulpo: claude · 2 shells; backbone/fix: npm :3000".
-        let mut sessions: Vec<(String, Vec<String>, usize)> = Vec::new();
-        for (term, tree) in self.terms.iter().zip(&trees) {
-            let place = self.place(&term.info.cwd).unwrap_or_else(|| term.info.cwd.display().to_string());
-            let i = match sessions.iter().position(|(p, ..)| *p == place) {
-                Some(i) => i,
-                None => {
-                    sessions.push((place, Vec::new(), 0));
-                    sessions.len() - 1
-                }
-            };
-            let (_, parts, shells) = &mut sessions[i];
-            let mut listening: Vec<u16> = ports.iter().filter(|(pid, _)| tree.iter().any(|p| p.pid == *pid)).map(|&(_, port)| port).collect();
-            listening.sort_unstable();
-            listening.dedup();
-            let docker = tree.iter().any(|p| p.name.starts_with("docker"));
-            if tree.len() <= 1 && listening.is_empty() {
-                *shells += 1;
-                continue;
-            }
-            let mut part = term.label().to_string();
-            for port in listening {
-                part.push_str(&format!(" :{port}"));
-            }
-            if docker {
-                part.push_str(" (docker)");
-            }
-            parts.push(part);
-        }
-        let one = sessions.len() == 1;
-        let sessions: Vec<String> = sessions
-            .into_iter()
-            .map(|(place, mut parts, shells)| {
-                match shells {
-                    0 => {}
-                    1 => parts.push("1 shell".into()),
-                    n => parts.push(format!("{n} shells")),
-                }
-                if one { parts.join(" · ") } else { format!("{place}: {}", parts.join(" · ")) }
-            })
-            .collect();
-        sessions.join("; ")
-    }
-
-    fn show_tab_entering(&mut self, n: usize) {
-        self.show_tab(n, true);
-    }
-
-    fn close_active(&mut self) {
-        let Some(id) = self.active else { return };
-        if let Some(term) = self.term() {
-            self.link.send(&ToServer::Close { id: term.info.id });
-        }
-        self.remove_term(id);
-    }
-
-    /// The key after the prefix: an action; the prefix again, which the
-    /// program in the terminal gets; or else what the key does on its own.
-    fn after_prefix(&mut self, key: KeyEvent, k: Key) -> bool {
-        if k.code == KeyCode::Esc {
-            return false;
-        }
-        if self.keymap.is_prefix(k) {
-            if self.focus == Focus::Terminal
-                && let Some(term) = self.term_mut()
-            {
-                term.key(key);
-            }
-            return false;
-        }
-        match self.keymap.after_prefix(k) {
-            Some(action) => {
-                let pending = self.pending.take();
-                self.act(action, pending)
-            }
-            None => self.on_key(key),
-        }
-    }
-
-    /// Do what a prefix key or a chord says. True to quit.
-    fn act(&mut self, action: Action, pending: Option<char>) -> bool {
-        self.message = None;
-        let key_name = self.keymap.hint(&[action]);
-        match action {
-            Action::FocusLeft => self.focus_toward(Dir::Left),
-            Action::FocusUp => self.focus_toward(Dir::Up),
-            Action::FocusRight => self.focus_toward(Dir::Right),
-            Action::FocusDown => self.focus_toward(Dir::Down),
-            Action::SwapLeft => self.swap(Dir::Left),
-            Action::SwapUp => self.swap(Dir::Up),
-            Action::SwapRight => self.swap(Dir::Right),
-            Action::SwapDown => self.swap(Dir::Down),
-            Action::ResizeLeft => self.resize_pane(Dir::Left),
-            Action::ResizeUp => self.resize_pane(Dir::Up),
-            Action::ResizeRight => self.resize_pane(Dir::Right),
-            Action::ResizeDown => self.resize_pane(Dir::Down),
-            Action::SplitBeside => self.split(true),
-            Action::SplitBelow => self.split(false),
-            Action::Layout => self.next_layout(),
-            Action::Scroll => self.start_scroll(),
-            Action::Board => self.toggle_board(),
-            Action::OpenLink => {
-                if let Some((word, cwd)) = self.link_at.take() {
-                    self.open_link(&word, &cwd);
-                }
-            }
-            Action::Swarm => self.swarm = Some(String::new()),
-            Action::Zoom => self.zoom(),
-            Action::ClosePane if self.focus == Focus::Editor => self.close_editor(pending),
-            Action::ClosePane if self.focus == Focus::Viewer => {
-                self.viewer.close();
-                self.set_focus(self.sidebar_focus);
-            }
-            Action::ClosePane => self.close_terminal('x', &key_name, pending),
-            Action::CloseTab => self.close_tab(pending, &key_name),
-            Action::RenameTab if self.tab().is_some() => self.renaming = Some(self.tab().and_then(|t| t.name.clone()).unwrap_or_default()),
-            Action::RenameTab => {}
-            Action::NewTab => self.spawn(&shell(), true),
-            Action::Tab(n) => self.show_tab_entering(n as usize - 1),
-            Action::NextTab => self.cycle_tab(1),
-            Action::PreviousTab => self.cycle_tab(-1),
-            Action::NewSession => self.creating = Some(Create { dir: self.ws().repo.clone(), name: String::new(), session: true }),
-            Action::Sessions => self.set_focus(Focus::Sessions),
-            Action::NextSession => self.step_session(1),
-            Action::PreviousSession => self.step_session(-1),
-            Action::DeleteSession => self.delete_session(pending, &key_name),
-            Action::AddWorkspace => self.open_repo_picker(),
-            Action::Detach if self.editor.as_ref().is_some_and(|e| e.dirty) => {
-                self.message = Some("unsaved changes in the editor: ctrl-s saves them, esc there discards them".into());
-            }
-            // Terminals keep running in the server, as with q.
-            Action::Detach => return true,
-            Action::Goto => self.open_goto(Show::All),
-            Action::NextWaiting => self.next_waiting(),
-            Action::LastPlace => self.last_place(),
-            Action::Menu => self.open_menu(&Group::ALL, None),
-            Action::Theme => self.open_themes(),
-            Action::Files => self.open_search(Mode::Files),
-            Action::SearchFiles => self.open_search(Mode::Text),
-            Action::Sidebar => {
-                self.sidebar_hidden = !self.sidebar_hidden;
-                if self.sidebar_hidden && self.focused_pane().is_none() {
-                    match self.tab().map(|t| t.focus) {
-                        Some(pane) => self.focus_pane(pane),
-                        None => self.sidebar_hidden = false,
-                    }
-                }
-            }
-            Action::Help => self.help = Some(String::new()),
-        }
-        false
-    }
-
-    // Layouts, the board, swarms, scrolling back
-
-    /// The tab's panes laid out the next way, the one you're in as the main
-    /// one.
-    fn next_layout(&mut self) {
-        let focused = self.focused_pane();
-        let Some(tab) = self.tab_mut() else { return };
-        let mut panes = tab.root.panes();
-        let main = focused.filter(|p| panes.contains(p)).unwrap_or(tab.focus);
-        panes.retain(|&p| p != main);
-        panes.insert(0, main);
-        let n = tab.layout.map_or(0, |n| (n + 1) % pane::LAYOUTS.len());
-        tab.layout = Some(n);
-        if let Some(root) = pane::arrange(&panes, n) {
-            tab.root = root;
-        }
-        let again = self.keymap.hint(&[Action::Layout]);
-        self.message = Some(format!("layout: {} ({again} for the next)", pane::LAYOUTS[n]));
-    }
-
-    /// This repository's terminals, by session and in tab order: the board.
-    pub fn repo_terms(&self) -> Vec<(usize, usize)> {
-        let repo = &self.ws().repo;
-        let mut out = Vec::new();
-        for (s, ws) in self.workspaces.iter().enumerate().filter(|(_, w)| &w.repo == repo) {
-            let mut ids: Vec<usize> = self.tabs.get(&ws.root).map(|t| t.list.iter().flat_map(Tab::terms).collect()).unwrap_or_default();
-            let untabbed: Vec<usize> = self.terms.iter().filter(|t| self.session_of(t) == Some(s) && !ids.contains(&t.id)).map(|t| t.id).collect();
-            ids.extend(untabbed);
-            out.extend(ids.into_iter().map(|id| (id, s)));
-        }
-        out
-    }
-
-    /// Every terminal of the repository tiled; again, back to the tab of
-    /// the one you're in.
-    fn toggle_board(&mut self) {
-        if self.board {
-            self.board = false;
-            if let Some(id) = self.active.filter(|_| self.focus == Focus::Terminal) {
-                self.go_to_term(id);
-            }
-            return;
-        }
-        let terms = self.repo_terms();
-        if terms.is_empty() {
-            self.message = Some("no terminals in this repository yet".into());
-            return;
-        }
-        self.board = true;
-        self.zoomed = false;
-        if self.focused_pane().is_none() {
-            let id = self.active.filter(|id| terms.iter().any(|(t, _)| t == id)).unwrap_or(terms[0].0);
-            self.focus_pane(Pane::Term(id));
-        }
-    }
-
-    /// `4 fix the flaky tests`: four task sessions of this repository, each
-    /// starting Claude on that once set up, all on the board.
-    fn start_swarm(&mut self, text: &str) {
-        let text = text.trim();
-        let (count, task) = match text.split_once(' ') {
-            Some((n, rest)) if n.parse::<usize>().is_ok() => (n.parse().unwrap_or(3), rest.trim()),
-            _ => match text.parse::<usize>() {
-                Ok(n) => (n, ""),
-                Err(_) => (3, text),
-            },
-        };
-        let count = count.clamp(1, 8);
-        let repo = self.ws().repo.clone();
-        let taken: Vec<String> = self.sessions().into_iter().map(|i| self.session_name(i).to_string()).collect();
-        let names: Vec<String> = (1..).map(|n| format!("swarm-{n}")).filter(|name| !taken.contains(name)).take(count).collect();
-        let claude = if task.is_empty() { "claude".to_string() } else { format!("claude {}", session::quote(task)) };
-        for name in &names {
-            self.create_session(&repo, name, Some(&claude));
-        }
-        self.board = true;
-        self.message = Some(format!("swarm: {} task sessions setting up ({}), Claude starts in each once ready", names.len(), names.join(", ")));
-    }
-
-    /// Scroll back through the terminal you're in, and find in it.
-    fn start_scroll(&mut self) {
-        match self.active.filter(|_| self.focus == Focus::Terminal) {
-            Some(id) => {
-                let cursor = self.term().map_or(0, Term::cursor_line);
-                self.scrolling = Some(Scroll { id, cursor, anchor: None, query: String::new(), typing: false, found: None });
-            }
-            None => self.message = Some("go into a terminal first".into()),
-        }
-    }
-
-    fn scroll_key(&mut self, key: KeyEvent) {
-        let Some(scroll) = &mut self.scrolling else { return };
-        let Some(term) = self.terms.iter_mut().find(|t| t.id == scroll.id) else {
-            self.scrolling = None;
-            return;
-        };
-        if scroll.typing {
-            match key.code {
-                KeyCode::Esc => {
-                    scroll.typing = false;
-                    scroll.query.clear();
-                }
-                KeyCode::Enter => {
-                    scroll.typing = false;
-                    scroll.found = (!scroll.query.is_empty()).then(|| term.find(&scroll.query, true));
-                    if scroll.found == Some(true) {
-                        scroll.cursor = term.top_line();
-                    }
-                }
-                _ => {
-                    input::edit(&mut scroll.query, key);
-                }
-            }
-            return;
-        }
-        let half = (term.rows() / 2).max(1) as usize;
-        let last = term.line_count().saturating_sub(1);
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => scroll.cursor = scroll.cursor.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => scroll.cursor = (scroll.cursor + 1).min(last),
-            KeyCode::PageUp | KeyCode::Char('u' | 'b') => {
-                term.scroll(half as isize);
-                scroll.cursor = scroll.cursor.saturating_sub(half);
-            }
-            KeyCode::PageDown | KeyCode::Char('d' | 'f') => {
-                term.scroll(-(half as isize));
-                scroll.cursor = (scroll.cursor + half).min(last);
-            }
-            KeyCode::Home | KeyCode::Char('g') => {
-                term.scroll_to(usize::MAX);
-                scroll.cursor = 0;
-            }
-            KeyCode::End | KeyCode::Char('G') => {
-                term.scroll_to(0);
-                scroll.cursor = term.cursor_line();
-            }
-            KeyCode::Char('v' | 'V' | ' ') => scroll.anchor = if scroll.anchor.is_some() { None } else { Some(scroll.cursor) },
-            KeyCode::Char('/' | '?') => {
-                scroll.typing = true;
-                scroll.query.clear();
-                scroll.found = None;
-            }
-            KeyCode::Char('n' | 'N') if !scroll.query.is_empty() => {
-                let found = term.find(&scroll.query, key.code == KeyCode::Char('n'));
-                scroll.found = Some(found);
-                if found {
-                    scroll.cursor = term.top_line();
-                }
-            }
-            // Copy the selected lines (or the one you're on) and go back.
-            KeyCode::Char('y') | KeyCode::Enter => {
-                let (from, to) = match scroll.anchor {
-                    Some(anchor) => (anchor.min(scroll.cursor), anchor.max(scroll.cursor)),
-                    None => (scroll.cursor, scroll.cursor),
-                };
-                let text = term.text(from, to);
-                term.scroll_to(0);
-                self.scrolling = None;
-                let n = text.lines().count().max(1);
-                self.message = Some(if set_clipboard(&text) { format!("copied {n} line(s)") } else { "could not copy (pbcopy failed)".into() });
-                return;
-            }
-            KeyCode::Esc if scroll.anchor.is_some() => scroll.anchor = None,
-            KeyCode::Esc | KeyCode::Char('q') => {
-                term.scroll_to(0);
-                self.scrolling = None;
-                return;
-            }
-            _ => {}
-        }
-        // Keep the line you're on in view.
-        let (top, rows) = (term.top_line(), term.rows() as usize);
-        if scroll.cursor < top {
-            term.scroll((top - scroll.cursor) as isize);
-        } else if scroll.cursor >= top + rows {
-            term.scroll(-((scroll.cursor + 1 - top - rows) as isize));
-        }
-    }
-
-    /// A link opens in the browser; a path (with `:line`, as tools print
-    /// them) opens in the viewer, there.
-    fn open_link(&mut self, word: &str, cwd: &Path) {
-        if word.starts_with("http://") || word.starts_with("https://") {
-            let opened = std::process::Command::new("open").arg(word).status().is_ok_and(|s| s.success());
-            self.message = Some(if opened { format!("opened {word}") } else { format!("could not open {word}") });
-            return;
-        }
-        let mut parts = word.split(':');
-        let path = PathBuf::from(parts.next().unwrap_or_default());
-        let line = parts.next().and_then(|n| n.parse::<usize>().ok()).map(|n| n.saturating_sub(1));
-        let path = if path.is_absolute() { path } else { cwd.join(path) };
-        if !path.is_file() {
-            self.message = Some(format!("no link or file at {word:?}"));
-            return;
-        }
-        let root = self.ws().root.clone();
-        self.viewer.open_at(path, line, &root);
-        self.set_focus(Focus::Viewer);
-    }
-
-    /// In a tab laid out for review, the file pane shows the diff of the
-    /// file its agents last edited, unless you're reading or editing.
-    fn follow_edits(&mut self) {
-        let Some(tab) = self.tab().filter(|t| t.layout == Some(pane::REVIEW)) else { return };
-        if matches!(self.focus, Focus::Viewer | Focus::Editor) || self.editor.is_some() {
-            return;
-        }
-        let terms = tab.terms();
-        let newest = self
-            .terms
-            .iter()
-            .filter(|t| terms.contains(&t.id))
-            .filter_map(|t| self.agents.for_tab(&t.info.tag).and_then(|a| a.edited.clone()))
-            .max_by_key(|(seq, _)| *seq);
-        let Some((seq, path)) = newest.filter(|(seq, _)| *seq > self.followed) else { return };
-        self.followed = seq;
-        let root = self.ws().root.clone();
-        if !path.starts_with(&root) {
-            return;
-        }
-        // A file git doesn't know yet is all new.
-        let tracked = std::process::Command::new("git")
-            .args(["ls-files", "--error-unmatch", "--"])
-            .arg(&path)
-            .current_dir(&root)
-            .output()
-            .is_ok_and(|o| o.status.success());
-        let had_file = self.viewer.is_open();
-        self.viewer.open(Source::Diff { path, untracked: !tracked }, &root);
-        // The first time, the file pane goes on the right.
-        if !had_file {
-            self.sync_tabs();
-            if let Some(tab) = self.tab_mut() {
-                let mut panes = tab.root.panes();
-                let main = tab.term.map(Pane::Term).unwrap_or(tab.focus);
-                panes.retain(|&p| p != main);
-                panes.insert(0, main);
-                if let Some(root) = pane::arrange(&panes, pane::REVIEW) {
-                    tab.root = root;
-                }
-            }
-        }
-    }
-
-    // Go to
-
-    /// Every terminal, by repository and session, with what its agent asks
-    /// or does; on the one you're in.
-    fn open_goto(&mut self, show: Show) {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        let short = |path: &Path| match path.strip_prefix(&home) {
-            Ok(rest) => format!("~/{}", rest.display()),
-            Err(_) => path.display().to_string(),
-        };
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let mut entries = Vec::new();
-        for main in self.repos() {
-            let repo = &self.workspaces[main];
-            let group = format!("{}  {}", repo.name, short(&repo.repo));
-            for (s, ws) in self.workspaces.iter().enumerate().filter(|(_, w)| w.repo == repo.repo) {
-                // In tab order, then any not in a tab yet.
-                let tabs = self.tabs.get(&ws.root);
-                let mut ids: Vec<usize> = tabs.map(|t| t.list.iter().flat_map(Tab::terms).collect()).unwrap_or_default();
-                let untabbed: Vec<usize> = self.terms.iter().filter(|t| self.session_of(t) == Some(s) && !ids.contains(&t.id)).map(|t| t.id).collect();
-                ids.extend(untabbed);
-                for id in ids {
-                    let Some(term) = self.terms.iter().find(|t| t.id == id) else { continue };
-                    let state = self.term_state(term);
-                    let agent = self.agents.for_tab(&term.info.tag);
-                    let said = agent.map(|a| a.detail.clone()).filter(|d| !d.is_empty());
-                    let detail = match state {
-                        State::Waiting => said.unwrap_or_else(|| "waiting for you".into()),
-                        State::Done => said.map_or_else(|| "finished".into(), |d| format!("finished: {d}")),
-                        State::Running => said.unwrap_or_else(|| "working".into()),
-                        State::Idle => String::new(),
-                    };
-                    let age = agent.filter(|_| state != State::Idle).map(|a| picker::age(now.saturating_sub(a.ts))).unwrap_or_default();
-                    let tab = tabs.and_then(|t| t.list.iter().position(|tab| tab.root.contains(Pane::Term(id))));
-                    let place = match tab {
-                        Some(n) => format!("{} · tab {}", self.session_name(s), n + 1),
-                        None => self.session_name(s).to_string(),
-                    };
-                    let mut path = short(&term.info.cwd);
-                    if let Some(branch) = &ws.status.branch {
-                        path.push_str(&format!("  ·  branch {branch}"));
-                    }
-                    entries.push(Entry { group: group.clone(), text: term.label().to_string(), place, detail, age, state: Some(state), path, target: Target::Term(id) });
-                }
-            }
-        }
-        self.picker = Some(Picker::new(Kind::Goto, entries, show, self.active.map(Target::Term)));
-    }
-
-    /// Every action of these groups by name, with its key; at the mouse
-    /// for a right click.
-    fn open_menu(&mut self, groups: &[Group], at: Option<(u16, u16)>) {
-        let entries = crate::keymap::MENU
-            .iter()
-            .filter(|(group, ..)| groups.contains(group))
-            .map(|&(group, action, name)| Entry {
-                group: group.title().to_string(),
-                text: name.to_string(),
-                place: self.keymap.hint(&[action]),
-                detail: String::new(),
-                age: String::new(),
-                state: None,
-                path: String::new(),
-                target: Target::Action(action),
-            })
-            .collect();
-        let mut entries: Vec<Entry> = entries;
-        if let Some((word, _)) = self.link_at.as_ref().filter(|_| at.is_some()) {
-            let text = if word.starts_with("http") { format!("Open {word}") } else { format!("Show {word}") };
-            let open = Entry {
-                group: "HERE".into(),
-                text,
-                place: "ctrl-click".into(),
-                detail: String::new(),
-                age: String::new(),
-                state: None,
-                path: String::new(),
-                target: Target::Action(Action::OpenLink),
-            };
-            entries.insert(0, open);
-        }
-        let mut picker = Picker::new(Kind::Menu, entries, Show::All, None);
-        picker.at = at;
-        self.picker = Some(picker);
-    }
-
-    /// Following Ghostty, Linear Dark, Omarchy's themes as Ghostty has
-    /// them, yours, then every theme Ghostty comes with.
-    fn open_themes(&mut self) {
-        let following = crate::theme::ghostty_theme().unwrap_or_else(|| "none set, so Linear Dark".into());
-        let mut groups: Vec<(&str, Vec<(String, String)>)> = vec![(
-            "PULPO",
-            vec![
-                (crate::theme::FOLLOW.into(), format!("Follow Ghostty  (now {following})")),
-                (crate::theme::LINEAR.into(), crate::theme::LINEAR.into()),
-            ],
-        )];
-        let bundled = crate::theme::ghostty_themes();
-        let omarchy = crate::theme::OMARCHY.iter().filter(|t| bundled.iter().any(|b| b == *t)).map(|t| (t.to_string(), t.to_string()));
-        groups.push(("OMARCHY'S", omarchy.collect()));
-        groups.push(("YOURS", crate::theme::user_themes().into_iter().map(|t| (t.clone(), t)).collect()));
-        groups.push(("GHOSTTY'S", bundled.into_iter().map(|t| (t.clone(), t)).collect()));
-        self.theme_before = crate::theme::chosen();
-        self.themes.clear();
-        let mut entries = Vec::new();
-        let mut on = None;
-        for (group, themes) in groups {
-            for (name, text) in themes {
-                let target = Target::Theme(self.themes.len());
-                if name == self.theme_before && on.is_none() {
-                    on = Some(target);
-                }
-                let place = if name == self.theme_before { "on".to_string() } else { String::new() };
-                self.themes.push(name);
-                entries.push(Entry { group: group.into(), text, place, detail: String::new(), age: String::new(), state: None, path: String::new(), target });
-            }
-        }
-        self.picker = Some(Picker::new(Kind::Theme, entries, Show::All, on));
-    }
-
-    /// Put a theme on screen: the panels, the terminals, and the file in
-    /// the viewer or the editor, colored again.
-    fn show_theme(&mut self, name: &str) {
-        if let Err(e) = crate::theme::apply(name) {
-            self.message = Some(e);
-            return;
-        }
-        let root = self.ws().root.clone();
-        self.viewer.reload(&root);
-        if let Some(editor) = &mut self.editor {
-            editor.recolor();
-        }
-    }
-
-    /// Keys in a picker: type to filter, tab for which terminals, ⏎ to go.
-    /// Moving through the themes shows each one.
-    fn picker_key(&mut self, key: KeyEvent) -> bool {
-        let quit = self.picker_input(key);
-        if let Some(picker) = &self.picker
-            && picker.kind == Kind::Theme
-            && let Some(Target::Theme(i)) = picker.selected().map(|e| e.target)
-            && let Some(name) = self.themes.get(i).cloned()
-        {
-            self.show_theme(&name);
-        }
-        quit
-    }
-
-    fn picker_input(&mut self, key: KeyEvent) -> bool {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let Some(picker) = &mut self.picker else { return false };
-        match key.code {
-            KeyCode::Esc if picker.kind == Kind::Theme => {
-                self.picker = None;
-                let before = self.theme_before.clone();
-                self.show_theme(&before);
-            }
-            KeyCode::Esc => self.picker = None,
-            KeyCode::Enter => {
-                let target = picker.selected().map(|e| e.target);
-                self.picker = None;
-                match target {
-                    Some(Target::Term(id)) => self.go_to_term(id),
-                    Some(Target::Action(action)) => return self.act(action, None),
-                    Some(Target::Theme(i)) => {
-                        let name = self.themes.get(i).cloned().unwrap_or_default();
-                        self.show_theme(&name);
-                        self.message = Some(match crate::theme::choose(&name) {
-                            Ok(path) => format!("theme: {name} (kept in {})", path.display()),
-                            Err(e) => format!("could not keep the theme: {e}"),
-                        });
-                    }
-                    None => {}
-                }
-            }
-            KeyCode::Up => picker.step(-1),
-            KeyCode::Down => picker.step(1),
-            KeyCode::Char('k' | 'p') if ctrl => picker.step(-1),
-            KeyCode::Char('j' | 'n') if ctrl => picker.step(1),
-            KeyCode::PageUp => picker.step(-10),
-            KeyCode::PageDown => picker.step(10),
-            KeyCode::Tab if picker.kind == Kind::Goto => picker.next_show(1),
-            KeyCode::BackTab if picker.kind == Kind::Goto => picker.next_show(-1),
-            _ => {
-                if input::edit(&mut picker.query, key) {
-                    picker.update();
-                }
-            }
-        }
-        false
-    }
-
-    /// Into a terminal, wherever it is: its session, its tab, its pane.
-    fn go_to_term(&mut self, id: usize) {
-        let Some(term) = self.terms.iter().find(|t| t.id == id) else { return };
-        if let Some(i) = self.session_of(term) {
-            self.set_current(i);
-        }
-        self.select_term(id);
+        let at = self.active.and_then(|id| tabs.iter().position(|&t| t == id)).unwrap_or(0);
+        let next = tabs[(at as isize + dir).rem_euclid(tabs.len() as isize) as usize];
+        self.select_term(next);
         self.set_focus(Focus::Terminal);
     }
 
     /// Into the terminal that has waited longest with something to read:
-    /// those that ask before those that finished. It's read once you're
-    /// in, so again goes to the next one.
+    /// those that ask before those that finished.
     fn next_waiting(&mut self) {
         let mut waiting: Vec<(bool, u64, usize)> = self
             .terms
@@ -2124,418 +911,401 @@ impl App {
             })
             .collect();
         waiting.sort_unstable();
-        match waiting.first() {
-            Some(&(.., id)) => self.go_to_term(id),
-            None => self.message = Some("no terminal has anything to read".into()),
+        let Some(&(.., id)) = waiting.first() else {
+            self.message = Some("no terminal has anything to read".into());
+            return;
+        };
+        if let Some(i) = self.terms.iter().find(|t| t.id == id).and_then(|t| self.session_of(t))
+            && !self.set_current(i)
+        {
+            return;
+        }
+        self.select_term(id);
+        self.set_focus(Focus::Terminal);
+    }
+
+    /// Close a terminal: the program in front gets Ctrl-C, then hung up.
+    fn close_terminal(&mut self, id: usize) {
+        self.link.send(&ToServer::Close { id: id as u32 });
+        self.remove_term(id);
+    }
+
+    // Keys
+
+    /// Returns true when the app should quit.
+    pub fn on_key(&mut self, key: KeyEvent) -> bool {
+        let pressed = Key::of(key);
+        // The prefix works from anywhere: it closes a popup, a prompt or a
+        // question first.
+        let open = self.repos.is_some() || self.search.is_some() || self.prompt.is_some() || self.asking.is_some() || self.help;
+        if open && !self.prefixed && self.keymap.is_prefix(pressed) {
+            (self.repos, self.search, self.prompt, self.asking, self.help) = (None, None, None, None, false);
+            self.prefixed = true;
+            self.prefixed_at = Some(Instant::now());
+            return false;
+        }
+        if self.help {
+            self.help = false;
+            return false;
+        }
+        if self.repos.is_some() {
+            self.repos_key(key);
+            return false;
+        }
+        if self.search.is_some() {
+            self.search_key(key);
+            return false;
+        }
+        if self.prompt.is_some() {
+            self.prompt_key(key);
+            return false;
+        }
+        if let Some((_, confirm)) = self.asking.take() {
+            self.message = None;
+            if matches!(key.code, KeyCode::Char('y' | 'Y')) {
+                return self.confirmed(confirm);
+            }
+            return false;
+        }
+        if std::mem::take(&mut self.prefixed) {
+            // Twice: the key itself, for the program (Claude's ⌃b).
+            if self.keymap.is_prefix(pressed) {
+                if self.focus == Focus::Terminal
+                    && let Some(term) = self.term_mut()
+                {
+                    term.key(key);
+                }
+                return false;
+            }
+            return self.command(pressed);
+        }
+        if self.keymap.is_prefix(pressed) {
+            self.prefixed = true;
+            self.prefixed_at = Some(Instant::now());
+            return false;
+        }
+        if !self.offline {
+            self.message = None;
+        }
+        match self.focus {
+            Focus::Terminal => {
+                self.selecting = None;
+                if let Some(term) = self.term_mut() {
+                    term.key(key);
+                }
+            }
+            Focus::Workspaces | Focus::Sessions => self.list_key(key),
+            Focus::Files => self.files_key(key),
+            Focus::Changes => self.changes_key(key),
+        }
+        false
+    }
+
+    /// The key after the prefix. True to quit.
+    fn command(&mut self, key: Key) -> bool {
+        let KeyCode::Char(c) = key.code else { return false };
+        match c {
+            'w' => self.set_focus(Focus::Workspaces),
+            's' => self.set_focus(Focus::Sessions),
+            't' => self.set_focus(Focus::Terminal),
+            'f' => self.set_focus(Focus::Files),
+            'c' => self.set_focus(Focus::Changes),
+            'n' => self.new_here(),
+            'x' => self.close_here(),
+            '[' => self.cycle_tab(-1),
+            ']' => self.cycle_tab(1),
+            'a' => self.next_waiting(),
+            '?' => self.help = true,
+            '<' => {
+                self.left_hidden = !self.left_hidden;
+                if self.left_hidden && matches!(self.focus, Focus::Workspaces | Focus::Sessions) {
+                    self.set_focus(Focus::Terminal);
+                }
+            }
+            '>' => {
+                self.right_hidden = !self.right_hidden;
+                if self.right_hidden && matches!(self.focus, Focus::Files | Focus::Changes) {
+                    self.set_focus(Focus::Terminal);
+                }
+            }
+            '/' => self.start_search(),
+            'd' | 'e' | 'r' if self.focus != Focus::Files => self.message = Some(format!("{} f first: that's for files", self.keymap.label())),
+            'd' => self.ask_delete(),
+            'e' => self.edit(),
+            'r' => self.start_rename(),
+            'q' | 'Q' if self.editing() => {
+                self.message = Some(UNSAVED.into());
+            }
+            'q' => return true,
+            'Q' => {
+                let n = self.terms.len();
+                self.ask(format!("stop {n} terminal(s) and quit?"), Confirm::StopAll);
+            }
+            _ => {
+                let p = self.keymap.label();
+                self.message = Some(format!("{p} ? keybinds"));
+            }
+        }
+        false
+    }
+
+    fn ask(&mut self, question: String, confirm: Confirm) {
+        self.message = None;
+        self.asking = Some((question, confirm));
+    }
+
+    /// The question was answered y. True to quit.
+    fn confirmed(&mut self, confirm: Confirm) -> bool {
+        match confirm {
+            Confirm::RemoveWorkspace(repo) => {
+                let name = repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                workspace::unregister(&repo);
+                self.message = Some(format!("removed {name} from the list (files kept)"));
+                self.load_workspaces();
+            }
+            Confirm::DeleteSession(root) => self.remove_session(&root),
+            Confirm::CloseTerminal(id) => self.close_terminal(id),
+            Confirm::DeleteFile(path) => self.delete(&path),
+            Confirm::StopAll => {
+                // Setups still running stop too: they're what Q means by everything.
+                for &pid in self.setting_up.values() {
+                    unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
+                }
+                for term in &self.terms {
+                    self.link.send(&ToServer::Close { id: term.info.id });
+                }
+                // Stopped on purpose: nothing to bring back next time.
+                layout::save(&Layout { open: Vec::new(), ..self.layout() });
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Move the focus; into the terminal, a shell when the session has none.
+    fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+        // Going to a hidden side shows it again.
+        match focus {
+            Focus::Workspaces | Focus::Sessions => self.left_hidden = false,
+            Focus::Files | Focus::Changes => self.right_hidden = false,
+            Focus::Terminal => {}
+        }
+        self.discard = false;
+        self.reading = false;
+        match focus {
+            Focus::Terminal => {
+                self.retry_server();
+                if self.active.is_none() && self.ready {
+                    self.new_terminal(true);
+                }
+            }
+            Focus::Files => self.preview(),
+            Focus::Changes => {
+                if let Some(changes) = &mut self.changes {
+                    changes.follow();
+                }
+            }
+            _ => {}
         }
     }
 
-    /// The tab or session you were on before this one.
-    fn last_place(&mut self) {
-        let Some((root, term)) = self.back.clone() else {
-            self.message = Some("nowhere to go back to yet".into());
+    /// Prefix n: a new one of what has the focus.
+    fn new_here(&mut self) {
+        match self.focus {
+            Focus::Workspaces => self.open_repo_picker(),
+            Focus::Sessions => self.prompt = Some(Prompt { ask: Ask::Session, text: String::new() }),
+            Focus::Terminal => self.new_terminal(true),
+            Focus::Files => {
+                let root = self.ws().root.clone();
+                let dir = match self.ws().selected_row() {
+                    Some(row) if row.is_dir => row.path.clone(),
+                    Some(row) => row.path.parent().map_or(root.clone(), Path::to_path_buf),
+                    None => root,
+                };
+                self.prompt = Some(Prompt { ask: Ask::File(dir), text: String::new() });
+            }
+            Focus::Changes => self.message = Some("changes are the agents' to make".into()),
+        }
+    }
+
+    /// Prefix x: close what has the focus, asking first when something
+    /// would be lost.
+    fn close_here(&mut self) {
+        if matches!(self.focus, Focus::Workspaces | Focus::Sessions) && self.editing() {
+            self.message = Some(UNSAVED.into());
             return;
+        }
+        match self.focus {
+            Focus::Workspaces => {
+                let (repo, name) = (self.ws().repo.clone(), self.ws().name.clone());
+                if workspace::registered().contains(&repo) {
+                    self.ask(format!("remove {name} from the list? its files stay."), Confirm::RemoveWorkspace(repo));
+                }
+            }
+            Focus::Sessions => match self.isolated.iter().find(|s| s.root == self.ws().root).cloned() {
+                Some(session) => {
+                    let lost = session::unsaved(&session);
+                    let lost = if lost.is_empty() { String::new() } else { format!(", losing {}", lost.join(" and ")) };
+                    let question = format!("delete session {}: its copy, containers and database{lost}?", session.name);
+                    self.ask(question, Confirm::DeleteSession(session.root));
+                }
+                None if self.ws().is_worktree() => self.message = Some("this session is a git worktree; Pulpo leaves worktrees to git".into()),
+                None => self.message = Some(format!("this is the repository itself: {p} w, then {p} x takes it off the list", p = self.keymap.label())),
+            },
+            Focus::Terminal => {
+                let Some(term) = self.term() else { return };
+                let (id, label) = (term.id, term.label().to_string());
+                match term.info.running.clone() {
+                    Some(program) => self.ask(format!("{program} is running in {label}: close it?"), Confirm::CloseTerminal(id)),
+                    None => self.close_terminal(id),
+                }
+            }
+            Focus::Files => self.ask_delete(),
+            Focus::Changes => {}
+        }
+    }
+
+    fn prompt_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(prompt) = &mut self.prompt else { return };
+        match key.code {
+            KeyCode::Esc => self.prompt = None,
+            KeyCode::Enter => {
+                if let Some(Prompt { ask, text }) = self.prompt.take() {
+                    let text = text.trim().to_string();
+                    if !text.is_empty() {
+                        match ask {
+                            Ask::Session => self.create_session(&text),
+                            Ask::File(dir) => self.create(&dir, &text),
+                            Ask::Rename(path) => self.rename(&path, &text),
+                        }
+                    }
+                }
+            }
+            // Session names are lowercase, like Compose projects.
+            KeyCode::Char(c) if !ctrl && matches!(prompt.ask, Ask::Session) => prompt.text.push(c.to_ascii_lowercase()),
+            _ => {
+                input::edit(&mut prompt.text, key);
+            }
+        }
+    }
+
+    /// Keys in Workspaces and Sessions: moving shows what's selected.
+    fn list_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => self.step(1),
+            KeyCode::Up | KeyCode::Char('k') => self.step(-1),
+            KeyCode::Home | KeyCode::Char('g') => self.step(i32::MIN),
+            KeyCode::End | KeyCode::Char('G') => self.step(i32::MAX),
+            KeyCode::Enter | KeyCode::Right if self.focus == Focus::Workspaces => self.set_focus(Focus::Sessions),
+            KeyCode::Enter | KeyCode::Right => self.set_focus(Focus::Terminal),
+            KeyCode::Left if self.focus == Focus::Sessions => self.set_focus(Focus::Workspaces),
+            _ => {}
+        }
+    }
+
+    fn step(&mut self, delta: i32) {
+        let (repos, sessions) = (self.repos().len(), self.sessions().len());
+        let (state, len) = match self.focus {
+            Focus::Workspaces => (&mut self.workspaces_state, repos),
+            _ => (&mut self.sessions_state, sessions),
         };
-        match term.filter(|id| self.terms.iter().any(|t| t.id == *id)) {
-            Some(id) => self.go_to_term(id),
-            None => {
-                if let Some(i) = self.workspaces.iter().position(|w| w.root == root) {
+        let from = state.selected().unwrap_or(0) as i64;
+        let next = (from + delta as i64).clamp(0, len.saturating_sub(1) as i64) as usize;
+        state.select(Some(next));
+        self.on_select();
+    }
+
+    /// Follow the selection: a repository goes back to the session you last
+    /// used in it.
+    fn on_select(&mut self) {
+        match self.focus {
+            Focus::Workspaces => {
+                if let Some(main) = self.workspaces_state.selected().and_then(|i| self.repos().get(i).copied()) {
+                    let ws = &self.workspaces[main];
+                    let last = self.last_session.get(&ws.repo).and_then(|root| self.workspaces.iter().position(|w| &w.root == root));
+                    self.set_current(last.unwrap_or(main));
+                }
+            }
+            _ => {
+                if let Some(i) = self.sessions_state.selected().and_then(|i| self.sessions().get(i).copied()) {
                     self.set_current(i);
                 }
             }
         }
     }
 
-    /// Go to the pane that way. The sidebar is left of every pane, its
-    /// lists one above the other.
-    fn focus_toward(&mut self, dir: Dir) {
-        const SIDEBAR: [Focus; 4] = [Focus::Workspaces, Focus::Sessions, Focus::Changes, Focus::Graph];
-        if let Some(i) = SIDEBAR.iter().position(|&f| f == self.focus) {
-            match dir {
-                Dir::Up if i > 0 => self.set_focus(SIDEBAR[i - 1]),
-                Dir::Down if i + 1 < SIDEBAR.len() => self.set_focus(SIDEBAR[i + 1]),
-                Dir::Right => match self.tab().map(|t| t.focus) {
-                    Some(pane) => self.focus_pane(pane),
-                    None => self.spawn(&shell(), true),
+    // Files
+
+    /// The file selected in the tree, in the file pane.
+    fn preview(&mut self) {
+        if self.editor.is_some() {
+            return;
+        }
+        let root = self.ws().root.clone();
+        match self.ws().selected_row().filter(|r| !r.is_dir).map(|r| r.path.clone()) {
+            Some(path) => self.viewer.open(Source::File(path), &root),
+            None => self.viewer.close(),
+        }
+    }
+
+    fn files_key(&mut self, key: KeyEvent) {
+        if self.editor.is_some() {
+            return self.editor_key(key);
+        }
+        // Opened wide: the tree still moves, tab goes to the file and back,
+        // page up and down scroll it from either.
+        if self.files_expanded {
+            let half = (self.viewer.height / 2).max(1) as isize;
+            match key.code {
+                // Out of the file to the tree, then back to the three columns.
+                KeyCode::Esc if self.reading => self.reading = false,
+                KeyCode::Esc => self.files_expanded = false,
+                KeyCode::Tab | KeyCode::BackTab => self.reading = !self.reading,
+                KeyCode::PageDown => self.viewer.scroll_by(half),
+                KeyCode::PageUp => self.viewer.scroll_by(-half),
+                _ if self.reading => match scroll_keys(key, self.viewer.height) {
+                    Some(Scroll::Rows(rows)) => self.viewer.scroll_by(rows),
+                    Some(Scroll::Sideways(columns)) => self.viewer.scroll_sideways(columns),
+                    None => {}
                 },
-                _ => {}
+                _ => self.tree_key(key),
             }
             return;
         }
-        let Some(from) = self.focused_pane() else { return };
-        match pane::neighbor(&self.areas.panes, from, dir) {
-            Some(pane) => self.focus_pane(pane),
-            None if dir == Dir::Left => self.set_focus(self.sidebar_focus),
-            None => {}
-        }
+        self.tree_key(key);
     }
 
-    /// The focused terminal or file alone, or back; from the sidebar, into
-    /// the terminal, full height.
-    fn zoom(&mut self) {
-        match self.focus {
-            Focus::Terminal => self.zoomed = !self.zoomed,
-            Focus::Viewer => self.viewer.expanded = !self.viewer.expanded,
-            _ => self.zoom_terminal(),
-        }
-    }
-
-    /// The previous or next session of this repository, wrapping around.
-    fn step_session(&mut self, delta: isize) {
-        let sessions = self.sessions();
-        if sessions.len() < 2 {
-            return;
-        }
-        let at = sessions.iter().position(|&i| i == self.current).unwrap_or(0) as isize;
-        let next = (at + delta).rem_euclid(sessions.len() as isize) as usize;
-        self.sessions_state.select(Some(next));
-        self.set_current(sessions[next]);
-        // No terminal there to be in.
-        if self.focus == Focus::Terminal && self.active.is_none() {
-            self.set_focus(Focus::Sessions);
-        }
-    }
-
-    /// Delete the current session once `key_name` is pressed again; only a
-    /// task session can be.
-    fn delete_session(&mut self, pending: Option<char>, key_name: &str) {
-        if self.isolated_current().is_some() {
-            self.remove_session(pending, key_name);
-        } else if self.ws().is_worktree() {
-            self.message = Some("this session is a git worktree; Pulpo leaves worktrees to git".into());
-        } else {
-            self.message = Some("this is the repository itself; x in Workspaces takes it off the list".into());
-        }
-    }
-
-    /// Say once what replaces one of the old ctrl keys in terminals.
-    fn legacy_hint(&mut self, c: char, actions: &[Action], what: &str) {
-        if self.legacy_hinted.insert(c) {
-            let instead = self.keymap.hint(actions);
-            self.message = Some(format!("ctrl-{c} goes back to the programs in the next release: {instead} {what}"));
-        }
-    }
-
-    pub fn on_mouse(&mut self, mouse: MouseEvent) {
-        // A click or scroll can change what a second x would act on.
-        if matches!(mouse.kind, MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
-            self.pending = None;
-        }
-        if (self.help.is_some() || self.new_menu || self.picker.is_some()) && matches!(mouse.kind, MouseEventKind::Down(_)) {
-            self.help = None;
-            self.new_menu = false;
-            self.picker = None;
-        }
-        if self.search.is_some()
-            || self.creating.is_some()
-            || self.renaming.is_some()
-            || self.swarm.is_some()
-            || self.picker.is_some()
-            || self.help.is_some()
-            || self.new_menu
-        {
-            return;
-        }
-        let pos = Position::new(mouse.column, mouse.row);
-        let areas = self.areas.clone();
-        // Dragging a border between panes.
-        if let Some(divider) = &self.dragging {
-            match mouse.kind {
-                MouseEventKind::Drag(MouseButton::Left) => {
-                    let (path, ratio) = (divider.path.clone(), divider.ratio_at(pos.x, pos.y));
-                    if let Some(tab) = self.tab_mut() {
-                        tab.root.set_ratio(&path, ratio);
-                    }
-                }
-                _ => self.dragging = None,
-            }
-            return;
-        }
-        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-            && let Some(divider) = areas.dividers.iter().find(|d| d.hit(pos.x, pos.y))
-        {
-            self.dragging = Some(divider.clone());
-            return;
-        }
-        // A right click: what can be done there, at the mouse.
-        if mouse.kind == MouseEventKind::Down(MouseButton::Right) {
-            let at = Some((pos.x, pos.y));
-            match areas.panes.iter().find(|(_, r)| r.contains(pos)).map(|&(p, r)| (p, r)) {
-                Some((pane, rect)) => {
-                    // On a link or a path: opening it comes first.
-                    let inner = Block::bordered().inner(rect);
-                    self.link_at = match pane {
-                        Pane::Term(id) if inner.contains(pos) => self.terms.iter().find(|t| t.id == id).and_then(|t| {
-                            let word = t.word_at(pos.y - inner.y, pos.x - inner.x);
-                            (!word.is_empty()).then(|| (word, t.info.cwd.clone()))
-                        }),
-                        _ => None,
-                    };
-                    self.focus_pane(pane);
-                    self.open_menu(&[Group::Panes, Group::Tabs], at);
-                }
-                None if areas.sessions.contains(pos) || areas.workspaces.contains(pos) => self.open_menu(&[Group::Sessions], at),
-                None => self.open_menu(&Group::ALL, at),
-            }
-            return;
-        }
-        if let Some(&(show, _)) = areas.counts.iter().find(|(_, r)| r.contains(pos)) {
-            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                self.open_goto(show);
-            }
-            return;
-        }
-        if let Some(&(n, _)) = areas.tabs.iter().find(|(_, r)| r.contains(pos)) {
-            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                self.show_tab(n, true);
-            }
-            return;
-        }
-        // A terminal pane: a program that asked for the mouse gets it
-        // inside its text; else a click goes into it, the wheel scrolls it.
-        if let Some(&(Pane::Term(id), rect)) = areas.panes.iter().find(|(p, r)| matches!(p, Pane::Term(_)) && r.contains(pos)) {
-            let inner = Block::bordered().inner(rect);
-            let Some(term) = self.terms.iter_mut().find(|t| t.id == id) else { return };
-            // ctrl-click on a link or a path opens it.
-            if mouse.kind == MouseEventKind::Down(MouseButton::Left) && mouse.modifiers.contains(KeyModifiers::CONTROL) && inner.contains(pos) {
-                let (word, cwd) = (term.word_at(pos.y - inner.y, pos.x - inner.x), term.info.cwd.clone());
-                if !word.is_empty() {
-                    self.open_link(&word, &cwd);
-                }
-                return;
-            }
-            if inner.contains(pos) && term.wants_mouse() {
-                term.mouse(mouse.kind, pos.x - inner.x + 1, pos.y - inner.y + 1, mouse.modifiers);
-            } else if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
-                scroll_term(term, if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 });
-            }
-            if matches!(mouse.kind, MouseEventKind::Down(_)) {
-                self.focus_pane(Pane::Term(id));
-            }
-            return;
-        }
-        // In the editor: place the cursor, select by dragging, scroll.
-        if areas.editor.contains(pos)
-            && let Some(editor) = &mut self.editor
-        {
-            let (row, column) = ((pos.y - areas.editor.y) as usize, (pos.x - areas.editor.x) as usize);
-            let column = column.saturating_sub(editor.gutter());
-            let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
-            match mouse.kind {
-                MouseEventKind::Down(MouseButton::Left) => {
-                    editor.click(row, column, shift);
-                    self.set_focus(Focus::Editor);
-                }
-                MouseEventKind::Drag(MouseButton::Left) => editor.click(row, column, true),
-                MouseEventKind::ScrollUp => editor.scroll_by(-3),
-                MouseEventKind::ScrollDown => editor.scroll_by(3),
-                _ => {}
-            }
-            return;
-        }
-        let (target, area) = [
-            (Focus::Viewer, areas.viewer),
-            (Focus::Workspaces, areas.workspaces),
-            (Focus::Sessions, areas.sessions),
-            (Focus::Changes, areas.changes),
-            (Focus::Graph, areas.graph),
-        ]
-        .into_iter()
-        .find(|(_, area)| area.contains(pos))
-        .unwrap_or((self.focus, Rect::default()));
-
-        match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                if area.is_empty() || (target == Focus::Terminal && self.active.is_none()) {
-                    return;
-                }
-                self.set_focus(target);
-                if self.areas.ruler.contains(pos) {
-                    self.jump_to_ruler(pos);
-                    return;
-                }
-                let Some((state, len)) = self.list(target) else { return };
-                let row = (pos.y.saturating_sub(area.y + 1)) as usize + state.offset();
-                if pos.y == area.y || row >= len {
-                    return;
-                }
-                state.select(Some(row));
-                self.on_select();
-                match target {
-                    Focus::Sessions if self.active.is_some() => self.set_focus(Focus::Terminal),
-                    Focus::Graph => self.toggle_commit(),
-                    _ => {}
-                }
-            }
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                let rows: isize = if mouse.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
-                match target {
-                    // Shift + wheel scrolls sideways, like most editors.
-                    Focus::Viewer if mouse.modifiers.contains(KeyModifiers::SHIFT) => self.viewer.scroll_sideways(rows * 2),
-                    Focus::Viewer => self.viewer.scroll_by(rows),
-                    _ if !area.is_empty() => {
-                        self.set_focus(target);
-                        self.step(rows.signum() as i32);
-                    }
-                    _ => {}
-                }
-            }
-            MouseEventKind::Drag(MouseButton::Left) if self.areas.ruler.contains(pos) => self.jump_to_ruler(pos),
-            // Horizontal swipes on a trackpad.
-            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight if target == Focus::Viewer => {
-                self.viewer.scroll_sideways(if mouse.kind == MouseEventKind::ScrollLeft { -4 } else { 4 });
-            }
+    /// Keys in the Files tree: move, fold, and ⏎ to open a file wide, the
+    /// keys on it (esc goes back to the tree).
+    fn tree_key(&mut self, key: KeyEvent) {
+        let row = self.ws().selected_row().map(|r| (r.is_dir, r.expanded));
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => self.tree_step(1),
+            KeyCode::Up | KeyCode::Char('k') => self.tree_step(-1),
+            KeyCode::PageDown => self.tree_step(10),
+            KeyCode::PageUp => self.tree_step(-10),
+            KeyCode::Home | KeyCode::Char('g') => self.tree_step(isize::MIN / 2),
+            KeyCode::End | KeyCode::Char('G') => self.tree_step(isize::MAX / 2),
+            KeyCode::Right | KeyCode::Char('l') => self.fold_tree(true),
+            KeyCode::Left | KeyCode::Char('h') => self.fold_tree(false),
+            KeyCode::Enter => match row {
+                Some((true, expanded)) => self.fold_tree(!expanded),
+                Some((false, _)) if self.files_expanded => self.reading = true,
+                Some((false, _)) => (self.files_expanded, self.reading) = (true, true),
+                None => {}
+            },
             _ => {}
         }
     }
 
-    fn jump_to_ruler(&mut self, pos: Position) {
-        let ruler = self.areas.ruler;
-        self.viewer.jump_to_ruler((pos.y - ruler.y) as usize, ruler.height as usize);
-    }
-
-    // Search
-
-    fn open_search(&mut self, mode: Mode) {
-        self.search = Some(Search::new(mode, self.ws().root.clone(), &self.tx));
-    }
-
-    pub fn on_search(&mut self, generation: usize, hits: Vec<crate::search::Hit>) {
-        if let Some(search) = &mut self.search {
-            search.on_results(generation, hits);
-        }
-    }
-
-    fn search_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let pending = self.pending.take();
-        if pending.is_some() {
-            self.message = None;
-        }
-        let Some(search) = &self.search else { return };
-        let files = search.mode == Mode::Files;
-        // With nothing typed, the files are the workspace's own tree.
-        let in_tree = files && search.query.is_empty();
-        let on_file = matches!(self.file_row(), Some((_, false)));
-        match key.code {
-            KeyCode::Esc => self.search = None,
-            KeyCode::Enter if files => self.open_row(),
-            KeyCode::Enter => self.open_hit(),
-            KeyCode::Up => self.search_step(-1),
-            KeyCode::Down => self.search_step(1),
-            KeyCode::Char('k' | 'p') if ctrl => self.search_step(-1),
-            KeyCode::Char('j' | 'n') if ctrl => self.search_step(1),
-            KeyCode::PageUp => self.search_step(-10),
-            KeyCode::PageDown => self.search_step(10),
-            KeyCode::Right if in_tree => self.fold_tree(true),
-            KeyCode::Left if in_tree => self.fold_tree(false),
-            KeyCode::Char('e') if ctrl && files && on_file => {
-                self.edit();
-                self.search = None;
-            }
-            KeyCode::Char('e') if ctrl && files => self.message = Some("select a file to edit".into()),
-            KeyCode::Char('y') if ctrl && files => self.copy_path(),
-            KeyCode::Char('x') if ctrl && files => self.delete(pending),
-            _ => self.search_input(key),
-        }
-    }
-
-    /// Typing in the search popup, and tab between its two kinds of search.
-    fn search_input(&mut self, key: KeyEvent) {
-        let Some(search) = &mut self.search else { return };
-        match key.code {
-            KeyCode::Tab | KeyCode::BackTab if search.mode != Mode::Repos => {
-                search.mode = if search.mode == Mode::Files { Mode::Text } else { Mode::Files };
-                search.update(&self.tx);
-            }
-            _ => {
-                if input::edit(&mut search.query, key) {
-                    search.update(&self.tx);
-                }
-            }
-        }
-    }
-
-    fn open_hit(&mut self) {
-        let Some(search) = self.search.take() else { return };
-        let Some(hit) = search.selected() else { return };
-        if search.mode == Mode::Repos {
-            self.add_repo(&hit.rel);
-            self.set_focus(Focus::Workspaces);
-        } else {
-            let path = search.root.join(&hit.rel);
-            self.ws_mut().reveal(&path);
-            self.remember_back();
-            self.viewer.open_at(path, hit.line, &search.root);
-            self.read_in_viewer();
-        }
-    }
-
-    /// The file or folder selected in the files (popup), and whether it is a folder.
-    fn file_row(&self) -> Option<(PathBuf, bool)> {
-        let search = self.search.as_ref().filter(|s| s.mode == Mode::Files)?;
-        let row = if search.query.is_empty() { self.ws().selected_row() } else { search.selected_row() }?;
-        Some((row.path.clone(), row.is_dir))
-    }
-
-    /// Move in the search popup: in the workspace's tree, or in the results.
-    fn search_step(&mut self, delta: isize) {
-        match &mut self.search {
-            Some(search) if search.mode == Mode::Files && search.query.is_empty() => {
-                let w = &mut self.workspaces[self.current];
-                let max = w.tree.rows.len().saturating_sub(1) as isize;
-                let next = (w.files_state.selected().unwrap_or(0) as isize + delta).clamp(0, max);
-                w.files_state.select(Some(next as usize));
-            }
-            Some(search) => search.step(delta),
-            None => {}
-        }
-    }
-
-    /// Enter in the files: open a file in the viewer, fold or unfold a
-    /// folder of the tree. A folder among matches is shown in the tree.
-    fn open_row(&mut self) {
-        let Some((path, is_dir)) = self.file_row() else { return };
-        let in_tree = self.search.as_ref().is_some_and(|s| s.query.is_empty());
-        if is_dir && in_tree {
-            let open = !self.ws().selected_row().is_some_and(|r| r.expanded);
-            return self.fold_tree(open);
-        }
-        // The tree follows, so it opens where you were next time.
-        self.ws_mut().reveal(&path);
-        if is_dir {
-            self.ws_mut().tree.set_expanded(&path, true);
-            if let Some(search) = &mut self.search {
-                search.query.clear();
-                search.update(&self.tx);
-            }
-            return;
-        }
-        self.search = None;
-        let root = self.ws().root.clone();
-        self.remember_back();
-        self.viewer.open_at(path, None, &root);
-        self.read_in_viewer();
-    }
-
-    /// Before a file from the popup takes the viewer: keep where you were,
-    /// unless already in a file opened that way.
-    fn remember_back(&mut self) {
-        if self.files_back.is_none() {
-            let viewer = std::mem::take(&mut self.viewer);
-            self.files_back = Some(Back { focus: self.focus, zoomed: self.zoomed, viewer });
-        }
-    }
-
-    /// Esc in a file opened from the popup: everything as it was before.
-    fn go_back(&mut self) {
-        let Some(back) = self.files_back.take() else { return };
-        self.viewer = back.viewer;
-        let root = self.ws().root.clone();
-        self.viewer.reload(&root);
-        // A terminal closed meanwhile can't take the focus back.
-        self.focus = if back.focus == Focus::Terminal && self.active.is_none() { self.sidebar_focus } else { back.focus };
-        self.zoomed = back.zoomed;
+    fn tree_step(&mut self, delta: isize) {
+        let w = self.ws_mut();
+        let max = w.tree.rows.len().saturating_sub(1) as isize;
+        let next = (w.files_state.selected().unwrap_or(0) as isize).saturating_add(delta).clamp(0, max);
+        w.files_state.select(Some(next as usize));
+        self.preview();
     }
 
     /// Unfold or fold the selected folder of the tree; on a folded one (or a
@@ -2550,296 +1320,840 @@ impl App {
         } else if !open && path.parent() != Some(&w.root) {
             w.reselect(path.parent().map(Path::to_path_buf));
         }
+        self.preview();
     }
 
+    /// The file or folder selected in the tree.
+    fn selected_path(&self) -> Option<PathBuf> {
+        self.ws().selected_row().map(|r| r.path.clone())
+    }
+
+    fn rel(&self, path: &Path) -> String {
+        path.strip_prefix(&self.ws().root).unwrap_or(path).display().to_string()
+    }
+
+    fn ask_delete(&mut self) {
+        let Some(path) = self.selected_path() else { return };
+        let rel = self.rel(&path);
+        let what = if path.is_dir() { format!("{rel}/ and everything in it") } else { rel };
+        let undo = if git::is_tracked(&self.ws().root, &path) { "git can restore the last commit" } else { "not in git, it can't be recovered" };
+        self.ask(format!("delete {what}? {undo}."), Confirm::DeleteFile(path));
+    }
+
+    fn delete(&mut self, path: &Path) {
+        let rel = self.rel(path);
+        let deleted = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+        match deleted {
+            Ok(()) => {
+                if self.editor.as_ref().is_some_and(|e| e.path.starts_with(path)) {
+                    self.editor = None;
+                }
+                let w = self.ws_mut();
+                w.tree.rebuild();
+                w.reselect(None);
+                self.viewer.close();
+                self.preview();
+                self.message = Some(format!("deleted {rel}"));
+            }
+            Err(e) => self.message = Some(format!("could not delete {rel}: {e}")),
+        }
+    }
+
+    fn start_rename(&mut self) {
+        let Some(path) = self.selected_path() else { return };
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        self.prompt = Some(Prompt { ask: Ask::Rename(path), text: name });
+    }
+
+    /// A path for `name` typed in `dir`, if it stays inside the session.
+    fn inside(&mut self, dir: &Path, name: &str) -> Option<PathBuf> {
+        let path = dir.join(name.trim_end_matches('/'));
+        let inside = path.starts_with(&self.ws().root) && !path.components().any(|c| c == std::path::Component::ParentDir);
+        if !inside {
+            self.message = Some("files stay inside the session".into());
+        }
+        inside.then_some(path)
+    }
+
+    fn rename(&mut self, path: &Path, name: &str) {
+        let Some(to) = path.parent().and_then(|dir| self.inside(dir, name)) else { return };
+        if to == path {
+            return;
+        }
+        let (from_rel, to_rel) = (self.rel(path), self.rel(&to));
+        if to.exists() {
+            self.message = Some(format!("{to_rel} already exists"));
+            return;
+        }
+        match std::fs::rename(path, &to) {
+            Ok(()) => {
+                if let Some(editor) = &mut self.editor
+                    && let Ok(rest) = editor.path.strip_prefix(path)
+                {
+                    editor.path = to.join(rest);
+                }
+                self.ws_mut().reveal(&to);
+                self.viewer.close();
+                self.preview();
+                self.message = Some(format!("renamed {from_rel} to {to_rel}"));
+            }
+            Err(e) => self.message = Some(format!("could not rename {from_rel}: {e}")),
+        }
+    }
+
+    /// A new file, opened in the editor; or with a / at the end, a folder.
+    fn create(&mut self, dir: &Path, name: &str) {
+        let Some(path) = self.inside(dir, name) else { return };
+        let rel = self.rel(&path);
+        if path.exists() {
+            self.message = Some(format!("{rel} already exists"));
+            return;
+        }
+        let folder = name.ends_with('/');
+        let made = if folder {
+            std::fs::create_dir_all(&path)
+        } else {
+            path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::File::create_new(&path).map(drop))
+        };
+        if let Err(e) = made {
+            self.message = Some(format!("could not create {rel}: {e}"));
+            return;
+        }
+        self.ws_mut().reveal(&path);
+        self.set_focus(Focus::Files);
+        if folder {
+            self.message = Some(format!("created {rel}/"));
+        } else {
+            self.open_editor(path, None);
+        }
+    }
+
+    /// Prefix e: the selected file in the editor, the whole right side.
+    fn edit(&mut self) {
+        if self.editor.is_some() {
+            return;
+        }
+        match self.selected_path() {
+            Some(path) if path.is_file() => {
+                let line = matches!(&self.viewer.source, Some(Source::File(p)) if *p == path).then(|| self.viewer.scroll + 1);
+                self.open_editor(path, line);
+            }
+            _ => self.message = Some("select a file to edit".into()),
+        }
+    }
+
+    fn open_editor(&mut self, path: PathBuf, line: Option<usize>) {
+        match Editor::open(path, line) {
+            Ok(editor) => {
+                self.editor = Some(editor);
+                self.discard = false;
+            }
+            Err(e) => self.message = Some(e),
+        }
+    }
+
+    /// Back to the file in the viewer, where the cursor was.
+    fn close_editor(&mut self) {
+        let Some(editor) = self.editor.take() else { return };
+        let root = self.ws().root.clone();
+        self.viewer.close();
+        self.viewer.open_at(editor.path.clone(), None, &root);
+        self.viewer.scroll = editor.scroll;
+        // Back to the tree, still wide: esc again for the three columns.
+        self.files_expanded = true;
+        self.reading = false;
+        self.discard = false;
+    }
+
+    /// Keys in the editor: the usual ones (VS Code's). Esc closes it.
+    fn editor_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let cmd = key.modifiers.contains(KeyModifiers::SUPER);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let Some(editor) = &mut self.editor else { return };
+        // Typing what to find.
+        if editor.find_typing {
+            match key.code {
+                KeyCode::Esc => editor.find_typing = false,
+                KeyCode::Enter => {
+                    editor.find_next(!shift);
+                }
+                KeyCode::Backspace => {
+                    editor.find.get_or_insert_default().pop();
+                }
+                KeyCode::Char(c) if !ctrl && !cmd => {
+                    editor.find.get_or_insert_default().push(c);
+                    // Look again from where this match starts.
+                    if let Some((start, _)) = editor.selection() {
+                        editor.click_at(start);
+                    }
+                    editor.find_next(true);
+                }
+                _ => {}
+            }
+            editor.follow_cursor();
+            return;
+        }
+        let discard = std::mem::take(&mut self.discard);
+        match key.code {
+            KeyCode::Esc if editor.find.is_some() => editor.find = None,
+            KeyCode::Esc if editor.dirty && !discard => {
+                self.discard = true;
+                self.message = Some("unsaved changes: esc again throws them away, ⌘s saves them".into());
+                return;
+            }
+            KeyCode::Esc => return self.close_editor(),
+            KeyCode::Char('s') if ctrl || cmd => {
+                let name = editor.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                match editor.save() {
+                    Ok(()) => self.message = Some(format!("saved {name}")),
+                    Err(e) => self.message = Some(e),
+                }
+                return;
+            }
+            KeyCode::Char('z') if (ctrl || cmd) && shift => editor.redo(),
+            KeyCode::Char('Z') if ctrl || cmd => editor.redo(),
+            KeyCode::Char('z') if ctrl || cmd => editor.undo(),
+            KeyCode::Char('y') if ctrl => editor.redo(),
+            KeyCode::Char('a') if ctrl || cmd => editor.select_all(),
+            KeyCode::Char('c') if ctrl || cmd => {
+                let text = editor.copy();
+                set_clipboard(&text);
+            }
+            KeyCode::Char('x') if ctrl || cmd => {
+                let text = editor.cut();
+                set_clipboard(&text);
+            }
+            KeyCode::Char('v') if ctrl || cmd => {
+                if let Some(text) = clipboard() {
+                    editor.insert(&text);
+                }
+            }
+            KeyCode::Char('f') if ctrl || cmd => {
+                editor.find_typing = true;
+                editor.find.get_or_insert_default();
+            }
+            KeyCode::Char('g') if ctrl || cmd => {
+                editor.find_next(!shift);
+            }
+            KeyCode::Left if alt || ctrl => editor.word(false, shift),
+            KeyCode::Right if alt || ctrl => editor.word(true, shift),
+            KeyCode::Left if cmd => editor.home(shift),
+            KeyCode::Right if cmd => editor.end(shift),
+            KeyCode::Up if cmd => editor.edge(false, shift),
+            KeyCode::Down if cmd => editor.edge(true, shift),
+            KeyCode::Left => editor.left(shift),
+            KeyCode::Right => editor.right(shift),
+            KeyCode::Up => editor.vertical(-1, shift),
+            KeyCode::Down => editor.vertical(1, shift),
+            KeyCode::Home if ctrl => editor.edge(false, shift),
+            KeyCode::End if ctrl => editor.edge(true, shift),
+            KeyCode::Home => editor.home(shift),
+            KeyCode::End => editor.end(shift),
+            KeyCode::PageUp => editor.page(-1, shift),
+            KeyCode::PageDown => editor.page(1, shift),
+            KeyCode::Enter => editor.newline(),
+            KeyCode::Tab => editor.tab(),
+            KeyCode::BackTab => editor.untab(),
+            KeyCode::Backspace => editor.backspace(alt || ctrl),
+            KeyCode::Delete => editor.delete(alt || ctrl),
+            KeyCode::Char(c) if !ctrl && !cmd => editor.insert(&c.to_string()),
+            _ => {}
+        }
+        editor.follow_cursor();
+    }
+
+    // Search
+
+    /// Prefix /: a popup over whatever is on screen: the session's files as
+    /// a tree, filtered as you type; tab searches inside them instead.
+    fn start_search(&mut self) {
+        self.search = Some(Search::new(Mode::Files, self.ws().root.clone(), &self.tx));
+    }
+
+    /// No repository yet: pick one first.
     pub fn open_repo_picker(&mut self) {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-        self.search = Some(Search::new(Mode::Repos, home, &self.tx));
+        self.repos = Some(Search::new(Mode::Repos, home, &self.tx));
+    }
+
+    pub fn on_search(&mut self, generation: usize, hits: Vec<crate::search::Hit>) {
+        if let Some(search) = self.search.as_mut().or(self.repos.as_mut()) {
+            search.on_results(generation, hits);
+        }
     }
 
     pub fn on_repos(&mut self, repos: Vec<String>) {
-        if let Some(search) = &mut self.search {
+        if let Some(search) = &mut self.repos {
             search.set_repos(repos, &self.tx);
         }
     }
 
-    fn toggle_terminal(&mut self) {
-        if self.focus == Focus::Terminal {
-            self.set_focus(self.sidebar_focus);
-        } else if self.active.is_some() {
-            self.set_focus(Focus::Terminal);
-        }
-    }
-
-    fn set_focus(&mut self, focus: Focus) {
-        self.focus = focus;
-        // Gone elsewhere: esc no longer goes back to before the popup.
-        if focus != Focus::Viewer {
-            self.files_back = None;
-        }
-        if focus == Focus::Viewer {
-            self.zoomed = false;
-        }
-        if !matches!(focus, Focus::Viewer | Focus::Editor) {
-            self.viewer.expanded = false;
-        }
-        if matches!(focus, Focus::Workspaces | Focus::Sessions | Focus::Changes | Focus::Graph) {
-            self.sidebar_focus = focus;
-            self.sidebar_hidden = false;
-        }
-        if let Some(pane) = self.focused_pane()
-            && let Some(tab) = self.tab_mut()
-            && tab.root.contains(pane)
-        {
-            tab.set_focus(pane);
-        }
-    }
-
-    fn cycle_focus(&mut self, dir: isize) {
-        let mut order = vec![Focus::Workspaces, Focus::Sessions, Focus::Changes, Focus::Graph];
-        if self.editor.is_some() {
-            order.push(Focus::Editor);
-        } else if self.viewer.is_open() {
-            order.push(Focus::Viewer);
-        }
-        let i = order.iter().position(|f| *f == self.focus).unwrap_or(0) as isize;
-        let next = (i + dir).rem_euclid(order.len() as isize) as usize;
-        self.set_focus(order[next]);
-    }
-
-    fn confirm(&mut self, key: char, message: String) {
-        self.pending = Some(key);
-        self.message = Some(message);
-    }
-
-    fn viewer_key(&mut self, key: KeyEvent) {
-        let half = (self.viewer.height / 2).max(1) as isize;
+    fn search_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(search) = &mut self.search else { return };
+        // With nothing typed, the files are the session's own tree.
+        let in_tree = search.mode == Mode::Files && search.query.is_empty();
         match key.code {
-            KeyCode::Down | KeyCode::Char('j') => self.viewer.scroll_by(1),
-            KeyCode::Up | KeyCode::Char('k') => self.viewer.scroll_by(-1),
-            KeyCode::PageDown | KeyCode::Char('d' | ' ') => self.viewer.scroll_by(half),
-            KeyCode::PageUp | KeyCode::Char('u') => self.viewer.scroll_by(-half),
-            KeyCode::Home | KeyCode::Char('g') => self.viewer.scroll_by(isize::MIN),
-            KeyCode::End | KeyCode::Char('G') => self.viewer.scroll_by(isize::MAX),
-            KeyCode::Left | KeyCode::Char('h') => self.viewer.scroll_sideways(-8),
-            KeyCode::Right | KeyCode::Char('l') => self.viewer.scroll_sideways(8),
-            KeyCode::Char('0') => self.viewer.scroll_sideways(0),
-            KeyCode::Enter => self.viewer.expanded = !self.viewer.expanded,
-            _ => {}
-        }
-    }
-
-    fn list_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Down | KeyCode::Char('j') => self.step(1),
-            KeyCode::Up | KeyCode::Char('k') => self.step(-1),
-            KeyCode::Home => self.step(i32::MIN),
-            KeyCode::End | KeyCode::Char('G') => self.step(i32::MAX),
-            KeyCode::Enter => self.activate(),
-            KeyCode::Right | KeyCode::Char('l') => self.expand(true),
-            KeyCode::Left | KeyCode::Char('h') => self.expand(false),
-            _ => {}
-        }
-    }
-
-    fn list(&mut self, focus: Focus) -> Option<(&mut ListState, usize)> {
-        let (repos, sessions) = (self.repos().len(), self.sessions().len());
-        let w = &mut self.workspaces[self.current];
-        match focus {
-            Focus::Workspaces => Some((&mut self.workspaces_state, repos)),
-            Focus::Sessions => Some((&mut self.sessions_state, sessions)),
-            Focus::Changes => Some((&mut w.changes_state, w.status.changes.len())),
-            Focus::Graph => {
-                let len = w.graph_len();
-                Some((&mut w.graph_state, len))
+            KeyCode::Esc => self.search = None,
+            KeyCode::Enter => self.open_hit(),
+            KeyCode::Up => self.search_step(-1),
+            KeyCode::Down => self.search_step(1),
+            KeyCode::Char('k' | 'p') if ctrl => self.search_step(-1),
+            KeyCode::Char('j' | 'n') if ctrl => self.search_step(1),
+            KeyCode::PageUp => self.search_step(-10),
+            KeyCode::PageDown => self.search_step(10),
+            KeyCode::Right if in_tree => self.fold_tree(true),
+            KeyCode::Left if in_tree => self.fold_tree(false),
+            KeyCode::Tab | KeyCode::BackTab => {
+                search.mode = if search.mode == Mode::Files { Mode::Text } else { Mode::Files };
+                search.update(&self.tx);
             }
-            _ => None,
+            _ => {
+                if input::edit(&mut search.query, key) {
+                    search.update(&self.tx);
+                }
+            }
         }
     }
 
-    fn step(&mut self, delta: i32) {
-        let Some((state, len)) = self.list(self.focus) else { return };
-        if len == 0 {
+    /// Move in the popup: in the session's tree, or in the results.
+    fn search_step(&mut self, delta: isize) {
+        match &mut self.search {
+            Some(search) if search.mode == Mode::Files && search.query.is_empty() => {
+                let w = &mut self.workspaces[self.current];
+                let max = w.tree.rows.len().saturating_sub(1) as isize;
+                let next = (w.files_state.selected().unwrap_or(0) as isize).saturating_add(delta).clamp(0, max);
+                w.files_state.select(Some(next as usize));
+                self.preview();
+            }
+            Some(search) => search.step(delta),
+            None => {}
+        }
+    }
+
+    /// ⏎ in the popup: a folder folds or unfolds (among matches, it shows
+    /// in the tree); a file opens in Files, full screen, on the line found.
+    fn open_hit(&mut self) {
+        let Some(search) = &self.search else { return };
+        let picked = match search.mode {
+            Mode::Files if search.query.is_empty() => self.ws().selected_row().map(|r| (r.path.clone(), None, r.is_dir)),
+            Mode::Files => search.selected_row().map(|r| (r.path.clone(), None, r.is_dir)),
+            _ => search.selected().map(|h| (search.root.join(&h.rel), h.line, false)),
+        };
+        let Some((path, line, is_dir)) = picked else { return };
+        if is_dir {
+            if search.query.is_empty() {
+                let open = !self.ws().selected_row().is_some_and(|r| r.expanded);
+                return self.fold_tree(open);
+            }
+            self.ws_mut().tree.set_expanded(&path, true);
+            self.ws_mut().reveal(&path);
+            if let Some(search) = &mut self.search {
+                search.query.clear();
+                search.update(&self.tx);
+            }
             return;
         }
-        let from = state.selected().unwrap_or(0);
-        let mut next = (from as i64 + delta as i64).clamp(0, len as i64 - 1) as usize;
-        if self.focus == Focus::Graph {
-            // Rows where branches fork or merge have no commit: pass them.
-            let ws = self.ws();
-            while matches!(ws.graph_item(next), Some(GraphItem::Row(row)) if row.commit.is_none()) {
-                match next.checked_add_signed(delta.signum() as isize) {
-                    Some(n) if n < len => next = n,
-                    _ => {
-                        next = from;
-                        break;
-                    }
-                }
-            }
+        if self.editing() {
+            self.message = Some(UNSAVED.into());
+            return;
         }
-        if let Some((state, _)) = self.list(self.focus) {
-            state.select(Some(next));
-        }
-        self.on_select();
+        self.search = None;
+        self.editor = None;
+        self.set_focus(Focus::Files);
+        self.show_file(path, line);
+        self.files_expanded = true;
+        self.reading = true;
     }
 
-    /// Follow the selection: switch workspace or terminal, show the diff, or
-    /// preview the file.
-    fn on_select(&mut self) {
-        match self.focus {
-            // A repository: back to the session you last used in it.
-            Focus::Workspaces => {
-                if let Some(main) = self.workspaces_state.selected().and_then(|i| self.repos().get(i).copied()) {
-                    let ws = &self.workspaces[main];
-                    let last = self.last_session.get(&ws.repo).and_then(|root| self.workspaces.iter().position(|w| &w.root == root));
-                    self.set_current(last.unwrap_or(main));
+    /// A file in Files, shown in the tree and in the file pane, on `line`.
+    fn show_file(&mut self, path: PathBuf, line: Option<usize>) {
+        self.ws_mut().reveal(&path);
+        let root = self.ws().root.clone();
+        self.viewer.open_at(path, line, &root);
+    }
+
+    fn repos_key(&mut self, key: KeyEvent) {
+        let Some(search) = &mut self.repos else { return };
+        match key.code {
+            KeyCode::Esc => self.repos = None,
+            KeyCode::Enter => {
+                let picked = search.selected().map(|h| h.rel.clone()).or_else(|| (!search.query.is_empty()).then(|| search.query.clone()));
+                self.repos = None;
+                if let Some(picked) = picked {
+                    self.add_repo(&picked);
                 }
             }
-            Focus::Sessions => {
-                if let Some(i) = self.sessions_state.selected().and_then(|i| self.sessions().get(i).copied()) {
-                    self.set_current(i);
+            KeyCode::Up => search.step(-1),
+            KeyCode::Down => search.step(1),
+            KeyCode::PageUp => search.step(-10),
+            KeyCode::PageDown => search.step(10),
+            _ => {
+                if input::edit(&mut search.query, key) {
+                    search.update(&self.tx);
                 }
             }
-            Focus::Changes => {
-                if let Some((path, untracked)) = self.ws().selected_change() {
-                    let root = self.ws().root.clone();
-                    self.viewer.open(Source::Diff { path, untracked }, &root);
-                    self.zoomed = false;
-                }
+        }
+    }
+
+    // Changes
+
+    fn changes_key(&mut self, key: KeyEvent) {
+        // As in Files: opened wide, the tree still moves, tab goes to the
+        // diff and back, page up and down scroll it from either.
+        if self.changes_expanded {
+            let Some(changes) = &mut self.changes else { return };
+            let half = (changes.height / 2).max(1) as isize;
+            match key.code {
+                KeyCode::Esc if self.reading => self.reading = false,
+                KeyCode::Esc => self.changes_expanded = false,
+                KeyCode::Tab | KeyCode::BackTab => self.reading = !self.reading,
+                KeyCode::PageDown => changes.scroll_by(half),
+                KeyCode::PageUp => changes.scroll_by(-half),
+                _ if self.reading => match scroll_keys(key, changes.height) {
+                    Some(Scroll::Rows(rows)) => changes.scroll_by(rows),
+                    Some(Scroll::Sideways(columns)) => changes.scroll_sideways(columns),
+                    None => {}
+                },
+                _ => self.changes_tree_key(key),
             }
-            Focus::Graph => {
-                let root = self.ws().root.clone();
-                let source = match self.ws().selected_graph_item() {
-                    Some(GraphItem::Row(row)) => row.commit.as_ref().map(|c| Source::Commit(c.hash.clone())),
-                    Some(GraphItem::File(row, change)) => {
-                        row.commit.as_ref().map(|c| Source::CommitFile { hash: c.hash.clone(), path: root.join(&change.path) })
-                    }
-                    None => None,
-                };
-                if let Some(source) = source {
-                    self.viewer.open(source, &root);
-                    self.zoomed = false;
-                }
-            }
+            return;
+        }
+        self.changes_tree_key(key);
+    }
+
+    fn changes_tree_key(&mut self, key: KeyEvent) {
+        let Some(changes) = &mut self.changes else { return };
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => changes.step(1),
+            KeyCode::Up | KeyCode::Char('k') => changes.step(-1),
+            KeyCode::PageDown => changes.step(10),
+            KeyCode::PageUp => changes.step(-10),
+            KeyCode::Right | KeyCode::Char('l') => changes.fold(true),
+            KeyCode::Left | KeyCode::Char('h') => changes.fold(false),
+            KeyCode::Enter => match changes.selected().map(|r| (r.is_dir, r.expanded)) {
+                Some((true, expanded)) => changes.fold(!expanded),
+                Some((false, _)) if self.changes_expanded => self.reading = true,
+                Some((false, _)) => (self.changes_expanded, self.reading) = (true, true),
+                None => {}
+            },
             _ => {}
         }
     }
 
-    fn activate(&mut self) {
-        match self.focus {
-            Focus::Workspaces => self.set_focus(Focus::Sessions),
-            // Into the session's terminal, or a first shell in it.
-            Focus::Sessions if self.active.is_some() => self.set_focus(Focus::Terminal),
-            Focus::Sessions => self.spawn(&shell(), true),
-            Focus::Graph if matches!(self.ws().selected_graph_item(), Some(GraphItem::Row(_))) => self.toggle_commit(),
-            Focus::Changes | Focus::Graph => {
+    // Mouse
+
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.prefixed = false;
+        }
+        if self.help {
+            self.help = !matches!(mouse.kind, MouseEventKind::Down(_));
+            return;
+        }
+        if self.repos.is_some() || self.search.is_some() {
+            self.popup_mouse(mouse);
+            return;
+        }
+        if self.prompt.is_some() || self.asking.is_some() {
+            if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                let pos = Position::new(mouse.column, mouse.row);
+                self.prompt = None;
+                // Yes on the bottom line answers; a click anywhere else is no.
+                if let Some((_, confirm)) = self.asking.take()
+                    && self.areas.yes.contains(pos)
+                    && self.confirmed(confirm)
+                {
+                    self.quit = true;
+                }
+            }
+            return;
+        }
+        let pos = Position::new(mouse.column, mouse.row);
+        let areas = self.areas.clone();
+        let down = mouse.kind == MouseEventKind::Down(MouseButton::Left);
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        let (wheel, sideways): (i32, isize) = match mouse.kind {
+            // Shift + wheel scrolls sideways, like most editors.
+            MouseEventKind::ScrollUp if shift => (0, -6),
+            MouseEventKind::ScrollDown if shift => (0, 6),
+            MouseEventKind::ScrollUp => (-3, 0),
+            MouseEventKind::ScrollDown => (3, 0),
+            // Horizontal swipes on a trackpad.
+            MouseEventKind::ScrollLeft => (0, -4),
+            MouseEventKind::ScrollRight => (0, 4),
+            _ => (0, 0),
+        };
+        // Dragging a border: the sidebar's, the right side's, a tree's.
+        if let Some(drag) = self.dragging {
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => match drag {
+                    Drag::Sidebar => self.left_width = Some(pos.x + 1),
+                    Drag::Right => self.right_width = Some(areas.width.saturating_sub(pos.x)),
+                    Drag::Tree(x) => self.tree_width = Some(pos.x.saturating_sub(x).max(8)),
+                },
+                _ => self.dragging = None,
+            }
+            return;
+        }
+        if down {
+            let tree = areas.tree_dividers.iter().find(|(r, _)| r.contains(pos)).map(|&(_, x)| Drag::Tree(x));
+            self.dragging = tree.or_else(|| {
+                if areas.left_divider.contains(pos) {
+                    Some(Drag::Sidebar)
+                } else {
+                    areas.divider.contains(pos).then_some(Drag::Right)
+                }
+            });
+            if self.dragging.is_some() {
+                return;
+            }
+        }
+        // Selecting text in a terminal: copied when the button comes up.
+        if let Some(selecting) = self.selecting.as_mut().filter(|s| s.dragging)
+            && matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left))
+        {
+            let term = areas.term;
+            let cell = (pos.y.clamp(term.y, term.bottom().saturating_sub(1)) - term.y, pos.x.clamp(term.x, term.right().saturating_sub(1)) - term.x);
+            selecting.to = cell;
+            if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+                selecting.dragging = false;
+                let (id, from, to) = (selecting.id, selecting.from, selecting.to);
+                if from == to {
+                    self.selecting = None;
+                } else if let Some(text) = self.terms.iter().find(|t| t.id == id).map(|t| t.selection(from, to)) {
+                    let lines = text.lines().count().max(1);
+                    self.message = Some(if set_clipboard(&text) { format!("copied {lines} line(s)") } else { "could not copy".into() });
+                }
+            }
+            return;
+        }
+        // A click elsewhere ends what was selected.
+        if down {
+            self.selecting = None;
+        }
+        // At the same place: a column off still counts, another panel doesn't.
+        let double = down && self.last_click.is_some_and(|(at, when)| at.y == pos.y && at.x.abs_diff(pos.x) <= 1 && when.elapsed() < DOUBLE_CLICK);
+        if down {
+            self.last_click = Some((pos, Instant::now()));
+        }
+        let row = |area: Rect, offset: usize| (pos.y - area.y) as usize + offset;
+        // Only a click moves the focus: hovering or scrolling a panel leaves it.
+
+        if down && areas.counts.contains(pos) {
+            self.next_waiting();
+        } else if down && areas.workspaces.contains(pos) {
+            self.set_focus(Focus::Workspaces);
+            let i = row(areas.workspaces, self.workspaces_state.offset());
+            if i < self.repos().len() {
+                self.workspaces_state.select(Some(i));
                 self.on_select();
-                if self.viewer.is_open() {
-                    self.read_in_viewer();
+            }
+        } else if down && areas.sessions.contains(pos) {
+            self.set_focus(Focus::Sessions);
+            // Two rows per session.
+            let i = (pos.y - areas.sessions.y) as usize / 2 + self.sessions_state.offset();
+            if i < self.sessions().len() {
+                self.sessions_state.select(Some(i));
+                self.on_select();
+                if double {
+                    self.set_focus(Focus::Terminal);
                 }
             }
-            _ => {}
+        } else if let Some(&(tab, _)) = areas.tabs.iter().find(|(_, r)| r.contains(pos)) {
+            if down {
+                match tab {
+                    Some(id) => {
+                        self.select_term(id);
+                        self.set_focus(Focus::Terminal);
+                    }
+                    None => self.new_terminal(true),
+                }
+            }
+        } else if areas.term.contains(pos) {
+            self.mouse_in_terminal(mouse, pos, wheel);
+        } else if areas.files_tree.contains(pos) {
+            if down {
+                self.focus = Focus::Files;
+            }
+            if down && self.editor.is_none() {
+                self.reading = false;
+                let w = self.ws_mut();
+                let i = row(areas.files_tree, w.files_state.offset());
+                if i < w.tree.rows.len() {
+                    let again = w.files_state.selected() == Some(i);
+                    w.files_state.select(Some(i));
+                    self.preview();
+                    match self.ws().selected_row().map(|r| (r.is_dir, r.expanded)) {
+                        Some((true, expanded)) if again || double => self.fold_tree(!expanded),
+                        Some((false, _)) if double => (self.files_expanded, self.reading) = (true, true),
+                        _ => {}
+                    }
+                }
+            } else if wheel != 0 && self.editor.is_none() {
+                self.tree_step(wheel.signum() as isize);
+            }
+        } else if areas.files_file.contains(pos) {
+            if down {
+                self.focus = Focus::Files;
+            }
+            if down {
+                self.reading = self.files_expanded;
+            }
+            if let Some(editor) = &mut self.editor {
+                let (r, column) = ((pos.y - areas.editor.y) as usize, (pos.x.saturating_sub(areas.editor.x)) as usize);
+                let column = column.saturating_sub(editor.gutter());
+                match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Left) => editor.click(r, column, shift),
+                    MouseEventKind::Drag(MouseButton::Left) => editor.click(r, column, true),
+                    _ if wheel != 0 => editor.scroll_by(wheel as isize),
+                    _ if sideways != 0 => editor.scroll_sideways(sideways),
+                    _ => {}
+                }
+            } else if wheel != 0 {
+                self.viewer.scroll_by(wheel as isize);
+            } else if sideways != 0 {
+                self.viewer.scroll_sideways(sideways);
+            } else if double && self.viewer.is_open() {
+                self.files_expanded = !self.files_expanded;
+                self.reading = self.files_expanded;
+            }
+        } else if areas.changes_tree.contains(pos) {
+            if down {
+                self.focus = Focus::Changes;
+            }
+            if down {
+                self.reading = false;
+            }
+            let Some(changes) = &mut self.changes else { return };
+            if down {
+                let i = row(areas.changes_tree, changes.state.offset());
+                if i < changes.rows.len() {
+                    let again = changes.state.selected() == Some(i);
+                    changes.state.select(Some(i));
+                    changes.follow();
+                    match changes.selected().map(|r| (r.is_dir, r.expanded)) {
+                        Some((true, expanded)) if again || double => changes.fold(!expanded),
+                        Some((false, _)) if double => (self.changes_expanded, self.reading) = (true, true),
+                        _ => {}
+                    }
+                }
+            } else if wheel != 0 {
+                changes.step(wheel.signum() as isize);
+            }
+        } else if areas.changes_ruler.contains(pos) {
+            if let Some(changes) = &mut self.changes
+                && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left))
+            {
+                changes.jump_to((pos.y - areas.changes_ruler.y) as usize, areas.changes_ruler.height as usize);
+            }
+        } else if areas.changes_file.contains(pos) {
+            if down {
+                self.focus = Focus::Changes;
+                self.reading = self.changes_expanded;
+            }
+            if let Some(changes) = &mut self.changes {
+                if sideways != 0 {
+                    changes.scroll_sideways(sideways);
+                } else if wheel != 0 {
+                    changes.scroll_by(wheel as isize);
+                } else if double && changes.diff.is_some() {
+                    self.changes_expanded = !self.changes_expanded;
+                    self.reading = self.changes_expanded;
+                }
+            }
         }
     }
 
-    /// Unfold the selected commit to list its files, or fold it.
-    fn toggle_commit(&mut self) {
-        let ws = self.ws();
-        if let Some(GraphItem::Row(row)) = ws.selected_graph_item()
-            && let Some(commit) = &row.commit
-        {
-            let (hash, open) = (commit.hash.clone(), !ws.is_commit_open(&commit.hash));
-            self.ws_mut().set_commit_open(&hash, open);
+    /// In the search popup or the repository picker: a click picks a row
+    /// (twice: opens it), the wheel moves, a click outside closes it.
+    fn popup_mouse(&mut self, mouse: MouseEvent) {
+        let pos = Position::new(mouse.column, mouse.row);
+        let (popup, list) = (self.areas.popup, self.areas.popup_list);
+        let down = mouse.kind == MouseEventKind::Down(MouseButton::Left);
+        let delta = match mouse.kind {
+            MouseEventKind::ScrollUp => -1,
+            MouseEventKind::ScrollDown => 1,
+            _ if down && list.contains(pos) => {
+                // From the row selected to the one clicked.
+                let offset_and_at = match (&self.search, &self.repos) {
+                    (Some(s), _) if s.mode == Mode::Files && s.query.is_empty() => {
+                        let state = &self.ws().files_state;
+                        (state.offset(), state.selected().unwrap_or(0))
+                    }
+                    (Some(s), _) | (None, Some(s)) => (s.state.offset(), s.state.selected().unwrap_or(0)),
+                    (None, None) => return,
+                };
+                (pos.y - list.y) as isize + offset_and_at.0 as isize - offset_and_at.1 as isize
+            }
+            _ if down && !popup.contains(pos) => {
+                (self.search, self.repos) = (None, None);
+                return;
+            }
+            _ => return,
+        };
+        let double = down && self.last_click.is_some_and(|(at, when)| at == pos && when.elapsed() < DOUBLE_CLICK);
+        if down {
+            self.last_click = Some((pos, Instant::now()));
+        }
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        if self.search.is_some() {
+            self.search_step(delta);
+            if double {
+                self.search_key(enter);
+            }
+        } else if let Some(repos) = &mut self.repos {
+            repos.step(delta);
+            if double {
+                self.repos_key(enter);
+            }
         }
     }
 
-    /// Unfold the selected commit in Graph to list its files, or fold it.
-    fn expand(&mut self, open: bool) {
-        if self.focus != Focus::Graph {
+    /// A program that asked for the mouse gets it (unless shift is down);
+    /// else the wheel scrolls back, a drag selects to copy, and ctrl-click
+    /// opens a link or a path.
+    fn mouse_in_terminal(&mut self, mouse: MouseEvent, pos: Position, wheel: i32) {
+        let area = self.areas.term;
+        let Some(id) = self.active else { return };
+        let Some(term) = self.terms.iter_mut().find(|t| t.id == id) else { return };
+        let (row, col) = (pos.y - area.y, pos.x - area.x);
+        let down = mouse.kind == MouseEventKind::Down(MouseButton::Left);
+        if down && mouse.modifiers.contains(KeyModifiers::CONTROL) {
+            let (word, cwd) = (term.word_at(row, col), term.info.cwd.clone());
+            if !word.is_empty() {
+                self.open_link(&word, &cwd);
+            }
             return;
         }
-        let ws = self.ws();
-        let Some(hash) = ws.selected_commit().map(|c| c.hash.clone()) else { return };
-        match ws.selected_graph_item() {
-            // On a file, h goes back to its commit (and h again folds it).
-            Some(GraphItem::File(..)) if !open => self.ws_mut().set_commit_open(&hash, true),
-            Some(GraphItem::Row(_)) if ws.is_commit_open(&hash) != open => self.ws_mut().set_commit_open(&hash, open),
-            _ => return,
+        if term.wants_mouse() && !mouse.modifiers.contains(KeyModifiers::SHIFT) {
+            term.mouse(mouse.kind, col + 1, row + 1, mouse.modifiers);
+        } else if wheel != 0 {
+            scroll_term(term, wheel as isize);
+        } else if down {
+            self.selecting = Some(Selecting { id, from: (row, col), to: (row, col), dragging: true });
         }
-        self.on_select();
-    }
-}
-
-impl App {
-    // Isolated sessions
-
-    /// The current session, if it is an isolated one.
-    pub fn isolated_current(&self) -> Option<&session::Session> {
-        let root = &self.ws().root;
-        self.isolated.iter().find(|s| &s.root == root)
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.focus = Focus::Terminal;
+        }
     }
 
-    /// Copy the repository's main checkout into a new session, show it, and
-    /// set it up in its first terminal: main's images, a copy of its
-    /// database, its own containers. The terminal stays as its shell.
-    fn create_session(&mut self, repo: &Path, name: &str, start: Option<&str>) {
-        let made = session::config(repo).and_then(|(config, warnings)| {
-            let session = session::create(repo, name, &config)?;
-            Ok((session::setup_script(&session, &config, &warnings, start), session.root))
+    /// A link opens in the browser; a path (with `:line`, as tools print
+    /// them) shows in Files, there.
+    fn open_link(&mut self, word: &str, cwd: &Path) {
+        if word.starts_with("http://") || word.starts_with("https://") {
+            let opened = std::process::Command::new("open").arg(word).status().is_ok_and(|s| s.success());
+            self.message = Some(if opened { format!("opened {word}") } else { format!("could not open {word}") });
+            return;
+        }
+        let mut parts = word.split(':');
+        let path = PathBuf::from(parts.next().unwrap_or_default());
+        let line = parts.next().and_then(|n| n.parse::<usize>().ok()).map(|n| n.saturating_sub(1));
+        let path = if path.is_absolute() { path } else { cwd.join(path) };
+        if !path.is_file() {
+            self.message = Some(format!("no link or file at {word:?}"));
+            return;
+        }
+        if self.editing() {
+            self.message = Some(UNSAVED.into());
+            return;
+        }
+        self.editor = None;
+        self.search = None;
+        self.focus = Focus::Files;
+        self.show_file(path, line);
+        self.files_expanded = true;
+        self.reading = true;
+    }
+
+    // Task sessions
+
+    /// Copy the repository's main checkout into a new session, in the
+    /// background (`on_copied` goes on).
+    fn create_session(&mut self, name: &str) {
+        let (repo, name, tx) = (self.ws().repo.clone(), name.to_string(), self.tx.clone());
+        let place = self.place(&repo).unwrap_or_default();
+        // Asked twice: the first copy is still being made.
+        if !self.copying.insert((repo.clone(), name.clone())) {
+            self.message = Some(format!("session {name} is being made already"));
+            return;
+        }
+        self.message = Some(format!("copying {place} into session {name}…"));
+        std::thread::spawn(move || {
+            let made = session::config(&repo).and_then(|(config, _)| session::create(&repo, &name, &config));
+            let _ = tx.send(Msg::Copied((repo, name), made.map(|s| s.root).map_err(|e| format!("could not make the session: {e:#}"))));
         });
-        let (script, root) = match made {
-            Ok(made) => made,
+    }
+
+    /// The copy is made: show it with a shell in it, yours at once, and set
+    /// it up in the background: main's images, a copy of its database, its
+    /// own containers.
+    pub fn on_copied(&mut self, copy: (PathBuf, String), made: Result<PathBuf, String>) {
+        self.copying.remove(&copy);
+        let root = match made {
+            Ok(root) => root,
             Err(e) => {
-                self.message = Some(format!("could not make the session: {e:#}"));
+                self.message = Some(e);
                 return;
             }
         };
         self.load_workspaces();
+        let Some(session) = self.isolated.iter().find(|s| s.root == root).cloned() else { return };
         if let Some(i) = self.workspaces.iter().position(|w| w.root == root) {
             self.set_current(i);
-            self.set_focus(Focus::Sessions);
         }
-        self.run("sh", &["-c".into(), script], true);
+        self.spawn_in(root.clone(), &shell(), &[], true);
+        let (config, warnings) = match session::config(&session.repo) {
+            Ok(config) => config,
+            Err(e) => {
+                self.message = Some(format!("session {}: could not read its settings: {e:#}", session.name));
+                return;
+            }
+        };
+        let script = session::setup_script(&session, &config, &warnings);
+        let log = logs().join(format!("setup-{}.log", session.project));
+        match run_in_background(&script, &root, &session, &log) {
+            Ok(mut child) => {
+                self.setting_up.insert(root.clone(), child.id());
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    let ok = child.wait().is_ok_and(|status| status.success());
+                    let _ = tx.send(Msg::SetUp(root, log, ok));
+                });
+                self.message = Some(format!("session {} is yours; setting it up in the background", session.name));
+            }
+            Err(e) => self.message = Some(format!("could not set up session {}: {e}", session.name)),
+        }
     }
 
-    /// x x on an isolated session: stop its terminals, take it off the list,
-    /// and in the background remove its containers and volumes (its
-    /// database) and the copy. The first x says what would be lost.
-    fn remove_session(&mut self, pending: Option<char>, key_name: &str) {
-        let Some(session) = self.isolated_current().cloned() else { return };
-        if pending != Some('x') || self.deleting.as_ref() != Some(&session.root) {
-            self.deleting = Some(session.root.clone());
-            let lost = session::unsaved(&session);
-            let lost = if lost.is_empty() { String::new() } else { format!(", losing {}", lost.join(" and ")) };
-            self.confirm('x', format!("press {key_name} again to delete session {}: its copy, containers and database{lost}", session.name));
-            return;
+    pub fn on_set_up(&mut self, root: PathBuf, log: PathBuf, ok: bool) {
+        self.setting_up.remove(&root);
+        let name = root.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        self.message = Some(if ok { format!("session {name} is set up") } else { format!("the setup of session {name} stopped: see {}", log.display()) });
+        // Marked in Sessions until it's gone, and said again on going there.
+        if !ok {
+            self.setup_failed.insert(root, log);
         }
-        self.deleting = None;
+    }
+
+    /// Stop the session's terminals, take it off the list, and in the
+    /// background remove its containers and volumes (its database) and the
+    /// copy.
+    fn remove_session(&mut self, root: &Path) {
+        let Some(session) = self.isolated.iter().find(|s| s.root == root).cloned() else { return };
         let Ok(exe) = std::env::current_exe() else { return };
         let config = session::config(&session.repo).map(|(c, _)| c).unwrap_or_default();
         let script = session::teardown_script(&session, &config, &exe);
         // Its terminals stop the usual way (ctrl-c, then hang up).
         let ids: Vec<usize> = self.terms.iter().filter(|t| t.info.cwd == session.root).map(|t| t.id).collect();
         for id in ids {
-            self.link.send(&ToServer::Close { id: id as u32 });
-            self.remove_term(id);
+            self.close_terminal(id);
         }
-        // In the background, from main, with the session's Compose project
-        // and ports; its own process group, so it outlives Pulpo.
-        let log = crate::agents::state_dir().join(format!("remove-{}.log", session.project));
-        let started = std::fs::File::create(&log).and_then(|out| {
-            use std::os::unix::process::CommandExt;
-            std::process::Command::new("sh")
-                .args(["-c", &script])
-                .current_dir(&session.repo)
-                .envs(session::env(&session))
-                .stdin(std::process::Stdio::null())
-                .stdout(out.try_clone()?)
-                .stderr(out)
-                .process_group(0)
-                .spawn()
-        });
-        let mut child = match started {
+        // From main, with the session's Compose project and ports.
+        let log = logs().join(format!("remove-{}.log", session.project));
+        let mut child = match run_in_background(&script, &session.repo, &session, &log) {
             Ok(child) => child,
             Err(e) => {
                 self.message = Some(format!("could not delete session {}: {e}", session.name));
@@ -2860,303 +2174,66 @@ impl App {
         self.message = Some(format!("session {} deleted", session.name));
     }
 
-    // Files
-
-    /// Ask for a name, in the folder of the file on screen (or at the top).
-    fn start_create(&mut self) {
-        let root = self.ws().root.clone();
-        let dir = match &self.viewer.source {
-            Some(Source::File(path) | Source::Diff { path, .. }) => path.parent().filter(|d| d.starts_with(&root)).map(Path::to_path_buf),
-            _ => None,
-        };
-        let dir = dir.unwrap_or(root);
-        self.creating = Some(Create { dir, name: String::new(), session: false });
-    }
-
-    fn create(&mut self) {
-        let Some(Create { dir, name, session }) = self.creating.take() else { return };
-        let name = name.trim();
-        if name.is_empty() {
-            return;
-        }
-        if session {
-            self.create_session(&dir, name, None);
-            return;
-        }
-        let path = dir.join(name.trim_end_matches('/'));
-        let root = self.ws().root.clone();
-        if !path.starts_with(&root) || path.components().any(|c| c == std::path::Component::ParentDir) {
-            self.message = Some("new files go inside the workspace".into());
-            return;
-        }
-        let rel = path.strip_prefix(&root).unwrap_or(&path).display().to_string();
-        if path.exists() {
-            self.message = Some(format!("{rel} already exists"));
-            return;
-        }
-        let folder = name.ends_with('/');
-        let made = if folder {
-            std::fs::create_dir_all(&path)
+    /// A session's removal ended: if it failed, the session is back.
+    pub fn on_removed(&mut self, root: PathBuf, log: PathBuf, ok: bool) {
+        self.removing.remove(&root);
+        self.load_workspaces();
+        if ok {
+            let _ = std::fs::remove_file(&log);
         } else {
-            path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::File::create_new(&path).map(drop))
-        };
-        if let Err(e) = made {
-            self.message = Some(format!("could not create {rel}: {e}"));
-            return;
-        }
-        // Where the files open next time.
-        self.ws_mut().reveal(&path);
-        if folder {
-            self.message = Some(format!("created {rel}/"));
-        } else {
-            self.edit_path(path, None);
+            let name = root.file_name().unwrap_or_default().to_string_lossy();
+            self.message = Some(format!("could not delete session {name}; see {}", log.display()));
         }
     }
-
-    /// Delete the file or folder selected in the files, after a second ctrl-x.
-    fn delete(&mut self, pending: Option<char>) {
-        let Some((path, is_dir)) = self.file_row() else { return };
-        let ws = self.ws();
-        let rel = path.strip_prefix(&ws.root).unwrap_or(&path).display().to_string();
-        if pending != Some('x') || self.deleting.as_ref() != Some(&path) {
-            let what = if is_dir { format!("{rel}/ and everything in it") } else { rel };
-            let undo = if git::is_tracked(&ws.root, &path) {
-                "git can restore the last commit"
-            } else {
-                "not in git, it can't be recovered"
-            };
-            self.deleting = Some(path);
-            self.confirm('x', format!("press ctrl-x again to delete {what} ({undo})"));
-            return;
-        }
-        self.deleting = None;
-        let deleted = if is_dir { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
-        match deleted {
-            Ok(()) => {
-                if let Some(Source::File(open) | Source::Diff { path: open, .. }) = &self.viewer.source
-                    && open.starts_with(&path)
-                {
-                    self.viewer.close();
-                }
-                let w = self.ws_mut();
-                w.tree.rebuild();
-                w.reselect(None);
-                if let Some(search) = &mut self.search {
-                    search.rescan(&self.tx);
-                }
-                self.message = Some(format!("deleted {rel}"));
-            }
-            Err(e) => self.message = Some(format!("could not delete {rel}: {e}")),
-        }
-    }
-
-    /// Edit the file in the viewer, or the one selected in the files or Changes.
-    fn edit(&mut self) {
-        match self.selected_path() {
-            Some((path, line)) if path.is_file() => self.edit_path(path, line),
-            Some((path, _)) if path.is_dir() => self.message = Some("select a file to edit".into()),
-            Some(_) => self.message = Some("that file is not in the working tree".into()),
-            None => self.message = Some("select a file to edit".into()),
-        }
-    }
-
-    /// Edit a file in your own editor ($PULPO_EDITOR), or else here.
-    fn edit_path(&mut self, path: PathBuf, line: Option<usize>) {
-        if external_editor().is_some() {
-            self.open_editor(path, line);
-        } else {
-            self.edit_here(path, line);
-        }
-    }
-
-    /// The file (or folder, in the files) selected, and in the viewer the
-    /// line on screen.
-    fn selected_path(&self) -> Option<(PathBuf, Option<usize>)> {
-        if self.search.is_some() {
-            return self.file_row().map(|(path, _)| (path, None));
-        }
-        let ws = self.ws();
-        match self.focus {
-            Focus::Viewer => match &self.viewer.source {
-                Some(Source::File(path)) => Some((path.clone(), Some(self.viewer.mark.unwrap_or(self.viewer.scroll) + 1))),
-                Some(Source::Diff { path, .. } | Source::CommitFile { path, .. }) => Some((path.clone(), None)),
-                _ => None,
-            },
-            Focus::Changes => ws.selected_change().map(|(path, _)| (path, None)),
-            Focus::Graph => match ws.selected_graph_item() {
-                Some(GraphItem::File(_, change)) => Some((ws.root.join(&change.path), None)),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// Copy the selected path, relative to the workspace, to the clipboard.
-    fn copy_path(&mut self) {
-        let Some((path, _)) = self.selected_path() else {
-            self.message = Some("select a file to copy its path".into());
-            return;
-        };
-        let rel = path.strip_prefix(&self.ws().root).unwrap_or(&path).display().to_string();
-        self.message = Some(if set_clipboard(&rel) { format!("copied {rel}") } else { "could not copy to the clipboard".into() });
-    }
-
-    /// Edit `path` in Pulpo, on the right, looking exactly like the viewer.
-    fn edit_here(&mut self, path: PathBuf, line: Option<usize>) {
-        // Already open, or unsaved changes there: back to it instead.
-        if let Some(editor) = &self.editor
-            && (editor.path == path || editor.dirty)
-        {
-            if editor.path != path {
-                self.message = Some("unsaved changes in the editor: ctrl-s saves them, esc discards them".into());
-            }
-            self.set_focus(Focus::Editor);
-            return;
-        }
-        match Editor::open(path, line) {
-            Ok(editor) => {
-                self.editor_back = if matches!(self.focus, Focus::Terminal | Focus::Editor) { self.sidebar_focus } else { self.focus };
-                self.editor = Some(editor);
-                self.set_focus(Focus::Editor);
-                self.viewer.expanded = true;
-            }
-            Err(e) => self.message = Some(e),
-        }
-    }
-
-    /// Close the editor; with unsaved changes, only when asked twice. The
-    /// viewer then shows the file where the cursor was.
-    fn close_editor(&mut self, pending: Option<char>) {
-        let Some(editor) = &self.editor else { return };
-        if editor.dirty && pending != Some('E') {
-            self.confirm('E', "unsaved changes: ctrl-s saves them, esc again closes without saving".into());
-            return;
-        }
-        let Some(editor) = self.editor.take() else { return };
-        let root = self.ws().root.clone();
-        self.viewer.open_at(editor.path.clone(), Some(editor.cursor.line + 1), &root);
-        self.viewer.reload(&root);
-        self.set_focus(self.editor_back);
-    }
-
-    /// Keys in the editor: the usual ones (micro, VS Code).
-    fn editor_key(&mut self, key: KeyEvent, pending: Option<char>) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
-        self.message = None;
-        let Some(editor) = &mut self.editor else { return };
-        // Typing what to find.
-        if editor.find_typing {
-            match key.code {
-                KeyCode::Esc => editor.find_typing = false,
-                KeyCode::Enter => {
-                    editor.find_next(!shift);
-                }
-                KeyCode::Backspace => {
-                    editor.find.get_or_insert_default().pop();
-                }
-                KeyCode::Char(c) if !ctrl => {
-                    editor.find.get_or_insert_default().push(c);
-                    // Look again from where this match starts.
-                    if let Some((start, _)) = editor.selection() {
-                        editor.click_at(start);
-                    }
-                    editor.find_next(true);
-                }
-                _ => {}
-            }
-            editor.follow_cursor();
-            return;
-        }
-        match key.code {
-            KeyCode::Esc if editor.find.is_some() => editor.find = None,
-            KeyCode::Esc => return self.close_editor(pending),
-            KeyCode::Char('q') if ctrl => return self.close_editor(pending),
-            KeyCode::Char('s') if ctrl => {
-                let message = match editor.save() {
-                    Ok(()) => format!("saved {}", editor.path.file_name().unwrap_or_default().to_string_lossy()),
-                    Err(e) => e,
-                };
-                self.message = Some(message);
-                return;
-            }
-            KeyCode::Char('z') if ctrl && shift => editor.redo(),
-            KeyCode::Char('Z') if ctrl => editor.redo(),
-            KeyCode::Char('z') if ctrl => editor.undo(),
-            KeyCode::Char('y') if ctrl => editor.redo(),
-            KeyCode::Char('a') if ctrl => editor.select_all(),
-            KeyCode::Char('c') if ctrl => {
-                let text = editor.copy();
-                set_clipboard(&text);
-            }
-            KeyCode::Char('x') if ctrl => {
-                let text = editor.cut();
-                set_clipboard(&text);
-            }
-            KeyCode::Char('v') if ctrl => {
-                if let Some(text) = clipboard() {
-                    editor.insert(&text);
-                }
-            }
-            KeyCode::Char('f') if ctrl => {
-                editor.find_typing = true;
-                editor.find.get_or_insert_default();
-            }
-            KeyCode::Char('g') if ctrl => {
-                editor.find_next(!shift);
-            }
-            KeyCode::Left if alt || ctrl => editor.word(false, shift),
-            KeyCode::Right if alt || ctrl => editor.word(true, shift),
-            KeyCode::Left => editor.left(shift),
-            KeyCode::Right => editor.right(shift),
-            KeyCode::Up => editor.vertical(-1, shift),
-            KeyCode::Down => editor.vertical(1, shift),
-            KeyCode::Home if ctrl => editor.edge(false, shift),
-            KeyCode::End if ctrl => editor.edge(true, shift),
-            KeyCode::Home => editor.home(shift),
-            KeyCode::End => editor.end(shift),
-            KeyCode::PageUp => editor.page(-1, shift),
-            KeyCode::PageDown => editor.page(1, shift),
-            KeyCode::Enter => editor.newline(),
-            KeyCode::Tab => editor.tab(),
-            KeyCode::BackTab => editor.untab(),
-            KeyCode::Backspace => editor.backspace(alt || ctrl),
-            KeyCode::Delete => editor.delete(alt || ctrl),
-            KeyCode::Char(c) if !ctrl => editor.insert(&c.to_string()),
-            _ => {}
-        }
-        editor.follow_cursor();
-    }
-
-    /// Open `path` in your own editor ($PULPO_EDITOR), in a terminal, full
-    /// height.
-    fn open_editor(&mut self, path: PathBuf, line: Option<usize>) {
-        let Some(mut args) = external_editor() else { return };
-        let program = args.remove(0);
-        let back = if self.focus == Focus::Terminal { self.sidebar_focus } else { self.focus };
-        args.extend(editor_look(&program));
-        let file = path.display().to_string();
-        match line {
-            Some(n) if program.ends_with("hx") => args.push(format!("{file}:{n}")),
-            Some(n) => args.extend([format!("+{n}"), file]),
-            None => args.push(file),
-        }
-        if let Some(id) = self.run(&program, &args, true) {
-            self.editing = Some((id, path, back));
-            self.zoomed = true;
-        }
-    }
-
-    /// The terminal on screen is a file editor.
-    pub fn in_editor(&self) -> bool {
-        self.editing.as_ref().is_some_and(|(id, ..)| self.active == Some(*id))
-    }
-
 }
 
-/// A desktop notification from the terminal Pulpo runs in (OSC 9, which
-/// Ghostty shows as a macOS notification).
+/// Where setup and removal logs go: not in the state folder itself, which
+/// is watched for the agents' events.
+fn logs() -> PathBuf {
+    let dir = crate::agents::state_dir().join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// `script` run by sh in `dir` with the session's environment, its output
+/// in `log`; in its own process group, so it outlives Pulpo.
+fn run_in_background(script: &str, dir: &Path, session: &session::Session, log: &Path) -> std::io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+    let out = std::fs::File::create(log)?;
+    std::process::Command::new("sh")
+        .args(["-c", script])
+        .current_dir(dir)
+        .envs(session::env(session))
+        .stdin(std::process::Stdio::null())
+        .stdout(out.try_clone()?)
+        .stderr(out)
+        .process_group(0)
+        .spawn()
+}
+
+enum Scroll {
+    Rows(isize),
+    Sideways(isize),
+}
+
+/// Reading keys in a file at full height: down, up, a half page, top,
+/// bottom, sideways.
+fn scroll_keys(key: KeyEvent, height: usize) -> Option<Scroll> {
+    let half = (height / 2).max(1) as isize;
+    Some(match key.code {
+        KeyCode::Down | KeyCode::Char('j') => Scroll::Rows(1),
+        KeyCode::Up | KeyCode::Char('k') => Scroll::Rows(-1),
+        KeyCode::PageDown | KeyCode::Char('d' | ' ') => Scroll::Rows(half),
+        KeyCode::PageUp | KeyCode::Char('u') => Scroll::Rows(-half),
+        KeyCode::Home | KeyCode::Char('g') => Scroll::Rows(isize::MIN / 2),
+        KeyCode::End | KeyCode::Char('G') => Scroll::Rows(isize::MAX / 2),
+        KeyCode::Left | KeyCode::Char('h') => Scroll::Sideways(-8),
+        KeyCode::Right | KeyCode::Char('l') => Scroll::Sideways(8),
+        KeyCode::Char('0') => Scroll::Sideways(0),
+        _ => return None,
+    })
+}
+
 /// The wheel over a terminal: its history, or, like Ghostty, arrow keys
 /// for full-screen programs (less, man…).
 fn scroll_term(term: &mut Term, rows: isize) {
@@ -3170,16 +2247,11 @@ fn scroll_term(term: &mut Term, rows: isize) {
     }
 }
 
+/// A desktop notification from the terminal Pulpo runs in (OSC 9, which
+/// Ghostty shows as a macOS notification).
 fn notify(text: &str) {
     let text: String = text.chars().filter(|c| !c.is_control()).take(200).collect();
     crate::term::to_host(format!("\x1b]9;{text}\x07").as_bytes());
-}
-
-/// Your own terminal editor, if you set $PULPO_EDITOR; otherwise Pulpo
-/// edits files itself. $EDITOR is not used, as it is often a GUI app.
-fn external_editor() -> Option<Vec<String>> {
-    let cmd = std::env::var("PULPO_EDITOR").ok().filter(|c| !c.trim().is_empty())?;
-    Some(cmd.split_whitespace().map(String::from).collect())
 }
 
 /// Put `text` on the system clipboard.
@@ -3199,43 +2271,6 @@ fn set_clipboard(text: &str) -> bool {
 fn clipboard() -> Option<String> {
     let out = std::process::Command::new("pbpaste").output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// Arguments giving the editor Pulpo's colors, unless you configured it
-/// yourself. vim and nvim also get a few defaults (macOS vim otherwise
-/// starts without syntax highlighting).
-fn editor_look(program: &str) -> Vec<String> {
-    let look = || -> Option<Vec<String>> {
-        let home = PathBuf::from(std::env::var_os("HOME")?);
-        let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| home.join(".config"), PathBuf::from);
-        match Path::new(program).file_name()?.to_str()? {
-            "micro" => {
-                let dir = std::env::var_os("MICRO_CONFIG_HOME").map_or_else(|| config.join("micro"), PathBuf::from);
-                let settings = std::fs::read_to_string(dir.join("settings.json")).unwrap_or_default();
-                if settings.contains("\"colorscheme\"") {
-                    return None;
-                }
-                // Only for this session: micro doesn't save options given as flags.
-                std::fs::create_dir_all(dir.join("colorschemes")).ok()?;
-                std::fs::write(dir.join("colorschemes/pulpo.micro"), include_str!("editor.micro")).ok()?;
-                Some(vec!["-colorscheme".into(), "pulpo".into()])
-            }
-            name @ ("vim" | "vi" | "nvim") => {
-                let own = match name {
-                    "nvim" => vec![config.join("nvim/init.lua"), config.join("nvim/init.vim")],
-                    _ => vec![home.join(".vimrc"), home.join(".vim/vimrc"), config.join("vim/vimrc")],
-                };
-                if own.iter().any(|f| f.exists()) {
-                    return None;
-                }
-                let script = std::env::temp_dir().join("pulpo-editor.vim");
-                std::fs::write(&script, include_str!("editor.vim")).ok()?;
-                Some(vec!["-S".into(), script.display().to_string()])
-            }
-            _ => None,
-        }
-    };
-    look().unwrap_or_default()
 }
 
 pub fn shell() -> String {

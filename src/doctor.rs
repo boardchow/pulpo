@@ -1,13 +1,41 @@
-//! `pulpo doctor`: whether your keys reach Pulpo, and whether Claude
-//! reports to it. `--fix` changes what it can: Ghostty's Option key.
+//! `pulpo doctor`: whether the prefix reaches Pulpo, and whether
+//! Claude reports to it.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::keymap::{self, Key, Keymap};
 
-pub fn doctor(args: &[String]) -> anyhow::Result<()> {
-    let fix = args.iter().any(|a| a == "--fix");
+/// `pulpo keytest`: what Pulpo gets for each key pressed, and whether it's
+/// the prefix; q stops.
+pub fn keytest() -> anyhow::Result<()> {
+    use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+    use ratatui::crossterm::{execute, terminal};
+    let (keymap, _) = Keymap::load();
+    let keys: Vec<String> = keymap.prefix.iter().map(Key::to_string).collect();
+    println!("Press keys to see what Pulpo gets (as in Pulpo). The prefix: {}. q stops.\r", keys.join(" or "));
+    terminal::enable_raw_mode()?;
+    execute!(std::io::stdout(), PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES))?;
+    let result = (|| -> anyhow::Result<()> {
+        loop {
+            if let Event::Key(event) = event::read()?
+                && event.kind == KeyEventKind::Press
+            {
+                if event.code == KeyCode::Char('q') && event.modifiers.is_empty() {
+                    return Ok(());
+                }
+                let key = Key::of(event);
+                let note = if keymap.is_prefix(key) { "  ← the prefix" } else { "" };
+                println!("  {key}{note}\r");
+            }
+        }
+    })();
+    execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
+    terminal::disable_raw_mode()?;
+    result
+}
+
+pub fn doctor(_args: &[String]) -> anyhow::Result<()> {
     let mut ok = true;
 
     let (keymap, error) = Keymap::load();
@@ -21,35 +49,22 @@ pub fn doctor(args: &[String]) -> anyhow::Result<()> {
         None if path.exists() => println!("  ✓ read"),
         None => println!("  ✓ the defaults (no keys.toml)"),
     }
-    let prefixes: Vec<String> = keymap.prefix.iter().map(Key::to_string).collect();
-    println!("  prefix {}", prefixes.join(" or "));
+    let keys: Vec<String> = keymap.prefix.iter().map(Key::to_string).collect();
+    println!("  the prefix (then w s t f c, n x…): {}", keys.join(" or "));
     let ctrl_space = Key::parse("ctrl-space");
     if keymap.prefix.iter().any(|k| Some(*k) == ctrl_space)
         && let Some(layouts) = input_switch_on_ctrl_space()
     {
-        ok = false;
-        let others: Vec<&str> = prefixes.iter().map(String::as_str).filter(|p| *p != "⌃␣").collect();
+        // Only a problem when ⌃␣ is all there is.
+        ok &= keymap.prefix.len() > 1;
+        let others: Vec<&str> = keys.iter().map(String::as_str).filter(|k| *k != "⌃␣").collect();
         let fallback = if others.is_empty() { "nothing else".to_string() } else { others.join(" or ") };
-        println!("  ✗ macOS switches between your {layouts} input sources on ⌃␣, so Pulpo never gets it; {fallback} still works.");
+        println!("  · macOS switches between your {layouts} input sources on ⌃␣, so Pulpo never gets it; {fallback} work.");
         println!("    To free ⌃␣: System Settings › Keyboard › Keyboard Shortcuts › Input Sources,");
-        println!("    turn off \"Select the previous input source\".");
+        println!("    turn off \"Select the previous input source\" (or give it ⌃⌥Space).");
     }
 
-    let configs = ghostty_configs();
-    let written = configs.first().cloned().unwrap_or_else(|| home().join(".config/ghostty/config"));
-    println!("Ghostty  {}", crate::agents::shorten(&written));
-    match option_as_alt(&configs) {
-        Some(value) if value != "false" => println!("  ✓ macos-option-as-alt = {value}: ⌥1-9 and ⌥↑↓ reach Pulpo"),
-        _ if fix => {
-            add_option_as_alt(&written)?;
-            println!("  ✓ added macos-option-as-alt = left; reload Ghostty's config (⌘⇧,) or open a new window");
-        }
-        _ => {
-            ok = false;
-            println!("  ✗ macos-option-as-alt is not set: ⌥1-9 and ⌥↑↓ type characters instead of reaching Pulpo");
-            println!("    pulpo doctor --fix sets it to left, so the right Option key still types accents");
-        }
-    }
+    println!("  `pulpo keytest` shows what reaches Pulpo when you press a key.");
 
     println!("Claude Code");
     if crate::agents::hooks_installed() {
@@ -100,30 +115,3 @@ pub fn ghostty_configs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The last `macos-option-as-alt` in those files.
-fn option_as_alt(configs: &[PathBuf]) -> Option<String> {
-    let mut value = None;
-    for path in configs {
-        for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
-            if let Some((key, v)) = line.split_once('=')
-                && key.trim() == "macos-option-as-alt"
-            {
-                value = Some(v.trim().to_string());
-            }
-        }
-    }
-    value
-}
-
-fn add_option_as_alt(path: &Path) -> anyhow::Result<()> {
-    let mut text = std::fs::read_to_string(path).unwrap_or_default();
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str("\n# Pulpo: the left Option key is Alt (⌥1-9, ⌥↑↓); the right one still types accents.\nmacos-option-as-alt = left\n");
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, text)?;
-    Ok(())
-}
