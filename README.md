@@ -98,7 +98,7 @@ The mouse does all of it too. Click anything to go there (hovering changes nothi
 
 ### Changes
 
-Changes shows what this session did and nothing else: for a task session, everything since it was copied, commits included (agents commit as they go). For main, what's on your branch that isn't on main yet, and what isn't committed. Pick a file and you see the whole file with its changes in place, with marks down its right edge for where they are (click one to go there).
+Changes shows what this session did and nothing else: for a task session, everything since it was copied, commits included (agents commit as they go). On main itself, what isn't committed yet: a commit takes it away. On another branch, what the branch did since it left main. Pick a file and you see the whole file with its changes in place, with marks down its right edge for where they are (click one to go there).
 
 ### The prefix
 
