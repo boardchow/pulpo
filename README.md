@@ -32,13 +32,13 @@ It's a terminal multiplexer for coding agents. Think tmux, but it actually knows
 
 - Every agent gets its own copy of your repo. Nobody steps on anybody.
 - You see who's working and who's waiting on you.
-- Files, diffs and the git graph sit right next to the terminals, so reviewing is easy.
+- Files and what each session changed sit right next to the terminals, so reviewing is easy.
 - Quit whenever. The terminals keep running. Reboot, and they come back.
 
 That's it. That's the app.
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="Pulpo: the sidebar with workspaces, sessions, changes and graph on the left, a terminal on the right (before tabs and panes)">
+  <img src="assets/screenshot.png" alt="Pulpo: workspaces and sessions on the left, a terminal in the middle, files and changes on the right (an older layout)">
 </p>
 
 ## Install
@@ -69,130 +69,82 @@ pulpo
 
 Run it anywhere and you get your workspaces. Run it inside a git repo and it adds that one.
 
-The sidebar on the left has the pulpo (with who's working or waiting), your repos, sessions, the session's tabs, changes and graph. The right side is where you work: tabs, each split into panes like tmux. A pane is a terminal, or the file pane (the viewer, or the editor in its place), which follows you to the tab you're on. Your files are one key away: `f` shows them as a tree, and typing filters it. `/` searches inside them.
+Three columns, nothing else:
 
-It's made for the keyboard (clicking works too). The bottom bar shows the keys that work right where you are, and `?` shows all of them.
+- **Left:** the pulpo (who's working, who's waiting), then two small panels: your workspaces (repos), and the sessions of the one you're on, each with its branch under its name.
+- **Middle:** the session's terminals, as tabs. Claude, `make run`, a shell, whatever.
+- **Right:** Files over Changes. Each is a tree on the left and the file on the right.
 
-Jump around:
-
-| Key | Goes to |
-| --- | --- |
-| `w` | Workspaces: your repos |
-| `s` | Sessions: main and your task sessions |
-| `c` | Changes: what's modified |
-| `g` | Graph: the commits |
-| `f` | Files: a tree, type to filter it |
-| `/` | search inside files (`tab` switches with Files; in the viewer, `/` finds in the file) |
-| `t` | the terminal of the current session (opens a shell if there's none) |
-
-Make and do things:
-
-| Key | Does |
-| --- | --- |
-| `n s` | new task session (its own copy of the repo) |
-| `n t` | new tab with a shell in this session (type `claude` in it) |
-| `n w` | add a workspace (another repo) |
-| `e` | edit the selected file (`ctrl-e` in the files) |
-| `x x` | delete the selected session, drop a workspace from the list (files kept), or close the terminal (`ctrl-x` twice deletes a file in the files) |
-| `q q` | quit; terminals keep running |
-| `Q Q` | quit and stop every terminal |
-
-From anywhere, terminals included, Pulpo has a prefix: `ctrl-space` or `ctrl-b`, then one key. Same keys as Omarchy's tmux. Wait a beat after the prefix and a panel shows what can follow.
+One prefix, from anywhere, terminals included: `⌘p` (P for Pulpo) or `ctrl-b` (like Herdr and tmux). Press it, let go, then a key (within 3 seconds). `⌘p ?` shows the keybinds:
 
 | Prefix, then | Does |
 | --- | --- |
-| `←` `↑` `→` `↓` | go to the pane that way (the sidebar is left of them all) |
-| `shift` + arrows | swap with the pane that way |
-| `alt` + arrows | move the border |
-| `v` `h` | split: a shell beside or below |
-| `L` | next layout: the pane you're in as the main one on the left, side by side, stacked, a grid, review (the diff of what the agent edits, on the right, following it) |
-| `z` | zoom: the pane alone |
-| `x` | close the pane (press it twice) |
-| `c` | new tab with a shell |
-| `1`-`9`, `p` `n` | tab N, previous / next |
-| `r` `k` | rename the tab, close it (press it twice) |
-| `[` | scroll back through the terminal: `j` `k` `u` `d` `g` `G` move, `/` finds (`n` `N` for the next), `v` selects, `y` copies, `q` back to now |
-| `e` | hide or show the sidebar |
-| `g` | go to: every agent and terminal, in every repo, with what it asks; type to filter, `tab` for which ones |
-| `a` | the agent that has waited longest with something to read; again for the next |
-| `tab` | back to the last tab or session |
-| `space` | the menu: every action by name, with its key |
-| `T` | theme: follow Ghostty's, Linear Dark, or any Ghostty theme; moving through the list tries each one |
-| `B` | the board: every terminal of this repo, tiled, typing goes into the one you're in; again to go back |
-| `S` | a swarm: `4 fix the flaky tests` makes four task sessions, starts Claude on that in each, and shows the board |
-| `C` | new task session |
-| `P` `N` | previous / next session |
-| `K` | delete the task session (press it twice) |
-| `W` | add a workspace |
-| `d` | detach: quit, terminals keep running |
-| `f` `/` | files, search inside files |
-| `?` | every key; type to filter |
-| the prefix again | sends it to the program |
+| `w` `s` `t` `f` `c` | go to workspaces, sessions, the terminal, files, changes |
+| `n` | new: a workspace, a session, a terminal, a file (ending with `/`: a folder), depending on where you are |
+| `x` | close it: a workspace leaves the list (files kept), a session is deleted, a terminal stops (asks first when something would be lost) |
+| `[` `]` | previous, next terminal tab |
+| `<` `>` | hide or show the left side, the right side (both show by default) |
+| `a` | the next terminal waiting for you |
+| `/` | search, over whatever is on screen: the files as a tree, typing filters it, `tab` searches inside them; a file opens full screen |
+| `d` `e` `r` | in Files: delete, edit, rename |
+| `q` `Q` | quit (terminals keep running), quit and stop them all |
+| `?` | the keybinds, in a popup |
 
-With the mouse: drag the border between two panes, right-click for what can be done there, and ctrl-click a link to open it, or a path (`src/app.rs:120`, as agents print them) to see that line in the viewer.
+Everything else goes to what you're in. In a terminal that's every key, so Claude gets Esc, ctrl-f, all of it. Claude backgrounds a command with `ctrl-b`: press it twice.
 
-And a few without the prefix:
+In the lists and trees: arrows (or `j` `k`) move, `←` `→` fold. `⏎` on a file (or a change) opens it over everything right of the sidebar, terminal included, the arrows on the file. `esc` goes back one step: to the tree, still full screen (moving in it, the file follows; `⏎` or `tab` goes back into the file), then to the three columns. Page up and down scroll the file from either. Editing opens it the same way: `⌘s` (or `ctrl-s`) saves and stays, `esc` leaves the editor for the tree (twice with unsaved changes, which throws them away).
 
-| Key | Does |
-| --- | --- |
-| `ctrl-alt-←↑→↓` | go to the pane that way |
-| `ctrl-alt-shift-←↑→↓` | move the border |
-| `alt-1`-`9` | tab N |
-| `alt-↑` `alt-↓` | previous / next session |
+The mouse does all of it too. Click anything to go there (hovering changes nothing), including a row of the search popup or yes when Pulpo asks. Double-click a file to open it wide. Click `+` for a new tab. Scroll a terminal back with the wheel, drag to copy, ctrl-click a link to open it, or a path (`src/app.rs:120`, as agents print them) to see that line. Drag a border to resize: the sidebar's, the right side's, and the line between a tree and its file. A long line scrolls sideways with a trackpad swipe or shift + wheel (`←` `→` with the file open).
 
-On a Mac, two things can get in the way. macOS switches keyboard layouts on `ctrl-space` when you have more than one (use `ctrl-b`, or turn that shortcut off), and Ghostty types `¡™£` for `alt-1`-`3` unless the left Option key is Alt. `pulpo doctor` checks both, and `pulpo doctor --fix` sets up Ghostty.
+### Changes
 
-Want other keys? `~/.config/pulpo/keys.toml`:
+Changes shows what this session did and nothing else: for a task session, everything since it was copied, commits included (agents commit as they go). For main, what's on your branch that isn't on main yet, and what isn't committed. Pick a file and you see the whole file with its changes in place, with marks down its right edge for where they are (click one to go there).
+
+### The prefix
+
+`⌘p` needs nothing set up: Ghostty leaves it free (its own palette is `⌘⇧P`), and no program inside ever sees `⌘`. `ctrl-b` works in any terminal. Not sure a key gets through? `pulpo keytest` shows what Pulpo receives. Another one? `~/.config/pulpo/keys.toml`:
 
 ```toml
-prefix = ["ctrl-a"]
-[after_prefix]
-zoom = "m"
-[chords]
-tab_1 = "alt-a"
+prefix = ["cmd-j", "ctrl-a"]
 ```
-
-The old `ctrl-s`, `ctrl-n`, `ctrl-f`, `ctrl-q` and `ctrl-[` `ctrl-]` still work inside terminals for now, and say what replaces them. In the next release they go back to your programs (`legacy_ctrl_keys = false` does it today).
 
 ## Sandboxes
 
 This is the good part.
 
-`n s` makes a task session: a full copy of your repo, in about a second. It's an APFS clone, so it takes no extra disk until files change. Kinda magic.
+`⌘p s` then `⌘p n` makes a task session: a full copy of your repo, in about a second. It's an APFS clone, so it takes no extra disk until files change. Kinda magic. You get a terminal in it right away, while Docker and the rest get set up in the background.
 
 It has your `.env` and your installed dependencies, and it starts from your last commit: uncommitted work stays where it was. Want to keep going on it instead? Make a branch right there.
 
 Each session is its own git repo on the same branch main was on. Make a branch in it for the task. That branch lives only in that session until you push it, and the other sessions catch up with `git fetch` once it's merged.
 
-Start `claude` in it. Give it a job. Do it again.
+Start `claude` in it. Give it a job. `make run` in another tab. Do it again.
 
 One Claude on the bug. One on the feature. One on the tests. None of them can mess with the others.
-
-Or all at once: `ctrl-b S`, then `4 fix the flaky tests`. Four sessions, Claude on it in each, all on one board.
 
 If you use Docker Compose, each session also gets its own containers, its own ports and its own copy of the database. No more port 3000 fights lol. (The setup for each repo lives in `~/.config/pulpo/repos/<repo>.toml` if you wanna tweak it.)
 
 Besides starting a session clean, Pulpo never runs git for you. The agents do the branches and commits, you just review.
 
-Done with a task? `x x` deletes the session. It tells you first if you'd lose anything (uncommitted changes, unpushed commits).
+Done with a task? `⌘p x` on it in Sessions deletes the session. It tells you first if you'd lose anything (uncommitted changes, unpushed commits).
 
 ## Close it. They keep going.
 
-Hit `q` twice and go do something irl. Your agents, dev servers and long builds keep running.
+Hit `⌘p q` and go do something irl. Your agents, dev servers and long builds keep running.
 
 The terminals live in a tiny background server. It only listens on a private Unix socket, never on the network.
 
 Open Pulpo again and you're right where you left off. Reboot your Mac and Pulpo brings your terminals back and resumes your Claude sessions. Even updating Pulpo doesn't kill them.
 
-When you actually want everything stopped: `Q` twice. It does it the polite way: Ctrl-C first, so dev servers free their ports and `docker compose up` stops its containers.
+When you actually want everything stopped: `⌘p Q`. It does it the polite way: Ctrl-C first, so dev servers free their ports and `docker compose up` stops its containers.
 
 ## Who needs you
 
-Spinner next to a terminal: it's working.
+Spinner next to a tab, a session or a workspace: it's working.
 
 `◆`: it's waiting for you.
 
-Next to the pulpo, the sidebar counts them for all your repos: click that, or `ctrl-b g`, to see which. `ctrl-b a` goes straight to the one that has waited longest.
+Next to the pulpo, the sidebar counts them for all your repos. `⌘p a` (or a click on that count) goes straight to the one that has waited longest.
 
 And Ghostty pings you when an agent asks something or finishes. No more clicking through tabs to find the one that's been stuck for ten minutes.
 
@@ -206,19 +158,13 @@ pulpo hooks remove    # takes them out
 
 ## Colors
 
-Pulpo wears your Ghostty theme, so it looks like the terminal around it. No theme in Ghostty: Linear Dark, Pulpo's own. `ctrl-b T` picks another: Omarchy's favorites first (Tokyo Night, Catppuccin, Gruvbox, Rosé Pine…), then yours, then all of Ghostty's. Move through them to try each one, `⏎` keeps it (in `~/.config/pulpo/config.toml`), `esc` puts the old one back.
+Pulpo wears your Ghostty theme, so it looks like the terminal around it. No theme in Ghostty: Linear Dark, Pulpo's own.
 
 ## Editing
 
-`e` opens the file right inside Pulpo. Same colors as the viewer, so what you see is literally what you edit.
+`⌘p e` on a file edits it right inside Pulpo, over everything right of the sidebar. Same colors as the viewer, so what you see is literally what you edit.
 
-Normal keys: shift to select, ctrl-c / x / v, ctrl-z, ctrl-f, ctrl-s to save, esc to close.
-
-Rather use your own editor? All good:
-
-```sh
-export PULPO_EDITOR=nvim
-```
+Normal keys: shift to select, ctrl-c / x / v, ctrl-z, ctrl-f. `⌘s` saves, `esc` leaves (twice if you'd lose changes).
 
 ## Hacking on it
 
