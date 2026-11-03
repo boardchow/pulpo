@@ -105,9 +105,11 @@ error leave something to read. A new shell prompt (OSC 133 A) ends its runs.
 ### Changes
 
 Changes compares the session with where it started: a task session with the
-commit it was copied at (`base`, recorded when it is made), any other with
-where its branch left the main one (on the main branch, its upstream), so
-commits are included. The list of files comes from `git diff --name-status`
+commit it was copied at (`base`, recorded when it is made), so the
+agents' commits are included; a checkout on another branch with where it
+left the main one; the main branch itself with its last commit, so a
+commit takes its changes away. Only a task session's base is kept: every
+other read finds it again, so a commit or a push moves it. The list of files comes from `git diff --name-status`
 and `ls-files --others`; only the selected file's diff is read, as the whole
 file (`--unified=1000000`) with its changes inline, both sides highlighted
 (reloads run on a thread: `Request::read`, then `Changes::apply`, dropping

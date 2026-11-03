@@ -25,7 +25,9 @@ pub struct File {
 
 pub struct Changes {
     pub root: PathBuf,
-    /// What it's compared with: a commit (once found), and how to say it.
+    /// What it's compared with: the commit a task session was copied at,
+    /// fixed; else found again by every read (a commit or a push moves it).
+    copied: Option<String>,
     base: Option<String>,
     pub since: String,
     /// Bumped by each read asked for, so an older one arriving late is dropped.
@@ -51,6 +53,7 @@ impl Changes {
         Changes {
             root: root.to_path_buf(),
             since: if base.is_some() { "since the copy".into() } else { String::new() },
+            copied: base.clone(),
             base,
             generation: 0,
             files: Vec::new(),
@@ -76,7 +79,7 @@ impl Changes {
     /// What to read again: the folder, the base, and the file on screen.
     pub fn request(&mut self) -> Request {
         self.generation += 1;
-        let base = self.base.clone().map(|commit| (commit, self.since.clone()));
+        let base = self.copied.clone().map(|commit| (commit, "since the copy".to_string()));
         Request { root: self.root.clone(), base, shown: self.diff.as_ref().map(|(p, _)| p.clone()), generation: self.generation }
     }
 
@@ -264,20 +267,18 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
 }
 
-/// Where the session's work starts: where its branch left the main one, or
-/// on the main branch itself, its upstream. Its commit, and how to say it.
+/// Where the session's work starts: on the main branch, its last commit
+/// (what a commit takes away is done); on another, where it left the main
+/// one. Its commit, and how to say it.
 fn base(root: &Path) -> (String, String) {
+    let uncommitted = || ("HEAD".to_string(), "uncommitted".to_string());
     let branch = git(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     let main = git(root, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
         .or_else(|| ["main", "master"].iter().find(|b| git(root, &["rev-parse", "--verify", "--quiet", b]).is_some()).map(|b| b.to_string()));
-    let on_main = main.as_deref().is_some_and(|m| m.trim_start_matches("origin/") == branch);
-    let against = match &main {
-        Some(_) if on_main => git(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
-        other => other.clone(),
-    };
-    match against.and_then(|a| Some((git(root, &["merge-base", "HEAD", &a])?, a))) {
-        Some((commit, against)) => (commit, format!("since {against}")),
-        None => ("HEAD".into(), "uncommitted".into()),
+    let Some(main) = main.filter(|m| m.trim_start_matches("origin/") != branch) else { return uncommitted() };
+    match git(root, &["merge-base", "HEAD", &main]) {
+        Some(commit) => (commit, format!("since {main}")),
+        None => uncommitted(),
     }
 }
 
@@ -369,6 +370,19 @@ mod tests {
         assert_eq!(changes.rows.len(), 3);
         changes.fold(true);
         assert_eq!(changes.rows.len(), 4);
+        // On main itself: only what isn't committed, found again each read.
+        let run = |args: &[&str]| assert!(Command::new("git").current_dir(&t).args(args).output().unwrap().status.success());
+        run(&["stash", "-qu"]);
+        run(&["checkout", "-q", "main"]);
+        std::fs::write(t.join("a.txt"), "main\n").unwrap();
+        let mut on_main = Changes::open(&t, None);
+        assert_eq!((on_main.since.as_str(), on_main.files.len()), ("uncommitted", 1));
+        run(&["commit", "-qam", "done"]);
+        let read = on_main.request().read();
+        on_main.apply(read);
+        assert!(on_main.files.is_empty());
+        run(&["checkout", "-q", "task"]);
+        run(&["stash", "pop", "-q"]);
         // From a commit given: only what came after it.
         let head = git(&t, &["rev-parse", "HEAD"]).unwrap();
         let changes = Changes::open(&t, Some(head));
