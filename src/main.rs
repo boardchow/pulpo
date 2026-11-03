@@ -7,8 +7,7 @@ mod git;
 mod input;
 mod keymap;
 mod layout;
-mod pane;
-mod picker;
+mod review;
 mod procs;
 mod proto;
 mod pty;
@@ -44,8 +43,8 @@ const USAGE: &str = "usage:
   pulpo hooks install|status|remove [--dry-run]
                  add Pulpo's hooks to Claude Code, for what agents run and ask
   pulpo hooks    print those hooks instead
-  pulpo doctor [--fix]
-                 check that your keys reach Pulpo (⌃Space, Ghostty's Option key) and the hooks
+  pulpo keytest  show what reaches Pulpo for each key (⌘p and ⌃b are the prefix)
+  pulpo doctor   check that the prefix reaches Pulpo, and the hooks
   pulpo emit     record a hook event from stdin (called by the hooks)
   pulpo serve    run the server that keeps terminals running (Pulpo starts it)";
 
@@ -64,6 +63,13 @@ pub enum Msg {
     Repos(Vec<String>),
     /// A session's removal ended: its copy, its log, and whether it worked.
     Removed(PathBuf, PathBuf, bool),
+    /// A new session's copy (its repository and name) is made, in this
+    /// folder, or why it couldn't be.
+    Copied((PathBuf, String), Result<PathBuf, String>),
+    /// A session's setup ended: its copy, its log, and whether it worked.
+    SetUp(PathBuf, PathBuf, bool),
+    /// What a session changed, read in the background.
+    Changes(Box<review::Read>),
 }
 
 fn main() -> Result<()> {
@@ -75,6 +81,7 @@ fn main() -> Result<()> {
         Some("forget-session") if args.len() == 2 => session::forget(std::path::Path::new(&args[1]))?,
         Some("hooks") => agents::hooks(&args[1..])?,
         Some("doctor") => doctor::doctor(&args[1..])?,
+        Some("keytest") => doctor::keytest()?,
         Some("-h" | "--help") => println!("{USAGE}"),
         arg => {
             let start = arg.map(PathBuf::from).unwrap_or(std::env::current_dir()?).canonicalize()?;
@@ -155,7 +162,12 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
                         return Ok(());
                     }
                 }
-                Msg::Input(Event::Mouse(mouse)) => app.on_mouse(mouse),
+                Msg::Input(Event::Mouse(mouse)) => {
+                    app.on_mouse(mouse);
+                    if app.quit {
+                        return Ok(());
+                    }
+                }
                 Msg::Input(Event::Paste(text)) => app.on_paste(&text),
                 Msg::Input(_) => {}
                 Msg::Fs(paths) => app.on_fs(&paths),
@@ -166,6 +178,9 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
                 Msg::Search(generation, hits) => app.on_search(generation, hits),
                 Msg::Repos(repos) => app.on_repos(repos),
                 Msg::Removed(root, log, ok) => app.on_removed(root, log, ok),
+                Msg::Copied(copy, made) => app.on_copied(copy, made),
+                Msg::SetUp(root, log, ok) => app.on_set_up(root, log, ok),
+                Msg::Changes(read) => app.on_changes(*read),
             }
         }
         if app.fs_pending() && last_fs_refresh.elapsed() >= FS_THROTTLE {

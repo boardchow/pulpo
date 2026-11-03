@@ -293,22 +293,6 @@ fn build_syntax(p: &Palette) -> Theme {
 /// Follow Ghostty's theme: the default.
 pub const FOLLOW: &str = "ghostty";
 pub const LINEAR: &str = "Linear Dark";
-/// Omarchy's themes, as Ghostty names them.
-pub const OMARCHY: &[&str] = &[
-    "TokyoNight",
-    "Catppuccin Mocha",
-    "Catppuccin Latte",
-    "Everforest Dark Hard",
-    "Flexoki Light",
-    "Gruvbox Dark",
-    "Kanagawa Wave",
-    "Matte Black",
-    "Miasma",
-    "Monokai Pro Ristretto",
-    "Nord",
-    "Rose Pine",
-];
-
 /// Make `name` the colors on screen: `ghostty`, `Linear Dark`, or a
 /// Ghostty theme's name (or path).
 pub fn apply(name: &str) -> Result<(), String> {
@@ -408,28 +392,6 @@ fn find(theme: &str) -> Option<PathBuf> {
     user_dirs().into_iter().chain(bundled_dirs()).map(|dir| dir.join(theme)).find(|p| p.is_file())
 }
 
-fn names(dirs: Vec<PathBuf>) -> Vec<String> {
-    let mut names: Vec<String> = dirs
-        .iter()
-        .flat_map(|dir| std::fs::read_dir(dir).into_iter().flatten().flatten())
-        .filter(|entry| entry.path().is_file())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| !name.starts_with('.'))
-        .collect();
-    names.sort_by_key(|n| n.to_lowercase());
-    names.dedup();
-    names
-}
-
-/// The themes you made, then every one Ghostty comes with.
-pub fn user_themes() -> Vec<String> {
-    names(user_dirs())
-}
-
-pub fn ghostty_themes() -> Vec<String> {
-    names(bundled_dirs())
-}
-
 fn config_path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
     base.join("pulpo/config.toml")
@@ -442,17 +404,6 @@ pub fn chosen() -> String {
         .and_then(|text| text.parse::<toml::Table>().ok())
         .and_then(|table| table.get("theme").and_then(|t| t.as_str()).map(String::from))
         .unwrap_or_else(|| FOLLOW.to_string())
-}
-
-/// Keep `name` as the theme, leaving the rest of config.toml as it was.
-pub fn choose(name: &str) -> Result<PathBuf, String> {
-    let path = config_path();
-    let mut table = std::fs::read_to_string(&path).ok().and_then(|text| text.parse::<toml::Table>().ok()).unwrap_or_default();
-    table.insert("theme".into(), toml::Value::String(name.to_string()));
-    let text = toml::to_string(&table).map_err(|e| e.to_string())?;
-    let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, text));
-    written.map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(path)
 }
 
 #[cfg(test)]

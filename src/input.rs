@@ -7,6 +7,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub fn edit(text: &mut String, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    // ⌘ shortcuts (the prefix, ⌘c…) never type their letter.
+    if key.modifiers.contains(KeyModifiers::SUPER) {
+        return false;
+    }
     match key.code {
         KeyCode::Backspace if ctrl || alt => delete_word(text),
         KeyCode::Backspace => {

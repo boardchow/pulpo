@@ -245,56 +245,6 @@ impl Term {
         }
     }
 
-    /// How far back in its history it shows: 0 is the screen as it is.
-    pub fn scrolled(&self) -> usize {
-        self.parser.screen().scrollback()
-    }
-
-    pub fn scroll_to(&mut self, rows: usize) {
-        self.parser.screen_mut().set_scrollback(rows);
-    }
-
-    /// The line at the top of the view, counted from the oldest of its
-    /// history; and how many lines there are, history and screen.
-    pub fn top_line(&self) -> usize {
-        let screen = self.parser.screen();
-        screen.scrollback_len() - screen.scrollback()
-    }
-
-    pub fn line_count(&self) -> usize {
-        self.parser.screen().scrollback_len() + self.rows() as usize
-    }
-
-    /// The line the cursor is on, counted the same way.
-    pub fn cursor_line(&self) -> usize {
-        let screen = self.parser.screen();
-        screen.scrollback_len() + screen.cursor_position().0 as usize
-    }
-
-    /// Lines `from` to `to`, counted from the oldest, as text. A line the
-    /// terminal wrapped comes back whole.
-    pub fn text(&mut self, from: usize, to: usize) -> String {
-        let screen = self.parser.screen_mut();
-        let (start, len, width) = (screen.scrollback(), screen.scrollback_len(), screen.size().1.get());
-        let mut text = String::new();
-        for n in from..=to {
-            // Bring it into view: at the top, or on the screen itself.
-            let (at, row) = if n < len { (len - n, 0) } else { (0, n - len) };
-            screen.set_scrollback(at);
-            let line = screen.rows(0, width).nth(row).unwrap_or_default();
-            if screen.row_wrapped(row as u16) {
-                text.push_str(&line);
-            } else {
-                text.push_str(line.trim_end());
-                if n < to {
-                    text.push('\n');
-                }
-            }
-        }
-        screen.set_scrollback(start);
-        text
-    }
-
     /// The word under a cell of the screen as it shows now: a link, a
     /// path, whatever stands between spaces and brackets.
     pub fn word_at(&self, row: u16, col: u16) -> String {
@@ -310,27 +260,12 @@ impl Term {
         line[start..end].iter().collect::<String>().trim_end_matches(['.', ',', ';', ':']).to_string()
     }
 
-    /// Rows on screen.
-    pub fn rows(&self) -> u16 {
-        self.parser.screen().size().0.get()
-    }
-
-    /// Bring the next line with `query` in it (any case) to the top: further
-    /// back in its history, or with `older` false, toward now. False when
-    /// there is none; it stays where it was.
-    pub fn find(&mut self, query: &str, older: bool) -> bool {
-        let needle = query.to_lowercase();
-        let screen = self.parser.screen_mut();
-        let (start, end, width) = (screen.scrollback(), screen.scrollback_len(), screen.size().1.get());
-        let offsets: Vec<usize> = if older { (start + 1..=end).collect() } else { (0..start).rev().collect() };
-        for at in offsets {
-            screen.set_scrollback(at);
-            if screen.rows(0, width).next().is_some_and(|row| row.to_lowercase().contains(&needle)) {
-                return true;
-            }
-        }
-        screen.set_scrollback(start);
-        false
+    /// The text between two cells of the screen as it shows now (row,
+    /// column), both included, in either order: what you selected.
+    pub fn selection(&self, a: (u16, u16), b: (u16, u16)) -> String {
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        let text = self.parser.screen().contents_between(start.0, start.1, end.0, end.1 + 1);
+        text.lines().map(str::trim_end).collect::<Vec<_>>().join("\n")
     }
 
     /// Scroll through history; positive goes back in time.

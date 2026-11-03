@@ -1,4 +1,5 @@
-//! Read-only view of a file (syntax highlighted) or of its git diff.
+//! Read-only view of a file (syntax highlighted), and the diffs Changes
+//! shows: the whole file, its changes in place.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,18 +20,11 @@ pub(crate) const MAX_HIGHLIGHTED_LINES: usize = 10_000;
 #[derive(Clone, PartialEq)]
 pub enum Source {
     File(PathBuf),
-    Diff { path: PathBuf, untracked: bool },
-    /// A commit, by hash.
-    Commit(String),
-    /// What a commit changed in one file.
-    CommitFile { hash: String, path: PathBuf },
 }
 
 #[derive(Default)]
 pub struct Viewer {
     pub source: Option<Source>,
-    pub title: String,
-    /// Rows of the single-column layout.
     lines: Vec<Line<'static>>,
     pub scroll: usize,
     /// Visible rows, set when drawing.
@@ -39,58 +33,12 @@ pub struct Viewer {
     /// on the next draw.
     pub mark: Option<usize>,
     pub goto: Option<usize>,
-    /// Takes the whole right side instead of sharing it with the terminal.
-    pub expanded: bool,
-    pub find: Option<Find>,
-    /// Width of the line-number column, which searching skips.
+    /// Width of the line-number column.
     gutter: usize,
-    /// First line of each block of changes in a diff, and the one last
-    /// jumped to.
-    changes: Vec<usize>,
-    change_at: Option<usize>,
-    /// Side-by-side layout of a diff (old | new), its change starts, and the
-    /// row maps between the two layouts.
-    pairs: Vec<Pair>,
-    pair_changes: Vec<usize>,
-    to_pair: Vec<usize>,
-    to_inline: Vec<usize>,
-    /// What each row of the single-column layout of a diff is, for the
-    /// overview ruler.
-    kinds: Vec<Kind>,
-    /// Showing the side-by-side layout; rows, scroll and marks are then pair rows.
-    split: bool,
     /// Columns of code scrolled off to the left (line numbers stay), and the
     /// longest line, which bounds it.
     hscroll: usize,
     widest: usize,
-}
-
-/// Old and new version of a side-by-side row; None leaves that side blank.
-type Pair = (Option<Line<'static>>, Option<Line<'static>>);
-
-/// A diff shows side by side when each side gets at least 85 columns, enough
-/// for most code lines (a 14" laptop stays in one column, larger screens split).
-const SPLIT_MIN_WIDTH: u16 = 2 * 85 + 1;
-
-/// Search inside the open file.
-#[derive(Default)]
-pub struct Find {
-    pub query: String,
-    /// Still typing the query (matches update live).
-    pub typing: bool,
-    /// Lines with a match, and which one is selected.
-    pub matches: Vec<usize>,
-    pub current: usize,
-    /// Where the view was when the search started; the first match after it
-    /// is selected while typing.
-    origin: usize,
-}
-
-impl Find {
-    /// Case-insensitive unless the query has capitals.
-    fn ignore_case(&self) -> bool {
-        !self.query.chars().any(char::is_uppercase)
-    }
 }
 
 impl Viewer {
@@ -107,12 +55,8 @@ impl Viewer {
             self.source = Some(source);
             self.scroll = 0;
             self.mark = None;
-            self.find = None;
-            self.change_at = None;
             self.hscroll = 0;
             self.reload(root);
-            // Land on the first change.
-            self.next_change(1);
         }
     }
 
@@ -126,264 +70,32 @@ impl Viewer {
         }
     }
 
-    /// Re-read the source, keeping the scroll position (files change under
+    /// Re-read the file, keeping the scroll position (files change under
     /// us while agents work).
-    pub fn reload(&mut self, root: &Path) {
-        let Some(source) = &self.source else { return };
-        let relative = |path: &Path| path.strip_prefix(root).unwrap_or(path).display().to_string();
-        let (name, content) = match source {
-            Source::File(path) => (relative(path), load_file(path)),
-            Source::Diff { path, untracked } => (relative(path), load_diff(diff_command(root, path, *untracked), path)),
-            Source::Commit(hash) => (format!("commit {hash}"), load_commit(root, hash)),
-            Source::CommitFile { hash, path } => (format!("{hash}  {}", relative(path)), load_diff(show_command(root, hash, path), path)),
-        };
-        self.title = match content.counts {
-            Some((added, removed)) => format!("{name}  +{added} −{removed}"),
-            None => name.to_string(),
-        };
+    pub fn reload(&mut self, _root: &Path) {
+        let Some(Source::File(path)) = &self.source else { return };
+        let content = load_file(path);
         self.lines = content.lines;
         self.gutter = content.gutter;
-        self.changes = content.changes;
-        self.pairs = content.pairs;
-        self.pair_changes = content.pair_changes;
-        self.to_pair = content.to_pair;
-        self.to_inline = content.to_inline;
-        self.kinds = content.kinds;
-        self.split &= !self.pairs.is_empty();
         let gutter = self.gutter;
         self.widest = self.lines.iter().map(|l| plain(l, gutter).trim_end().chars().count()).max().unwrap_or(0);
         self.hscroll = self.hscroll.min(self.widest);
-        self.change_at = self.change_at.filter(|&i| i < self.changes.len());
         self.scroll_by(0);
-        self.update_find(false);
-    }
-
-    /// Pick the layout for the available width, keeping the same place in view.
-    pub fn set_width(&mut self, width: u16) {
-        let split = width >= SPLIT_MIN_WIDTH && !self.pairs.is_empty();
-        if split == self.split {
-            return;
-        }
-        let map = if split { self.to_pair.clone() } else { self.to_inline.clone() };
-        let convert = |row: usize| map.get(row).copied().unwrap_or(0);
-        self.scroll = convert(self.scroll);
-        self.goto = self.goto.map(convert);
-        self.mark = self.mark.map(convert);
-        if let Some(find) = &mut self.find {
-            find.origin = convert(find.origin);
-        }
-        self.split = split;
-        if self.find.is_some() {
-            self.update_find(false);
-            self.mark = self.find.as_ref().and_then(|f| f.matches.get(f.current)).copied();
-        }
     }
 
     pub fn row_count(&self) -> usize {
-        if self.split { self.pairs.len() } else { self.lines.len() }
+        self.lines.len()
     }
 
-    /// The searchable text of a row, without line numbers.
-    fn row_text(&self, row: usize) -> String {
-        if self.split {
-            let side = |line: &Option<Line>| line.as_ref().map(|l| plain(l, self.gutter)).unwrap_or_default();
-            let (old, new) = &self.pairs[row];
-            format!("{}\n{}", side(old), side(new))
-        } else {
-            plain(&self.lines[row], self.gutter)
-        }
-    }
-
-    pub fn is_diff(&self) -> bool {
-        matches!(self.source, Some(Source::Diff { .. } | Source::CommitFile { .. }))
-    }
-
-    /// n / p: the next search match if searching, otherwise the next change.
-    pub fn next(&mut self, step: isize) {
-        if self.find.is_some() {
-            self.next_match(step);
-        } else {
-            self.next_change(step);
-        }
-    }
-
-    fn next_change(&mut self, step: isize) {
-        let changes = if self.split { &self.pair_changes } else { &self.changes };
-        if changes.is_empty() {
-            return;
-        }
-        let count = changes.len() as isize;
-        let i = match self.change_at {
-            Some(i) => (i as isize + step).rem_euclid(count) as usize,
-            None => changes.iter().position(|&row| row >= self.scroll).unwrap_or(0),
-        };
-        self.goto = Some(changes[i]);
-        self.change_at = Some(i);
-    }
-
-    pub fn start_find(&mut self) {
-        self.find = Some(Find { typing: true, origin: self.scroll, ..Find::default() });
-    }
-
-    pub fn edit_find(&mut self, edit: impl FnOnce(&mut String)) {
-        if let Some(find) = &mut self.find {
-            edit(&mut find.query);
-        }
-        self.update_find(true);
-    }
-
-    /// Stop typing; a search without matches is dropped.
-    pub fn finish_find(&mut self) {
-        match &mut self.find {
-            Some(find) if !find.matches.is_empty() => find.typing = false,
-            _ => self.clear_find(),
-        }
-    }
-
-    pub fn clear_find(&mut self) {
-        if self.find.take().is_some() {
-            self.mark = None;
-        }
-    }
-
-    pub fn next_match(&mut self, step: isize) {
-        if let Some(find) = &mut self.find
-            && !find.matches.is_empty()
-        {
-            let count = find.matches.len() as isize;
-            find.current = (find.current as isize + step).rem_euclid(count) as usize;
-        }
-        self.show_match();
-    }
-
-    fn update_find(&mut self, jump: bool) {
-        let Some((needle, ignore_case)) = self.find.as_ref().map(|f| (fold(&f.query, f.ignore_case()), f.ignore_case()))
-        else {
-            return;
-        };
-        let matches = if needle.is_empty() {
-            Vec::new()
-        } else {
-            (0..self.row_count()).filter(|&row| fold(&self.row_text(row), ignore_case).contains(&needle)).collect()
-        };
-        let Some(find) = &mut self.find else { return };
-        find.matches = matches;
-        find.current = if jump {
-            let origin = find.origin;
-            find.matches.iter().position(|&line| line >= origin).unwrap_or(0)
-        } else {
-            find.current.min(find.matches.len().saturating_sub(1))
-        };
-        if jump {
-            self.show_match();
-        }
-    }
-
-    /// Mark the selected match and bring it into view.
-    fn show_match(&mut self) {
-        let line = self.find.as_ref().and_then(|f| f.matches.get(f.current)).copied();
-        self.mark = line;
-        if let Some(line) = line
-            && (line < self.scroll || line >= self.scroll + self.height.max(1))
-        {
-            self.goto = Some(line);
-        }
-    }
-
-    /// Row `i` as drawn at `width`: search matches are highlighted, the
-    /// marked row gets a background, side-by-side halves are fitted.
-    pub fn decorated(&self, i: usize, width: u16) -> Line<'static> {
-        let find = self.find.as_ref().filter(|f| !f.query.is_empty());
-        let highlight = |line: Line<'static>| {
-            let line = match find {
-                Some(f) => highlight_matches(line, &f.query, f.ignore_case(), self.gutter),
-                None => line,
-            };
-            shift(line, self.gutter, self.hscroll)
-        };
-        let mut line = if self.split {
-            let left = (width.saturating_sub(1) / 2) as usize;
-            let (old, new) = &self.pairs[i];
-            let mut spans = fit(old.clone().map(highlight), left);
-            spans.push(Span::styled("│", Style::default().fg(theme::border())));
-            spans.extend(fit(new.clone().map(highlight), (width as usize).saturating_sub(left + 1)));
-            Line::from(spans)
-        } else {
-            highlight(self.lines[i].clone())
-        };
-        if self.mark == Some(i) {
-            line = line.patch_style(Style::default().bg(theme::mark_bg()));
-        }
-        line
-    }
-
-    /// The title, with the column when scrolled sideways.
-    pub fn heading(&self) -> String {
-        match self.hscroll {
-            0 => self.title.clone(),
-            n => format!("{}  · from column {}", self.title, n + 1),
-        }
+    /// Row `i` as drawn: scrolled sideways, the marked row on a background.
+    pub fn decorated(&self, i: usize) -> Line<'static> {
+        let line = shift(self.lines[i].clone(), self.gutter, self.hscroll);
+        if self.mark == Some(i) { line.patch_style(Style::default().bg(theme::mark_bg())) } else { line }
     }
 
     /// Scroll sideways; 0 columns goes back to the start of the lines.
     pub fn scroll_sideways(&mut self, columns: isize) {
         self.hscroll = if columns == 0 { 0 } else { self.hscroll.saturating_add_signed(columns).min(self.widest) };
-    }
-
-    /// The rows one of `height` cells of the overview ruler stands for.
-    fn ruler_rows(&self, cell: usize, height: usize) -> (usize, usize) {
-        let rows = self.row_count();
-        let start = cell * rows / height.max(1);
-        (start, ((cell + 1) * rows / height.max(1)).max(start + 1).min(rows))
-    }
-
-    /// The overview ruler, like VS Code's: for each of `height` cells, the
-    /// color of what its rows hold (a find match, or added, removed or both)
-    /// and whether they are in view.
-    pub fn ruler(&self, height: usize) -> Vec<(Option<Color>, bool)> {
-        let matches = self.find.as_ref().filter(|f| !f.query.is_empty()).map_or(&[][..], |f| &f.matches[..]);
-        // Side by side, a range of pairs covers a range of single-column rows.
-        let inline = |row: usize| match self.split {
-            true => self.to_inline.get(row).copied().unwrap_or(self.kinds.len()),
-            false => row,
-        };
-        (0..height)
-            .map(|cell| {
-                let (start, end) = self.ruler_rows(cell, height);
-                let in_view = start < self.scroll + self.height && end > self.scroll;
-                if start >= end {
-                    return (None, in_view);
-                }
-                let first_match = matches.partition_point(|&m| m < start);
-                if matches.get(first_match).is_some_and(|&m| m < end) {
-                    return (Some(theme::yellow()), in_view);
-                }
-                let kinds = self.kinds.get(inline(start)..inline(end).min(self.kinds.len())).unwrap_or_default();
-                let color = match (kinds.contains(&Kind::Added), kinds.contains(&Kind::Removed)) {
-                    (true, true) => Some(theme::blue()),
-                    (true, false) => Some(theme::green()),
-                    (false, true) => Some(theme::red()),
-                    _ => None,
-                };
-                (color, in_view)
-            })
-            .collect()
-    }
-
-    /// A click on the overview ruler: bring that part of the file into view,
-    /// at its first change if it has one (n / p go on from there).
-    pub fn jump_to_ruler(&mut self, cell: usize, height: usize) {
-        let (start, end) = self.ruler_rows(cell, height);
-        let changes = if self.split { &self.pair_changes } else { &self.changes };
-        let first = changes.partition_point(|&row| row < start);
-        let row = match changes.get(first) {
-            Some(&row) if row < end => {
-                self.change_at = Some(first);
-                row
-            }
-            _ => start,
-        };
-        self.goto = Some(row);
     }
 
     pub fn scroll_by(&mut self, rows: isize) {
@@ -392,7 +104,7 @@ impl Viewer {
     }
 }
 
-/// What the viewer shows for a source.
+/// What the viewer shows for a file, or Changes for a diff.
 #[derive(Default)]
 struct Content {
     lines: Vec<Line<'static>>,
@@ -400,14 +112,8 @@ struct Content {
     gutter: usize,
     /// First line of each block of changes (diffs only).
     changes: Vec<usize>,
-    /// Lines added and removed (diffs only).
+    /// Lines added and removed, and what each line is (diffs only).
     counts: Option<(usize, usize)>,
-    /// Side-by-side layout (diffs only), see Viewer.
-    pairs: Vec<Pair>,
-    pair_changes: Vec<usize>,
-    to_pair: Vec<usize>,
-    to_inline: Vec<usize>,
-    /// What each line is (diffs only).
     kinds: Vec<Kind>,
 }
 
@@ -447,8 +153,9 @@ fn load_file(path: &Path) -> Content {
     Content { lines, gutter: width + 2, ..Content::default() }
 }
 
-#[derive(Clone, Copy, PartialEq, Default)]
-enum Kind {
+/// What a line of a diff is.
+#[derive(Clone, Copy, PartialEq, Default, Debug)]
+pub enum Kind {
     #[default]
     Same,
     Added,
@@ -457,36 +164,38 @@ enum Kind {
     Gap,
 }
 
-/// A file's uncommitted changes, with enough context to get the whole file
-/// in one hunk.
-fn diff_command(root: &Path, path: &Path, untracked: bool) -> Command {
+/// One file's changes, against `base`: the whole file, its lines
+/// (inline, highlighted, a note when there's nothing to show), where each
+/// change starts, and lines added and removed.
+pub struct ReviewDiff {
+    pub lines: Vec<Line<'static>>,
+    pub changes: Vec<usize>,
+    pub added: usize,
+    pub removed: usize,
+    /// Width of the line numbers and markers, and of the longest line after.
+    pub gutter: usize,
+    pub widest: usize,
+    /// What each line is, for the marks on the right.
+    pub kinds: Vec<Kind>,
+}
+
+pub(crate) fn review_diff(root: &Path, base: &str, path: &Path, untracked: bool) -> ReviewDiff {
     let mut cmd = Command::new("git");
-    cmd.current_dir(root).args(["--no-optional-locks", "diff", "--no-color", "--no-ext-diff", "--unified=1000000"]);
+    cmd.current_dir(root).args(["--no-optional-locks", "diff", "--no-color", "--no-ext-diff", "--no-renames", "--unified=1000000"]);
     if untracked {
         cmd.args(["--no-index", "--", "/dev/null"]).arg(path);
     } else {
-        cmd.args(["HEAD", "--"]).arg(path);
+        cmd.arg(base).arg("--").arg(path);
     }
-    cmd
+    let text = cmd.output().map(|out| String::from_utf8_lossy(&out.stdout).into_owned()).unwrap_or_default();
+    let content = diff_content(&text, path);
+    let (added, removed) = content.counts.unwrap_or_default();
+    let widest = content.lines.iter().map(|l| plain(l, content.gutter).trim_end().chars().count()).max().unwrap_or(0);
+    ReviewDiff { gutter: content.gutter, widest, lines: content.lines, changes: content.changes, added, removed, kinds: content.kinds }
 }
 
-/// What a commit changed in a file (a merge: compared to its first parent).
-fn show_command(root: &Path, hash: &str, path: &Path) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(root)
-        .args(["--no-optional-locks", "show", "--no-color", "--no-ext-diff", "--diff-merges=first-parent", "--format=", "--unified=1000000"])
-        .args([hash, "--"])
-        .arg(path);
-    cmd
-}
-
-/// The whole file with its changes inline: deleted lines in red where they
-/// were, added lines in green, both syntax highlighted.
-fn load_diff(mut cmd: Command, path: &Path) -> Content {
-    let text = match cmd.output() {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
-        Err(e) => return Content::note(&format!("git diff failed: {e}")),
-    };
+/// Lines from a diff of `path`: inline, both sides highlighted.
+fn diff_content(text: &str, path: &Path) -> Content {
     if text.is_empty() {
         return Content::note("no textual changes");
     }
@@ -537,11 +246,10 @@ fn load_diff(mut cmd: Command, path: &Path) -> Content {
     let width = rows.iter().map(|r| r.1.max(r.2)).max().unwrap_or(0).to_string().len();
     let mut content = Content { gutter: width + 3, ..Content::default() };
     let (mut added, mut removed) = (0, 0);
-    // Unchanged rows as the old side shows them (with old line numbers).
-    let mut old_same: Vec<Option<Line<'static>>> = vec![None; rows.len()];
     for (i, &(kind, old_number, new_number, text)) in rows.iter().enumerate() {
         if kind == Kind::Gap {
             content.lines.push(note("⋯"));
+            content.kinds.push(Kind::Gap);
             continue;
         }
         let number = if kind == Kind::Removed { old_number } else { new_number };
@@ -569,11 +277,6 @@ fn load_diff(mut cmd: Command, path: &Path) -> Content {
             _ => {}
         }
         let code = styled(ranges, &with_newline);
-        if kind == Kind::Same {
-            let mut spans = vec![Span::styled(format!("{old_number:>width$}   "), Style::default().fg(fg))];
-            spans.extend(code.clone());
-            old_same[i] = Some(Line::from(spans));
-        }
         let mut spans = vec![Span::styled(format!("{number:>width$} {marker} "), Style::default().fg(fg))];
         spans.extend(code);
         let mut line = Line::from(spans);
@@ -583,90 +286,10 @@ fn load_diff(mut cmd: Command, path: &Path) -> Content {
             line = line.style(Style::default().bg(bg));
         }
         content.lines.push(line);
+        content.kinds.push(kind);
     }
     content.counts = Some((added, removed));
-
-    // Side by side: the same rows, removed ones next to what replaced them.
-    let kinds: Vec<Kind> = rows.iter().map(|r| r.0).collect();
-    content.to_pair = vec![0; rows.len()];
-    let mut was_change = false;
-    for (old, new) in pair_rows(&kinds) {
-        let p = content.pairs.len();
-        for i in old.into_iter().chain(new) {
-            content.to_pair[i] = p;
-        }
-        content.to_inline.push(old.into_iter().chain(new).min().unwrap_or(0));
-        let is_change = [old, new].iter().flatten().any(|&i| matches!(kinds[i], Kind::Added | Kind::Removed));
-        if is_change && !was_change {
-            content.pair_changes.push(p);
-        }
-        was_change = is_change;
-        let left = old.map(|i| old_same[i].clone().unwrap_or_else(|| content.lines[i].clone()));
-        let right = new.map(|i| content.lines[i].clone());
-        content.pairs.push((left, right));
-    }
-    content.kinds = kinds;
     content
-}
-
-/// A commit's message and the files it touched, with git's +/- bars.
-fn load_commit(root: &Path, hash: &str) -> Content {
-    let out = Command::new("git")
-        .current_dir(root)
-        .args(["--no-optional-locks", "show", "--no-color", "--diff-merges=first-parent", "--stat", hash])
-        .output();
-    let text = match out {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
-        Err(e) => return Content::note(&format!("git show failed: {e}")),
-    };
-    let lines = text
-        .lines()
-        .map(|line| {
-            let line = clean(line);
-            if line.starts_with("commit ") {
-                return Line::from(line).fg(theme::yellow());
-            }
-            // " src/a.rs | 12 +++---"
-            if let Some((file, bar)) = line.split_once(" | ")
-                && let Some((count, marks)) = bar.split_once(' ')
-                && marks.chars().all(|c| c == '+' || c == '-')
-            {
-                let plus = marks.chars().filter(|&c| c == '+').count();
-                return Line::from(vec![
-                    Span::from(format!("{file} | {count} ")),
-                    Span::from("+".repeat(plus)).fg(theme::green()),
-                    Span::from("-".repeat(marks.len() - plus)).fg(theme::red()),
-                ]);
-            }
-            Line::from(line)
-        })
-        .collect();
-    Content { lines, ..Content::default() }
-}
-
-/// Side-by-side rows as indices into `kinds`: unchanged rows on both sides, a
-/// run of removed rows next to the added rows that replaced it.
-fn pair_rows(kinds: &[Kind]) -> Vec<(Option<usize>, Option<usize>)> {
-    fn flush(pairs: &mut Vec<(Option<usize>, Option<usize>)>, removed: &mut Vec<usize>, added: &mut Vec<usize>) {
-        for k in 0..removed.len().max(added.len()) {
-            pairs.push((removed.get(k).copied(), added.get(k).copied()));
-        }
-        removed.clear();
-        added.clear();
-    }
-    let (mut pairs, mut removed, mut added) = (Vec::new(), Vec::new(), Vec::new());
-    for (i, &kind) in kinds.iter().enumerate() {
-        match kind {
-            Kind::Removed => removed.push(i),
-            Kind::Added => added.push(i),
-            Kind::Same | Kind::Gap => {
-                flush(&mut pairs, &mut removed, &mut added);
-                pairs.push((Some(i), Some(i)));
-            }
-        }
-    }
-    flush(&mut pairs, &mut removed, &mut added);
-    pairs
 }
 
 /// Drop `n` characters of code after the first `gutter` ones (the line
@@ -690,28 +313,6 @@ pub(crate) fn shift(line: Line<'static>, gutter: usize, n: usize) -> Line<'stati
         start = end;
     }
     Line { spans, style, alignment }
-}
-
-/// A side-by-side half: the line cut or padded to `width` columns, keeping
-/// its background; a missing line is a shaded blank.
-fn fit(line: Option<Line<'static>>, width: usize) -> Vec<Span<'static>> {
-    let Some(Line { spans, style, .. }) = line else {
-        return vec![Span::styled(" ".repeat(width), Style::default().bg(theme::hover()))];
-    };
-    let mut out = Vec::new();
-    let mut used = 0;
-    for span in spans {
-        if used >= width {
-            break;
-        }
-        let text: String = span.content.chars().take(width - used).collect();
-        used += text.chars().count();
-        out.push(Span::styled(text, style.patch(span.style)));
-    }
-    if used < width {
-        out.push(Span::styled(" ".repeat(width - used), style));
-    }
-    out
 }
 
 const ROW_WIDTH: usize = 400;
@@ -761,10 +362,6 @@ pub(crate) fn styled(ranges: Option<Vec<(syntect::highlighting::Style, &str)>>, 
 /// The text of a line, without its first `skip` characters.
 fn plain(line: &Line, skip: usize) -> String {
     line.spans.iter().flat_map(|s| s.content.chars()).skip(skip).collect()
-}
-
-fn fold(text: &str, ignore_case: bool) -> String {
-    if ignore_case { text.to_lowercase() } else { text.to_string() }
 }
 
 /// Split the line's spans so occurrences of `query` (after `skip`
@@ -842,26 +439,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rules_changes_and_jumps_to_them() {
-        let mut kinds = vec![Kind::Same; 10];
-        (kinds[2], kinds[7]) = (Kind::Added, Kind::Removed);
-        let mut viewer =
-            Viewer { lines: vec![Line::default(); 10], kinds, changes: vec![2, 7], height: 3, ..Viewer::default() };
-        // Five cells of two rows each; the first three rows are in view.
-        let ruler = viewer.ruler(5);
-        assert_eq!(ruler, [(None, true), (Some(theme::green()), true), (None, false), (Some(theme::red()), false), (None, false)]);
-        viewer.jump_to_ruler(3, 5);
-        assert_eq!((viewer.goto, viewer.change_at), (Some(7), Some(1)));
-    }
-
-    #[test]
-    fn pairs_removed_rows_with_their_replacements() {
-        use Kind::*;
-        let pairs = pair_rows(&[Same, Removed, Removed, Added, Same, Added]);
-        assert_eq!(
-            pairs,
-            [(Some(0), Some(0)), (Some(1), Some(3)), (Some(2), None), (Some(4), Some(4)), (None, Some(5))]
-        );
+    fn lays_out_a_diff_inline_with_its_changes() {
+        let diff = "diff --git a/a.rs b/a.rs\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n";
+        let content = diff_content(diff, Path::new("a.rs"));
+        assert_eq!(content.counts, Some((1, 1)));
+        assert_eq!(content.changes, [1]);
+        assert_eq!(content.kinds, [Kind::Same, Kind::Removed, Kind::Added, Kind::Same]);
+        let text: Vec<String> = content.lines.iter().map(|l| plain(l, 0).trim_end().to_string()).collect();
+        assert_eq!(text, ["1   one", "2 - two", "2 + TWO", "3   three"]);
     }
 
     #[test]
