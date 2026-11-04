@@ -241,8 +241,9 @@ neither git nor ssh can ask on Pulpo's raw-mode terminal:
    in the prompt), as is if `git check-ref-format --branch` takes it. An
    existing one is reused only if it sits at the base; with commits of its
    own, refused.
-3. `git worktree add --lock` into `<repo>.sessions/<name>` (beside the
-   repository: same disk, so includes can be cloned). The lock keeps
+3. `git worktree add --lock` into `~/.pulpo/sessions/<repo>/<name>` (out of
+   the folder the repository is in, the way Cursor and Codex keep theirs).
+   Sessions made before sit in `<repo>.sessions/<name>`. The lock keeps
    `git worktree prune` and other tools' cleanups off it. Hooks
    (post-checkout, LFS) run; what they say goes to the setup log.
 4. Includes, the Compose override, then the registry entry
@@ -312,8 +313,8 @@ down -v` (by project, so it works without the folder), untagging, `git
 worktree remove --force --force` (it's locked), the branch
 Pulpo made only if still at its start commit (else kept: squash merges
 never look merged to `git branch -d`), the override, then `pulpo
-forget-session`. Only a registered worktree of the repository in a
-`.sessions` folder is ever removed. If Docker fails, nothing more is
+forget-session`. Only a registered worktree of the repository in
+`~/.pulpo/sessions` (or an old `.sessions` folder) is ever removed. If Docker fails, nothing more is
 deleted and Pulpo points at the log. Before, Pulpo says what would be
 lost (uncommitted changes, commits on a detached HEAD) and which branch
 stays. A session whose folder was deleted by hand is removed the same way,

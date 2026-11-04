@@ -230,6 +230,15 @@ fn project_name(name: &str) -> String {
 #[cfg(test)]
 thread_local! {
     static TEST_CONFIG: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static TEST_SESSIONS: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+fn sessions_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = TEST_SESSIONS.with_borrow(Clone::clone) {
+        return dir;
+    }
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".pulpo/sessions")
 }
 
 fn config_dir() -> PathBuf {
@@ -517,8 +526,7 @@ pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) ->
         bail!("the repository has no commit yet: make one first");
     }
     let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let parent = repo.parent().context("the repository has no parent folder")?;
-    let root = parent.join(format!("{repo_name}.sessions")).join(name);
+    let root = sessions_dir().join(&repo_name).join(name);
     if root.exists() {
         bail!("{} already exists", root.display());
     }
@@ -902,8 +910,12 @@ pub fn kept_branch(session: &Session) -> Option<String> {
 }
 
 fn in_sessions_folder(root: &Path) -> bool {
-    root.parent().and_then(Path::file_name).is_some_and(|dir| dir.to_string_lossy().ends_with(".sessions"))
-        && root.file_name().is_some_and(|name| !name.is_empty() && name != "..")
+    let parent = root.parent();
+    // `<repo>.sessions/<name>`: where sessions were made before.
+    let legacy = parent.and_then(Path::file_name).is_some_and(|dir| dir.to_string_lossy().ends_with(".sessions"));
+    let ours = parent.and_then(Path::parent).is_some_and(|dir| same_path(dir, &sessions_dir()))
+        && parent.and_then(Path::file_name).is_some_and(|repo| repo != "..");
+    (ours || legacy) && root.file_name().is_some_and(|name| !name.is_empty() && name != "..")
 }
 
 pub fn same_path(a: &Path, b: &Path) -> bool {
@@ -999,7 +1011,7 @@ fn conductor_exports(session: &Session) -> String {
 }
 
 pub fn teardown_script(session: &Session, config: &Config, exe: &Path) -> String {
-    // Only ever what Pulpo made: a folder in `<repo>.sessions`, and for a
+    // Only ever what Pulpo made: a folder in `~/.pulpo/sessions/<repo>`, and for a
     // worktree, one of the repository's.
     let safe = match session.kind {
         Kind::Copy => in_sessions_folder(&session.root),
@@ -1139,7 +1151,7 @@ mod tests {
     #[test]
     fn removal_stops_when_a_step_fails() {
         let t = Scratch::new("teardown");
-        let root = t.join("r.sessions").join("a");
+        let root = t.join("sessions/r/a");
         let session = Session {
             name: "a".into(),
             repo: t.join("r"),
@@ -1183,6 +1195,7 @@ mod tests {
             fs::create_dir_all(&t).unwrap();
             crate::agents::TEST_STATE.set(Some(t.join("state")));
             TEST_CONFIG.set(Some(t.join("config")));
+            TEST_SESSIONS.set(Some(t.join("sessions")));
             Scratch(t)
         }
     }
@@ -1204,6 +1217,7 @@ mod tests {
         fn drop(&mut self) {
             crate::agents::TEST_STATE.set(None);
             TEST_CONFIG.set(None);
+            TEST_SESSIONS.set(None);
             let _ = fs::remove_dir_all(&self.0);
         }
     }
@@ -1374,7 +1388,7 @@ mod tests {
 
         let config = Config { ports: vec!["APP_PORT".into()], include: vec![".env".into(), "secret.key".into()], ..Config::default() };
         let (s, notes) = create(&main, "fix", None, &config).unwrap();
-        let root = t.join("app.sessions/fix");
+        let root = t.join("sessions/app/fix");
         assert_eq!(s.root, root);
         assert_eq!((s.kind, s.branch.as_deref(), s.made_branch), (Kind::Worktree, Some("test-user/fix"), true));
         assert_eq!(run_git(&root, &["branch", "--show-current"]), "test-user/fix");
