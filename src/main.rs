@@ -65,6 +65,7 @@ pub enum Msg {
     SetUp(PathBuf, PathBuf, bool),
     Changes(Box<review::Read>),
     Status(PathBuf, Box<git::Status>),
+    Viewed(Box<viewer::Loaded>),
 }
 
 fn main() -> Result<()> {
@@ -172,6 +173,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
                 Msg::SetUp(root, log, ok) => app.on_set_up(root, log, ok),
                 Msg::Changes(read) => app.on_changes(*read),
                 Msg::Status(root, status) => app.on_status(root, *status),
+                Msg::Viewed(loaded) => app.on_viewed(*loaded),
             }
         }
         if app.fs_pending() && last_fs_refresh.elapsed() >= FS_THROTTLE {

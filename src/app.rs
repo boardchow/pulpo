@@ -444,8 +444,9 @@ impl App {
         if dirty.contains(&self.ws().root) {
             // Only the current session's tree shows; another's is rebuilt when it becomes current.
             self.ws_mut().refresh();
-            let root = self.ws().root.clone();
-            self.viewer.reload(&root);
+            if let Some(next) = self.viewer.reload() {
+                self.load_preview(next);
+            }
             self.reload_changes();
             if let Some(search) = &mut self.search {
                 search.rescan(&self.tx);
@@ -473,6 +474,19 @@ impl App {
         let Some(i) = self.workspaces.iter().position(|w| w.root == root) else { return };
         if self.workspaces[i].end_status(status) {
             self.read_status(i);
+        }
+    }
+
+    fn load_preview(&self, (path, stamp): (PathBuf, crate::viewer::Stamp)) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Viewed(Box::new(crate::viewer::load(path, stamp))));
+        });
+    }
+
+    pub fn on_viewed(&mut self, loaded: crate::viewer::Loaded) {
+        if let Some(next) = self.viewer.loaded(loaded) {
+            self.load_preview(next);
         }
     }
 
@@ -1171,9 +1185,8 @@ impl App {
         if self.editor.is_some() {
             return;
         }
-        let root = self.ws().root.clone();
         match self.ws().selected_row().filter(|r| !r.is_dir).map(|r| r.path.clone()) {
-            Some(path) => self.viewer.open(Source::File(path), &root),
+            Some(path) => self.viewer.open(Source::File(path)),
             None => self.viewer.close(),
         }
     }
@@ -1371,9 +1384,8 @@ impl App {
 
     fn close_editor(&mut self) {
         let Some(editor) = self.editor.take() else { return };
-        let root = self.ws().root.clone();
         self.viewer.close();
-        self.viewer.open_at(editor.path.clone(), None, &root);
+        self.viewer.open_at(editor.path.clone(), None);
         self.viewer.scroll = editor.scroll;
         self.files_expanded = true;
         self.reading = false;
@@ -1573,8 +1585,7 @@ impl App {
 
     fn show_file(&mut self, path: PathBuf, line: Option<usize>) {
         self.ws_mut().reveal(&path);
-        let root = self.ws().root.clone();
-        self.viewer.open_at(path, line, &root);
+        self.viewer.open_at(path, line);
     }
 
     fn repos_key(&mut self, key: KeyEvent) {
