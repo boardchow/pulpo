@@ -96,7 +96,7 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(PULPO.len() as u16),
         Constraint::Length(1),
         Constraint::Length(rows(app.repos().len())),
-        Constraint::Length(rows(app.sessions().len() * 2)),
+        Constraint::Length(rows(app.sessions().len())),
         Constraint::Fill(1),
     ])
     .areas(area);
@@ -144,22 +144,12 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
             if !w.status.changes.is_empty() {
                 spans.push(Span::from(format!(" ±{}", w.status.changes.len())).fg(theme::blue()));
             }
-            if let Some(session) = app.isolated.iter().find(|s| s.root == w.root) {
-                let web: Vec<u16> =
-                    session.ports.iter().filter(|(var, _)| ["APP", "WEB", "HTTP"].iter().any(|k| var.contains(k))).map(|(_, p)| *p).collect();
-                let shown = if web.is_empty() { session.port.into_iter().collect() } else { web };
-                for port in shown {
-                    spans.push(Span::from(format!(" :{port}")).fg(theme::sky()));
-                }
-            }
-            let below = if app.setup_failed.contains_key(&w.root) {
-                Span::from("✗ setup failed").fg(theme::red())
+            if app.setup_failed.contains_key(&w.root) {
+                spans.push(Span::from(" ✗ setup failed").fg(theme::red()));
             } else if app.setting_up.contains_key(&w.root) {
-                Span::from(format!("{} setting up", state_icon(State::Running).0)).fg(theme::yellow())
-            } else {
-                Span::from(w.status.branch.clone().unwrap_or_default()).fg(theme::muted())
-            };
-            ListItem::new(vec![Line::from(spans), Line::from(vec![Span::from("   "), below])])
+                spans.push(Span::from(format!(" {} setting up", state_icon(State::Running).0)).fg(theme::yellow()));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect();
     let focused = app.focus == Focus::Sessions;
@@ -296,7 +286,9 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
         rest.push(Span::from(format!("{} ", path.strip_prefix(&root).unwrap_or(&path).display())).fg(theme::muted()));
     }
     if let Some(editor) = &app.editor {
-        rest.push(if editor.dirty { Span::from("● unsaved ").fg(theme::yellow()) } else { Span::from("editing ").fg(theme::blue()) });
+        if editor.dirty {
+            rest.push(Span::from("● unsaved ").fg(theme::yellow()));
+        }
     }
     let (tree, file) = split_panel(frame, app, area, title("Files", focused, rest), focused);
     app.areas.files_tree = tree;
