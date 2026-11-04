@@ -188,6 +188,8 @@ pub struct App {
     /// Sessions being copied: their repository and name.
     copying: HashSet<(PathBuf, String)>,
     removing: HashSet<PathBuf>,
+    /// Sessions whose folder was deleted by hand, removed once already.
+    gone: HashSet<PathBuf>,
     /// The terminal (its tag) last on screen in each session, and the
     /// session last used in each repository.
     last_term: HashMap<PathBuf, String>,
@@ -282,6 +284,7 @@ impl App {
             setup_failed: HashMap::new(),
             copying: HashSet::new(),
             removing: HashSet::new(),
+            gone: HashSet::new(),
             last_term: layout.terminals.clone().into_iter().collect(),
             last_session: layout.sessions.clone().into_iter().collect(),
             saved: layout.clone(),
@@ -338,12 +341,21 @@ impl App {
             None => Workspace::new(root, repo.to_path_buf()),
         };
         let isolated = session::all();
+        // A folder deleted by hand: the rest of its session goes the usual
+        // way (containers, worktree, branch), once.
+        let gone: Vec<session::Session> = isolated
+            .iter()
+            .filter(|s| s.repo.is_dir() && !s.root.exists() && !self.removing.contains(&s.root) && !self.gone.contains(&s.root))
+            .cloned()
+            .collect();
         self.isolated.clear();
         for repo in workspace::registered().into_iter().filter(|r| r.is_dir()) {
             let mut roots = git::worktrees(&repo);
             if roots.is_empty() {
                 roots.push(repo.clone());
             }
+            // A session's worktree is listed once, below, as the session.
+            roots.retain(|r| !isolated.iter().any(|s| s.repo == repo && session::same_path(&s.root, r)));
             for root in roots {
                 self.workspaces.push(reuse(root, &repo));
             }
@@ -352,6 +364,8 @@ impl App {
                 self.isolated.push(s.clone());
             }
         }
+        // All marked before any goes: each removal lists them again.
+        self.gone.extend(gone.iter().map(|s| s.root.clone()));
         if self.workspaces.is_empty() {
             let scratch = self.scratch.clone();
             self.workspaces.push(reuse(scratch.clone(), &scratch));
@@ -368,6 +382,10 @@ impl App {
         }
         self.sync_lists();
         self.sync_watches();
+        // Once the list and the current session are settled.
+        for s in gone {
+            self.remove(s, false);
+        }
     }
 
     fn sync_watches(&mut self) {
@@ -474,7 +492,9 @@ impl App {
             let added_or_removed = self.workspaces.iter().any(|w| {
                 path.strip_prefix(w.repo.join(".git/worktrees")).is_ok_and(|rel| rel.components().count() == 1)
             });
-            self.reload_list |= added_or_removed;
+            // A session's folder deleted by hand: the rest of it goes now.
+            let session_gone = self.isolated.iter().any(|s| path.starts_with(&s.root) && !s.root.exists());
+            self.reload_list |= added_or_removed || session_gone;
         }
     }
 
@@ -1146,7 +1166,9 @@ impl App {
                 Some(session) => {
                     let lost = session::unsaved(&session);
                     let lost = if lost.is_empty() { String::new() } else { format!(", losing {}", lost.join(" and ")) };
-                    let question = format!("delete session {}: its copy, containers and database{lost}?", session.name);
+                    let what = if session.kind == session::Kind::Worktree { "folder" } else { "copy" };
+                    let kept = session::kept_branch(&session).map(|b| format!("; branch {b} stays")).unwrap_or_default();
+                    let question = format!("delete session {}: its {what}, containers and database{lost}{kept}?", session.name);
                     self.ask(question, Confirm::DeleteSession(session.root));
                 }
                 None if self.ws().is_worktree() => self.message = Some("this session is a git worktree; Pulpo leaves worktrees to git".into()),
@@ -2067,8 +2089,8 @@ impl App {
 
     // Task sessions
 
-    /// Copy the repository's main checkout into a new session, in the
-    /// background (`on_copied` goes on).
+    /// Make a new session of the repository, in the background (`on_copied`
+    /// goes on).
     fn create_session(&mut self, name: &str) {
         let (repo, name, tx) = (self.ws().repo.clone(), name.to_string(), self.tx.clone());
         let place = self.place(&repo).unwrap_or_default();
@@ -2077,20 +2099,21 @@ impl App {
             self.message = Some(format!("session {name} is being made already"));
             return;
         }
-        self.message = Some(format!("copying {place} into session {name}…"));
+        self.message = Some(format!("making session {name} of {place}…"));
         std::thread::spawn(move || {
             let made = session::config(&repo).and_then(|(config, _)| session::create(&repo, &name, &config));
-            let _ = tx.send(Msg::Copied((repo, name), made.map(|s| s.root).map_err(|e| format!("could not make the session: {e:#}"))));
+            let made = made.map(|(s, notes)| (s.root, notes)).map_err(|e| format!("could not make the session: {e:#}"));
+            let _ = tx.send(Msg::Copied((repo, name), made));
         });
     }
 
-    /// The copy is made: show it with a shell in it, yours at once, and set
-    /// it up in the background: main's images, a copy of its database, its
-    /// own containers.
-    pub fn on_copied(&mut self, copy: (PathBuf, String), made: Result<PathBuf, String>) {
+    /// The session is made: show it with a shell in it, yours at once, and
+    /// set it up in the background: main's images, a copy of its database,
+    /// its own containers.
+    pub fn on_copied(&mut self, copy: (PathBuf, String), made: Result<(PathBuf, Vec<String>), String>) {
         self.copying.remove(&copy);
-        let root = match made {
-            Ok(root) => root,
+        let (root, mut notes) = match made {
+            Ok(made) => made,
             Err(e) => {
                 self.message = Some(e);
                 return;
@@ -2109,7 +2132,8 @@ impl App {
                 return;
             }
         };
-        let script = session::setup_script(&session, &config, &warnings);
+        notes.extend(warnings.iter().map(|w| format!("! {w}")));
+        let script = session::setup_script(&session, &config, &notes);
         let log = logs().join(format!("setup-{}.log", session.project));
         match run_in_background(&script, &root, &session, &log) {
             Ok(mut child) => {
@@ -2140,7 +2164,16 @@ impl App {
     /// copy.
     fn remove_session(&mut self, root: &Path) {
         let Some(session) = self.isolated.iter().find(|s| s.root == root).cloned() else { return };
+        self.remove(session, true);
+    }
+
+    /// `remove_session`'s work; `asked` when you deleted it, else its folder
+    /// was deleted by hand and you stay where you are.
+    fn remove(&mut self, session: session::Session, asked: bool) {
         let Ok(exe) = std::env::current_exe() else { return };
+        if self.removing.contains(&session.root) {
+            return;
+        }
         let config = session::config(&session.repo).map(|(c, _)| c).unwrap_or_default();
         let script = session::teardown_script(&session, &config, &exe);
         // Its terminals stop the usual way (ctrl-c, then hang up).
@@ -2163,17 +2196,25 @@ impl App {
             let _ = tx.send(Msg::Removed(root, log, ok));
         });
         // Off the list now, as if gone.
-        if let Some(main) = self.workspaces.iter().position(|w| w.root == session.repo) {
+        if let Some(main) = self.workspaces.iter().position(|w| w.root == session.repo).filter(|_| asked) {
             self.set_current(main);
         }
         self.removing.insert(session.root.clone());
         self.load_workspaces();
-        self.message = Some(format!("session {} deleted", session.name));
+        self.message = Some(if asked {
+            format!("session {} deleted", session.name)
+        } else {
+            format!("session {}'s folder was deleted: removing its containers and worktree", session.name)
+        });
     }
 
     /// A session's removal ended: if it failed, the session is back.
     pub fn on_removed(&mut self, root: PathBuf, log: PathBuf, ok: bool) {
         self.removing.remove(&root);
+        // Its name can be a session again, whose folder can go again.
+        if ok {
+            self.gone.remove(&root);
+        }
         self.load_workspaces();
         if ok {
             let _ = std::fs::remove_file(&log);
