@@ -41,7 +41,11 @@ pub struct Changes {
     pub split: bool,
     pub history: History,
     pub history_state: ListState,
+    /// How many commits History reads: a page more each time the list nears its end.
+    pub history_limit: usize,
 }
+
+pub const HISTORY_PAGE: usize = 100;
 
 impl Changes {
     pub fn new(root: &Path, copied: Option<String>) -> Changes {
@@ -64,6 +68,7 @@ impl Changes {
             split: false,
             history: History::default(),
             history_state: ListState::default().with_selected(Some(0)),
+            history_limit: HISTORY_PAGE,
         }
     }
 
@@ -97,6 +102,7 @@ impl Changes {
             copied: self.copied.clone(),
             commit: self.commit.is_some(),
             shown: self.diff.as_ref().map(|(p, _)| p.clone()),
+            history_limit: self.history_limit,
             generation: self.generation,
         }
     }
@@ -250,6 +256,7 @@ pub struct Request {
     copied: Option<String>,
     commit: bool,
     shown: Option<PathBuf>,
+    history_limit: usize,
     generation: u64,
 }
 
@@ -279,7 +286,7 @@ impl Request {
             (History::default(), String::new())
         } else {
             let (base, since) = self.copied.map(|c| (c, "since the copy".to_string())).unwrap_or_else(|| self::base(&self.root));
-            (git::history(&self.root, &base), since)
+            (git::history(&self.root, &base, self.history_limit), since)
         };
         Read { root: self.root, against: self.against, since, files, diff, history, generation: self.generation }
     }
@@ -450,7 +457,12 @@ mod tests {
         let changes = Changes::open(&t, None);
         assert_eq!((subjects(&changes), changes.history.behind), (vec![("agent".to_string(), true)], 1));
         run(&["checkout", "-q", "-f", "main"]);
-        assert_eq!(subjects(&Changes::open(&t, None)), [("start".to_string(), false)]);
+        run(&["commit", "-q", "--allow-empty", "-m", "later"]);
+        let mut on_main = Changes::open(&t, None);
+        assert_eq!((on_main.history.commits.len(), on_main.history.more), (2, false));
+        on_main.history_limit = 1;
+        on_main.load();
+        assert_eq!((subjects(&on_main), on_main.history.more), (vec![("later".to_string(), false)], true));
         std::fs::remove_dir_all(&t).unwrap();
     }
 }

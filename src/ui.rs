@@ -262,7 +262,8 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(changes) = &mut app.changes else { return };
     let history = &changes.history;
     let unpushed = history.commits.iter().filter(|c| !c.pushed).count();
-    let mut rest = vec![Span::from(format!("{} ", history.commits.len())).fg(theme::blue())];
+    let more = if history.more { "+" } else { "" };
+    let mut rest = vec![Span::from(format!("{}{more} ", history.commits.len())).fg(theme::blue())];
     if !changes.since.is_empty() {
         rest.push(Span::from(format!("{} ", changes.since)).fg(theme::muted()));
     }

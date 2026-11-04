@@ -1713,9 +1713,14 @@ impl App {
 
     fn history_step(&mut self, delta: isize) {
         let Some(changes) = &mut self.changes else { return };
-        let max = changes.history.commits.len().saturating_sub(1);
-        let next = changes.history_state.selected().unwrap_or(0).saturating_add_signed(delta).min(max);
+        let len = changes.history.commits.len();
+        let next = changes.history_state.selected().unwrap_or(0).saturating_add_signed(delta).min(len.saturating_sub(1));
         changes.history_state.select(Some(next));
+        // Near the end, the next page; once, until it's read.
+        if changes.history.more && next + 20 >= len && changes.history_limit <= len {
+            changes.history_limit += crate::review::HISTORY_PAGE;
+            self.reload_changes();
+        }
     }
 
     fn history_key(&mut self, key: KeyEvent) {
