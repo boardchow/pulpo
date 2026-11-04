@@ -386,8 +386,9 @@ impl App {
     }
 
     pub fn sessions(&self) -> Vec<usize> {
-        let repo = &self.ws().repo;
-        (0..self.workspaces.len()).filter(|&i| &self.workspaces[i].repo == repo).collect()
+        let mut all: Vec<usize> = (0..self.workspaces.len()).collect();
+        all.sort_by_key(|&i| !matches!(self.session_state(i), Some(State::Waiting | State::Done)));
+        all
     }
 
     pub fn session_name(&self, i: usize) -> &str {
@@ -1103,7 +1104,8 @@ impl App {
                     let lost = if lost.is_empty() { String::new() } else { format!(", losing {}", lost.join(" and ")) };
                     let what = if session.kind == session::Kind::Worktree { "folder" } else { "copy" };
                     let kept = session::kept_branch(&session).map(|b| format!("; branch {b} stays")).unwrap_or_default();
-                    let question = format!("delete session {}: its {what}, containers and database{lost}{kept}?", session.name);
+                    let place = self.place(&session.root).unwrap_or(session.name.clone());
+                    let question = format!("delete session {place}: its {what}, containers and database{lost}{kept}?");
                     self.ask(question, Confirm::DeleteSession(session.root));
                 }
                 None => self.message = Some(format!("this is the repository itself: {p} w, then {p} x takes it off the list", p = self.keymap.label())),
@@ -1768,7 +1770,7 @@ impl App {
             }
         } else if down && areas.sessions.contains(pos) {
             self.set_focus(Focus::Sessions);
-            let i = (pos.y - areas.sessions.y) as usize + self.sessions_state.offset();
+            let i = row(areas.sessions, self.sessions_state.offset());
             if i < self.sessions().len() {
                 self.sessions_state.select(Some(i));
                 self.on_select();

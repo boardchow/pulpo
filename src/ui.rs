@@ -112,35 +112,22 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
         .into_iter()
         .map(|i| {
             let w = &app.workspaces[i];
-            let current = w.repo == current_repo;
-            let mut spans = vec![Span::from(if current { " ● " } else { "   " }).fg(theme::accent())];
-            let name = Span::from(w.name.clone());
-            spans.push(if current { name.bold() } else { name });
             let states = app.workspaces.iter().enumerate().filter(|(_, s)| s.repo == w.repo).filter_map(|(s, _)| app.session_state(s));
-            if let Some(state @ (State::Running | State::Waiting | State::Done)) = states.max_by_key(|state| state.urgency()) {
-                let (icon, color) = state_icon(state);
-                spans.push(Span::from(format!(" {icon}")).fg(color).bold());
-            }
-            ListItem::new(Line::from(spans))
+            let state = states.max_by_key(|state| state.urgency());
+            ListItem::new(Line::from(state_name(state, &w.name, w.repo == current_repo)))
         })
         .collect();
     frame.render_stateful_widget(List::new(items).highlight_style(highlight(focused)), rows, &mut app.workspaces_state);
     app.areas.workspaces = rows;
 
-    let items: Vec<ListItem> = app
-        .sessions()
+    let order = app.sessions();
+    // States change between frames, and the order with them.
+    app.sessions_state.select(order.iter().position(|&i| i == app.current));
+    let items: Vec<ListItem> = order
         .into_iter()
         .map(|i| {
             let w = &app.workspaces[i];
-            let state = app.session_state(i);
-            let (icon, color) = state.map_or((" ", theme::dim()), state_icon);
-            let name = Span::from(app.session_name(i).to_string());
-            let name = match state {
-                Some(State::Waiting | State::Done) => name.fg(color).bold(),
-                _ if i == app.current => name.fg(theme::fg()).bold(),
-                _ => name.fg(theme::muted()),
-            };
-            let mut spans = vec![Span::from(format!(" {icon} ")).fg(color).bold(), name];
+            let mut spans = state_name(app.session_state(i), app.session_name(i), i == app.current);
             if !w.status.changes.is_empty() {
                 spans.push(Span::from(format!(" ±{}", w.status.changes.len())).fg(theme::blue()));
             }
@@ -149,11 +136,30 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
             } else if app.setting_up.contains_key(&w.root) {
                 spans.push(Span::from(format!(" {} setting up", state_icon(State::Running).0)).fg(theme::yellow()));
             }
+            let repo = app.workspaces.iter().find(|r| r.repo == w.repo && !r.is_worktree()).map_or(&w.name, |r| &r.name);
+            let used = spans.iter().map(Span::width).sum::<usize>();
+            let room = (sessions.width as usize).saturating_sub(used + 4);
+            if room >= 4 {
+                let repo = if repo.chars().count() > room { format!("{}…", repo.chars().take(room - 1).collect::<String>()) } else { repo.clone() };
+                spans.push(Span::from(" ".repeat(room + 1 - repo.chars().count())));
+                spans.push(Span::from(repo).fg(theme::dim()));
+            }
             ListItem::new(Line::from(spans))
         })
         .collect();
     let focused = app.focus == Focus::Sessions;
     app.areas.sessions = panel(frame, framed("Sessions", focused), sessions, focused, items, &mut app.sessions_state);
+}
+
+fn state_name(state: Option<State>, name: &str, current: bool) -> Vec<Span<'static>> {
+    let (icon, color) = state.map_or((" ", theme::dim()), state_icon);
+    let name = Span::from(name.to_string());
+    let name = match state {
+        Some(State::Waiting | State::Done) => name.fg(color).bold(),
+        _ if current => name.fg(theme::fg()).bold(),
+        _ => name.fg(theme::muted()),
+    };
+    vec![Span::from(format!(" {icon} ")).fg(color).bold(), name]
 }
 
 fn draw_center(frame: &mut Frame, app: &mut App, area: Rect) {

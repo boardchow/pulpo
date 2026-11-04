@@ -9,19 +9,23 @@ order: 4
 
 Running `pulpo` in a repository adds it. To add another, :kp[w] then :kp[n].
 
+Selecting a workspace makes it the current one and goes back to the session you last used in it.
+
 :kp[x] in Workspaces removes a repository from the list. Its files stay.
 
 ## Sessions
 
 A session is one checkout of a workspace. Selecting one shows its terminals, files and changes.
 
+Sessions lists every workspace's sessions, each with its workspace's name on the right, so you can go from one to another without going through Workspaces. The ones waiting for you come first. Selecting a session in another workspace makes that workspace the current one.
+
 Every workspace starts with `main`, the repository itself. Each session you create is a git worktree on its own branch, with its own ports and Docker containers. Worktrees made outside Pulpo, by agents or by hand, don't show.
 
-Each row shows the session's state, name and uncommitted changes (`±3`).
+Each row shows the session's state, name, uncommitted changes (`±3`) and workspace.
 
 ## Create a session
 
-:kp[s], then :kp[n], then a name.
+:kp[s], then :kp[n], then a name. The session is made in the current workspace.
 
 1. Pulpo fetches the remote's default branch and makes a worktree from it in `~/.pulpo/sessions/<repo>/<name>`, on the branch `<you>/<name>`.
 2. It copies `main`'s `.env` files, and the files listed in `.worktreeinclude`.
