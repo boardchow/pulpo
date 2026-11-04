@@ -9,17 +9,17 @@ order: 4
 
 Running `pulpo` in a repository adds it. To add another, :kp[p] then :kp[n].
 
-Selecting a project makes it the current one and goes back to the workspace you last used in it.
+Selecting a project opens the project itself, the repository folder you added: its terminals, files and changes. Use it for quick work on `main`, pulling, or running the app.
 
 :kp[x] in Projects removes a project from the list. Its files stay.
 
 ## Workspaces
 
-A workspace is one checkout of a project. Selecting one shows its terminals, files and changes.
+A workspace is an isolated copy of a project, a git worktree on its own branch, with its own ports and Docker containers. Selecting one shows its terminals, files and changes.
 
 Workspaces lists every project's workspaces, each with its project's name on the right, so you can go from one to another without going through Projects. The ones waiting for you come first, then the ones working, then the rest. Selecting a workspace in another project makes that project the current one.
 
-Every project starts with `main`, the repository itself. Each workspace you create is a git worktree on its own branch, with its own ports and Docker containers. Worktrees made outside Pulpo, by agents or by hand, don't show.
+A new project has no workspaces. Worktrees made outside Pulpo, by agents or by hand, don't show.
 
 Each row shows the workspace's state, name, uncommitted changes (`±3`) and project.
 
@@ -28,7 +28,7 @@ Each row shows the workspace's state, name, uncommitted changes (`±3`) and proj
 :kp[w], then :kp[n], then a name. The workspace is made in the current project.
 
 1. Pulpo fetches the remote's default branch and makes a worktree from it in `~/.pulpo/workspaces/<repo>/<name>`, on the branch `<you>/<name>`.
-2. It copies `main`'s `.env` files, and the files listed in `.worktreeinclude`.
+2. It copies the project's `.env` files, and the files listed in `.worktreeinclude`.
 3. A shell opens in it right away.
 4. Setup runs in the background: submodules, [Docker](/docs/docker), then the setup script. The workspace shows *setting up* meanwhile, or *setup failed* with its log.
 
@@ -36,7 +36,7 @@ Each row shows the workspace's state, name, uncommitted changes (`±3`) and proj
 
 To pick the branch yourself, say for a Linear ticket, press `Tab` after the name and type or paste it. The name stays the folder's.
 
-Commit and push from a workspace as usual; `main` sees the commits at once.
+Commit and push from a workspace as usual; the project sees the commits at once. To merge into `main` without a pull request, ask the agent to merge from the project's folder (`git -C <project> merge <branch>`): git keeps `main` checked out there, so a workspace can't switch to it.
 
 ## Copy ignored files
 
@@ -68,4 +68,4 @@ Deleting removes everything that wasn't committed in the workspace.
 | ◆ | A terminal waits for you |
 | ○ | Quiet |
 
-A workspace shows its most urgent terminal, a project its most urgent workspace. See [Agent status](/docs/terminals#agent-status).
+A project or workspace shows its most urgent terminal. See [Agent status](/docs/terminals#agent-status).

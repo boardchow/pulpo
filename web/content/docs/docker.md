@@ -15,7 +15,7 @@ Every terminal of a workspace you created has:
 | `PORT` | `PULPO_PORT`, without a Compose file |
 | `COMPOSE_PROJECT_NAME` | `<project>-<workspace>` |
 | `PULPO_WORKSPACE_NAME` | The workspace's name |
-| `PULPO_ROOT_PATH`, `PULPO_WORKSPACE_PATH` | Where `main` and the workspace are |
+| `PULPO_ROOT_PATH`, `PULPO_WORKSPACE_PATH` | Where the project and the workspace are |
 
 ## Docker
 
@@ -28,9 +28,9 @@ services:
       - ${APP_PORT:-8080}:8080
 ```
 
-When a workspace is created, Pulpo reuses the images `main` built, copies `main`'s MySQL or Postgres database, runs `docker compose up -d`, then the setup script.
+When a workspace is created, Pulpo reuses the images the project built, copies the project's MySQL or Postgres database, runs `docker compose up -d`, then the setup script.
 
-Containers that mount the workspace's folder also get `main`'s `.git`, read only, so git works inside them.
+Containers that mount the workspace's folder also get the project's `.git`, read only, so git works inside them.
 
 The setup log lists what can't be isolated: fixed host ports, `container_name`, named volumes.
 

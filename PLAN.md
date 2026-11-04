@@ -56,17 +56,18 @@ Event sources feeding the loop:
 
 ### Workspaces
 
-The sidebar has repositories (Projects) and every repository's checkouts
-(Workspaces, each with its project's name: the ones waiting for you first, then the working ones, then the rest):
-`main` and its git worktrees, each a `Workspace`. Selecting a checkout of another project makes that project the
-current one.
+The sidebar has repositories (Projects) and the worktrees Pulpo made in every one
+(Workspaces, each with its project's name: the ones waiting for you first, then the working ones, then the rest).
+Each is a `Workspace`: a project's row is the repository's own checkout, so selecting a project
+opens it. Selecting a workspace of another project makes that project the current one.
 The current workspace decides what the right side and the panels show: its
 terminals, files and changes. A terminal belongs to the checkout it
 was started in (`info.cwd`), so terminals that kept running fall back into
 their workspace on their own; one started outside every checkout goes to
 the workspace on screen. The app keeps the active terminal by id, remembered
-per workspace, and the workspace last used in each project. A workspace's and
-a project's mark is the most urgent state of their terminals.
+per workspace, and the workspace last used in each project (where `pulpo`,
+run in the repository, starts). A workspace's and a project's mark is the most
+urgent state of its own terminals.
 
 ### The screen
 

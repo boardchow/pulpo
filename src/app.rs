@@ -392,16 +392,12 @@ impl App {
         out
     }
 
+    /// The workspaces Pulpo made; a project's own folder is its row in Projects.
     pub fn workspace_order(&self) -> Vec<usize> {
-        let mut all: Vec<usize> = (0..self.workspaces.len()).collect();
+        let mut all: Vec<usize> = (0..self.workspaces.len()).filter(|&i| self.workspaces[i].is_worktree()).collect();
         // Waiting for you, then working, then the rest; stable, so each keeps its place in its group.
         all.sort_by_key(|&i| std::cmp::Reverse(self.workspace_state(i).map_or(0, |s| s.urgency())));
         all
-    }
-
-    pub fn workspace_name(&self, i: usize) -> &str {
-        let ws = &self.workspaces[i];
-        if ws.is_worktree() { &ws.name } else { "main" }
     }
 
     pub fn place(&self, dir: &Path) -> Option<String> {
@@ -1208,8 +1204,10 @@ impl App {
             Focus::Projects => (&mut self.projects_state, projects),
             _ => (&mut self.workspaces_state, workspaces),
         };
-        let from = state.selected().unwrap_or(0) as i64;
-        let next = (from + delta as i64).clamp(0, len.saturating_sub(1) as i64) as usize;
+        let next = match state.selected() {
+            Some(from) => (from as i64 + delta as i64).clamp(0, len.saturating_sub(1) as i64) as usize,
+            None => 0,
+        };
         state.select(Some(next));
         self.on_select();
     }
@@ -1217,10 +1215,8 @@ impl App {
     fn on_select(&mut self) {
         match self.focus {
             Focus::Projects => {
-                if let Some(main) = self.projects_state.selected().and_then(|i| self.projects().get(i).copied()) {
-                    let ws = &self.workspaces[main];
-                    let last = self.last_workspace.get(&ws.repo).and_then(|root| self.workspaces.iter().position(|w| &w.root == root));
-                    self.set_current(last.unwrap_or(main));
+                if let Some(project) = self.projects_state.selected().and_then(|i| self.projects().get(i).copied()) {
+                    self.set_current(project);
                 }
             }
             _ => {
