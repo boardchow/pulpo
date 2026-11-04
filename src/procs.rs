@@ -1,6 +1,3 @@
-//! What runs in a terminal: the processes descended from the one it
-//! started.
-
 use std::process::Command;
 
 pub struct Proc {
@@ -9,7 +6,6 @@ pub struct Proc {
     pub pgid: i32,
 }
 
-/// Every process on the machine.
 pub fn table() -> Vec<Proc> {
     let out = Command::new("ps").args(["-A", "-o", "pid=,ppid=,pgid="]).output();
     out.map(|o| parse_ps(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
@@ -25,7 +21,6 @@ fn parse_ps(text: &str) -> Vec<Proc> {
         .collect()
 }
 
-/// `root` and everything it started, and they started, and so on.
 pub fn tree(table: &[Proc], root: i32) -> Vec<&Proc> {
     let mut found: Vec<&Proc> = table.iter().filter(|p| p.pid == root).collect();
     let mut i = 0;

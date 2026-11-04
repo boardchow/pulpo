@@ -1,6 +1,3 @@
-//! Read-only view of a file (syntax highlighted), and the diffs Changes
-//! shows: the whole file, its changes in place.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -27,16 +24,10 @@ pub struct Viewer {
     pub source: Option<Source>,
     lines: Vec<Line<'static>>,
     pub scroll: usize,
-    /// Visible rows, set when drawing.
     pub height: usize,
-    /// A highlighted line (a search match), and a line to bring into view
-    /// on the next draw.
     pub mark: Option<usize>,
     pub goto: Option<usize>,
-    /// Width of the line-number column.
     gutter: usize,
-    /// Columns of code scrolled off to the left (line numbers stay), and the
-    /// longest line, which bounds it.
     hscroll: usize,
     widest: usize,
 }
@@ -60,7 +51,6 @@ impl Viewer {
         }
     }
 
-    /// Open a file with `line` highlighted and in view.
     pub fn open_at(&mut self, path: PathBuf, line: Option<usize>, root: &Path) {
         self.open(Source::File(path), root);
         self.mark = line;
@@ -70,8 +60,6 @@ impl Viewer {
         }
     }
 
-    /// Re-read the file, keeping the scroll position (files change under
-    /// us while agents work).
     pub fn reload(&mut self, _root: &Path) {
         let Some(Source::File(path)) = &self.source else { return };
         let content = load_file(path);
@@ -87,13 +75,11 @@ impl Viewer {
         self.lines.len()
     }
 
-    /// Row `i` as drawn: scrolled sideways, the marked row on a background.
     pub fn decorated(&self, i: usize) -> Line<'static> {
         let line = shift(self.lines[i].clone(), self.gutter, self.hscroll);
         if self.mark == Some(i) { line.patch_style(Style::default().bg(theme::mark_bg())) } else { line }
     }
 
-    /// Scroll sideways; 0 columns goes back to the start of the lines.
     pub fn scroll_sideways(&mut self, columns: isize) {
         self.hscroll = if columns == 0 { 0 } else { self.hscroll.saturating_add_signed(columns).min(self.widest) };
     }
@@ -104,15 +90,11 @@ impl Viewer {
     }
 }
 
-/// What the viewer shows for a file, or Changes for a diff.
 #[derive(Default)]
 struct Content {
     lines: Vec<Line<'static>>,
-    /// Width of the line-number column.
     gutter: usize,
-    /// First line of each block of changes (diffs only).
     changes: Vec<usize>,
-    /// Lines added and removed, and what each line is (diffs only).
     counts: Option<(usize, usize)>,
     kinds: Vec<Kind>,
 }
@@ -153,29 +135,22 @@ fn load_file(path: &Path) -> Content {
     Content { lines, gutter: width + 2, ..Content::default() }
 }
 
-/// What a line of a diff is.
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
 pub enum Kind {
     #[default]
     Same,
     Added,
     Removed,
-    /// Unchanged lines git left out.
     Gap,
 }
 
-/// One file's changes, against `base`: the whole file, its lines
-/// (inline, highlighted, a note when there's nothing to show), where each
-/// change starts, and lines added and removed.
 pub struct ReviewDiff {
     pub lines: Vec<Line<'static>>,
     pub changes: Vec<usize>,
     pub added: usize,
     pub removed: usize,
-    /// Width of the line numbers and markers, and of the longest line after.
     pub gutter: usize,
     pub widest: usize,
-    /// What each line is, for the marks on the right.
     pub kinds: Vec<Kind>,
 }
 
@@ -194,7 +169,6 @@ pub(crate) fn review_diff(root: &Path, base: &str, path: &Path, untracked: bool)
     ReviewDiff { gutter: content.gutter, widest, lines: content.lines, changes: content.changes, added, removed, kinds: content.kinds }
 }
 
-/// Lines from a diff of `path`: inline, both sides highlighted.
 fn diff_content(text: &str, path: &Path) -> Content {
     if text.is_empty() {
         return Content::note("no textual changes");
@@ -292,8 +266,6 @@ fn diff_content(text: &str, path: &Path) -> Content {
     content
 }
 
-/// Drop `n` characters of code after the first `gutter` ones (the line
-/// numbers), for scrolling sideways.
 pub(crate) fn shift(line: Line<'static>, gutter: usize, n: usize) -> Line<'static> {
     if n == 0 {
         return line;
@@ -339,7 +311,6 @@ pub(crate) fn syntax_for(path: &Path) -> &'static SyntaxReference {
         .unwrap_or_else(|| syntaxes.find_syntax_plain_text())
 }
 
-/// Highlighted pieces as spans, or the plain line if highlighting failed.
 pub(crate) fn styled(ranges: Option<Vec<(syntect::highlighting::Style, &str)>>, line: &str) -> Vec<Span<'static>> {
     match ranges {
         Some(ranges) => ranges
@@ -359,13 +330,10 @@ pub(crate) fn styled(ranges: Option<Vec<(syntect::highlighting::Style, &str)>>, 
     }
 }
 
-/// The text of a line, without its first `skip` characters.
 fn plain(line: &Line, skip: usize) -> String {
     line.spans.iter().flat_map(|s| s.content.chars()).skip(skip).collect()
 }
 
-/// Split the line's spans so occurrences of `query` (after `skip`
-/// characters) stand out.
 pub(crate) fn highlight_matches(line: Line<'static>, query: &str, ignore_case: bool, skip: usize) -> Line<'static> {
     let fold = |c: char| if ignore_case { c.to_lowercase().next().unwrap_or(c) } else { c };
     let needle: Vec<char> = query.chars().map(fold).collect();
@@ -417,14 +385,12 @@ fn clean(text: &str) -> String {
     text.trim_end_matches(['\n', '\r']).replace('\t', "    ")
 }
 
-/// Load the syntax definitions in the background so the first file opens fast.
 pub fn warm_up() {
     std::thread::spawn(|| {
         assets();
     });
 }
 
-/// The syntaxes, and the colors of the theme on screen.
 pub(crate) fn assets() -> (&'static SyntaxSet, std::sync::Arc<Theme>) {
     static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
     (SYNTAXES.get_or_init(two_face::syntax::extra_newlines), crate::theme::syntax())

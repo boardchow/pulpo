@@ -1,6 +1,4 @@
 <script setup>
-// ⌘K (or /): every section of every page, from /search.json, written at
-// build time, read the first time the search opens.
 const open = ref(false);
 const query = ref("");
 const picked = ref(0);
@@ -14,7 +12,6 @@ const hits = computed(() => {
     .map((s) => {
       const named = [...s.titles, s.title].join(" ").toLowerCase();
       if (!words.every((w) => `${named} ${s.content}`.toLowerCase().includes(w))) return null;
-      // Words in the page's or the section's title come first.
       return { s, score: words.filter((w) => named.includes(w)).length };
     })
     .filter(Boolean)
@@ -64,7 +61,6 @@ onBeforeUnmount(() => removeEventListener("keydown", onKey));
     <div class="search" :class="{ open }" @click.self="open = false">
       <div class="box">
         <input ref="input" v-model="query" type="search" placeholder="Search the docs" aria-label="Search">
-        <!-- Only once there's something to say. -->
         <ul v-if="hits.length || (query && sections)">
           <li v-if="!hits.length" class="empty">Nothing found.</li>
           <li v-for="(hit, i) in hits" :key="hit.to">

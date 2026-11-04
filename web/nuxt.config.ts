@@ -1,11 +1,7 @@
-// pulpo.sh: the landing page and the docs, generated as static HTML
-// (`npm run generate`), so every page is complete for search engines and
-// served from any static host. The docs are Markdown, in content/docs.
 export default defineNuxtConfig({
   compatibilityDate: "2026-11-01",
   modules: ["@nuxt/content"],
   css: ["~/assets/main.css"],
-  // Rendered on the server at build time, then hydrated.
   ssr: true,
   app: {
     head: {
@@ -23,14 +19,12 @@ export default defineNuxtConfig({
     experimental: { sqliteConnector: "native" },
     build: {
       markdown: {
-        // The page's sections, for "On this page".
         toc: { depth: 3, searchDepth: 3 },
         highlight: { theme: "github-dark-default", langs: ["sh", "toml", "yaml", "json"] },
       },
     },
   },
   nitro: {
-    // Every page found by following links from these, as HTML files.
     prerender: { crawlLinks: true, routes: ["/", "/docs", "/sitemap.xml", "/robots.txt", "/search.json"], failOnError: true },
   },
   devtools: { enabled: false },

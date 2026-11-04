@@ -1,5 +1,4 @@
 <script setup>
-// A heading, and a # beside it to link to it.
 defineProps({ id: { type: String, default: null } });
 </script>
 

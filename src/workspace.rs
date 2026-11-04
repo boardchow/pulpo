@@ -1,6 +1,3 @@
-//! Workspaces: every checkout (main or linked worktree) of the repositories
-//! in the registry, a plain list of paths in `~/.config/pulpo/workspaces`.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,14 +10,12 @@ use crate::tree::{Row, Tree};
 pub struct Workspace {
     pub root: PathBuf,
     pub name: String,
-    /// The main checkout this workspace belongs to.
     pub repo: PathBuf,
     pub status: Status,
     pub tree: Tree,
     pub files_state: ListState,
     ignore: Gitignore,
-    /// A linked worktree's own git folder (its HEAD and index), in main's
-    /// `.git/worktrees`, where its `.git` file points.
+    /// A linked worktree's own git folder, in main's `.git/worktrees`.
     own_git: Option<PathBuf>,
 }
 
@@ -54,9 +49,7 @@ impl Workspace {
         self.reselect(selected);
     }
 
-    /// Whether a file system event concerns this workspace. Skips ignored
-    /// paths (build output) and git internals other than HEAD, index and
-    /// refs. A worktree's HEAD and index are its own; refs are everyone's.
+    /// A worktree's HEAD and index are its own; refs are everyone's.
     pub fn is_affected(&self, path: &Path) -> bool {
         if let Ok(rel) = path.strip_prefix(self.repo.join(".git")) {
             let name = rel.file_name().unwrap_or_default();
@@ -75,7 +68,6 @@ impl Workspace {
         clamp(&mut self.files_state, self.tree.rows.len());
     }
 
-    /// Unfold the folders down to `path` and select it.
     pub fn reveal(&mut self, path: &Path) {
         let root = self.root.clone();
         for dir in path.ancestors().skip(1).take_while(|d| d.starts_with(&root) && *d != root) {
@@ -102,7 +94,6 @@ fn registry_path() -> PathBuf {
     base.join("pulpo").join("workspaces")
 }
 
-/// Registered repositories, most recently opened first.
 pub fn registered() -> Vec<PathBuf> {
     fs::read_to_string(registry_path())
         .unwrap_or_default()
@@ -113,7 +104,6 @@ pub fn registered() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Add a repository (or move it to the top of the list).
 pub fn register(repo: &Path) {
     let mut repos = registered();
     repos.retain(|r| r != repo);
@@ -152,7 +142,6 @@ mod tests {
         git(&["init", "-q"]);
         git(&["commit", "-q", "--allow-empty", "-m", "a"]);
         git(&["worktree", "add", "-q", "-b", "a", "../a"]);
-        // A relative gitdir (git 2.48+) too.
         git(&["-c", "worktree.useRelativePaths=true", "worktree", "add", "-q", "-b", "b", "../b"]);
         let main = t.join("main").canonicalize().unwrap();
         let (a, b) = (Workspace::new(t.join("a").canonicalize().unwrap(), main.clone()), Workspace::new(t.join("b").canonicalize().unwrap(), main.clone()));
@@ -161,7 +150,6 @@ mod tests {
         assert!(a.is_affected(&a_index) && !b.is_affected(&a_index) && !m.is_affected(&a_index));
         assert!(fs::read_to_string(t.join("b/.git")).unwrap().contains("gitdir: .."));
         assert!(b.is_affected(&main.join(".git/worktrees/b/HEAD")));
-        // A branch moving concerns everyone.
         let refs = main.join(".git/refs/heads/a");
         assert!(a.is_affected(&refs) && b.is_affected(&refs) && m.is_affected(&refs));
         fs::remove_dir_all(&t).unwrap();

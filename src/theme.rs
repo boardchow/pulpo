@@ -1,9 +1,3 @@
-//! Colors, all from one theme: Pulpo's own (sidebar, panes, diffs), the
-//! terminals' 16 colors and the syntax colors. Linear Dark, from the VS
-//! Code theme, is built in. Any Ghostty theme works too: its background,
-//! foreground and ANSI colors give the rest. By default Pulpo follows
-//! Ghostty's theme, so it looks like the terminal around it.
-
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -11,25 +5,19 @@ use std::sync::{Arc, RwLock};
 use ratatui::style::Color;
 use syntect::highlighting::{FontStyle, ScopeSelectors, StyleModifier, Theme, ThemeItem, ThemeSettings};
 
-/// The colors on screen.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Palette {
-    /// Side bar, panels, terminal.
     bg: u32,
-    /// Editor (the viewer).
     editor_bg: u32,
     border: u32,
     accent: u32,
-    /// Text on the accent.
     on_accent: u32,
     fg: u32,
     muted: u32,
     dim: u32,
     selection: u32,
     hover: u32,
-    /// The terminals' colors; blue, green and the rest are taken from them.
     ansi: [u32; 16],
-    /// Selected text in the editor.
     text_selection: u32,
 }
 
@@ -38,7 +26,6 @@ const LINEAR_ANSI: [u32; 16] = [
     0xF5C4EA, 0x55CDFF, 0xFFFFFF,
 ];
 
-/// Linear Dark, as the VS Code theme has it.
 const LINEAR_DARK: Palette = Palette {
     bg: 0x090909,
     editor_bg: 0x101012,
@@ -55,9 +42,6 @@ const LINEAR_DARK: Palette = Palette {
 };
 
 impl Palette {
-    /// From a terminal theme: its background, foreground and 16 colors.
-    /// Blue is the accent, and the greys are the foreground faded into the
-    /// background, so light themes work as well as dark ones.
     fn from_terminal(bg: u32, fg: u32, ansi: [u32; 16]) -> Palette {
         if (bg, fg, ansi) == (LINEAR_DARK.bg, LINEAR_DARK.fg, LINEAR_DARK.ansi) {
             return LINEAR_DARK;
@@ -85,7 +69,6 @@ const fn rgb(hex: u32) -> Color {
     Color::Rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
-/// `fg` at `alpha` (0-255) over `bg`.
 const fn mix(fg: u32, bg: u32, alpha: u32) -> u32 {
     const fn channel(fg: u32, bg: u32, shift: u32, alpha: u32) -> u32 {
         let (f, b) = ((fg >> shift) & 0xFF, (bg >> shift) & 0xFF);
@@ -100,7 +83,6 @@ fn luminance(hex: u32) -> f32 {
 }
 
 static CURRENT: RwLock<Palette> = RwLock::new(LINEAR_DARK);
-/// The syntax theme of the current palette, built when first asked.
 static SYNTAX: RwLock<Option<Arc<Theme>>> = RwLock::new(None);
 
 fn palette() -> Palette {
@@ -160,7 +142,6 @@ pub fn magenta() -> Color {
 pub fn sky() -> Color {
     rgb(palette().ansi[14])
 }
-/// The theme's translucent backgrounds, blended over the editor background.
 pub fn added_bg() -> Color {
     let p = palette();
     rgb(mix(p.ansi[2], p.editor_bg, 0x26))
@@ -180,16 +161,13 @@ pub fn mark_bg() -> Color {
 pub fn text_selection() -> Color {
     rgb(palette().text_selection)
 }
-/// For programs running in the embedded terminals.
 pub fn ansi() -> [Color; 16] {
     palette().ansi.map(rgb)
 }
 
-/// Where a token's color comes from.
 #[derive(Clone, Copy)]
 enum Ink {
     Fg,
-    /// The foreground, a little faded.
     Soft,
     Dim,
     Ansi(usize),
@@ -198,8 +176,7 @@ enum Ink {
 const ITALIC: u8 = 1;
 const BOLD: u8 = 2;
 
-/// Linear Dark's tokenColors: scopes, color, style. Its colors are its
-/// terminal colors, which is how other themes get theirs.
+/// Linear Dark's tokenColors, as its terminal colors, which is how other themes get theirs.
 const TOKENS: &[(&str, Ink, u8)] = &[
     ("comment, punctuation.definition.comment", Ink::Dim, ITALIC),
     (
@@ -243,7 +220,6 @@ const TOKENS: &[(&str, Ink, u8)] = &[
     ("invalid, invalid.illegal", Ink::Ansi(1), 0),
 ];
 
-/// The syntax highlighting theme of the colors on screen.
 pub fn syntax() -> Arc<Theme> {
     if let Some(theme) = SYNTAX.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
         return theme.clone();
@@ -257,8 +233,7 @@ fn build_syntax(p: &Palette) -> Theme {
     let color = |hex: u32| syntect::highlighting::Color { r: (hex >> 16) as u8, g: (hex >> 8) as u8, b: hex as u8, a: 0xFF };
     let ink = |ink: Ink| match ink {
         Ink::Fg => p.fg,
-        // Linear Dark's punctuation is its color 7; the same, faded from
-        // any theme's foreground.
+        // Linear Dark's punctuation is its color 7; other themes fade their foreground.
         Ink::Soft if *p == LINEAR_DARK => p.ansi[7],
         Ink::Soft => mix(p.fg, p.bg, 235),
         Ink::Dim => p.dim,
@@ -288,13 +263,8 @@ fn build_syntax(p: &Palette) -> Theme {
     }
 }
 
-// Choosing a theme
-
-/// Follow Ghostty's theme: the default.
 pub const FOLLOW: &str = "ghostty";
 pub const LINEAR: &str = "Linear Dark";
-/// Make `name` the colors on screen: `ghostty`, `Linear Dark`, or a
-/// Ghostty theme's name (or path).
 pub fn apply(name: &str) -> Result<(), String> {
     set(load(name)?);
     Ok(())
@@ -303,7 +273,6 @@ pub fn apply(name: &str) -> Result<(), String> {
 fn load(name: &str) -> Result<Palette, String> {
     match name {
         LINEAR => Ok(LINEAR_DARK),
-        // Without a theme in Ghostty, Pulpo keeps its own.
         FOLLOW => ghostty_theme().map_or(Ok(LINEAR_DARK), |theme| from_ghostty(&theme)),
         theme => from_ghostty(theme),
     }
@@ -315,8 +284,7 @@ fn from_ghostty(theme: &str) -> Result<Palette, String> {
     parse(&text).ok_or_else(|| format!("{}: not a Ghostty theme", path.display()))
 }
 
-/// A theme file: `background`, `foreground` and `palette = N=#hex`. Colors
-/// it leaves out are xterm's.
+/// A Ghostty theme file: `background`, `foreground`, `palette = N=#hex`; missing colors are xterm's.
 fn parse(text: &str) -> Option<Palette> {
     const XTERM: [u32; 16] = [
         0x000000, 0xCD0000, 0x00CD00, 0xCDCD00, 0x0000EE, 0xCD00CD, 0x00CDCD, 0xE5E5E5, 0x7F7F7F, 0xFF0000, 0x00FF00, 0xFFFF00, 0x5C5CFF,
@@ -343,8 +311,7 @@ fn parse(text: &str) -> Option<Palette> {
     Some(Palette::from_terminal(bg?, fg?, ansi))
 }
 
-/// Ghostty's own `theme`; with one for light and one for dark, the one
-/// for how macOS looks now.
+/// Ghostty's `theme`; a `light:X,dark:Y` pair picks by the macOS appearance.
 pub fn ghostty_theme() -> Option<String> {
     let mut theme = None;
     for path in crate::doctor::ghostty_configs() {
@@ -372,7 +339,6 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
-/// Your themes' folders, then Ghostty's.
 fn user_dirs() -> Vec<PathBuf> {
     let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
     vec![xdg.join("ghostty/themes"), home().join("Library/Application Support/com.mitchellh.ghostty/themes")]
@@ -397,7 +363,6 @@ fn config_path() -> PathBuf {
     base.join("pulpo/config.toml")
 }
 
-/// The theme chosen in `~/.config/pulpo/config.toml`, or following Ghostty.
 pub fn chosen() -> String {
     std::fs::read_to_string(config_path())
         .ok()
@@ -422,15 +387,12 @@ mod tests {
         let text = "background = #1a1b26\nforeground = #c0caf5\npalette = 4=#7aa2f7\npalette = 2 = #9ece6a\n# a comment\n";
         let p = parse(text).unwrap();
         assert_eq!((p.bg, p.fg, p.accent, p.ansi[2]), (0x1A1B26, 0xC0CAF5, 0x7AA2F7, 0x9ECE6A));
-        // Left out: xterm's.
         assert_eq!(p.ansi[1], 0xCD0000);
         assert!(parse("palette = 0=#000000").is_none());
     }
 
     #[test]
     fn linear_darks_colors_are_linear_dark() {
-        // A Ghostty theme with Linear Dark's terminal colors (like the one
-        // made from the VS Code theme) gets its exact palette.
         let mut text = String::from("background = #090909\nforeground = #e3e4e7\n");
         for (i, c) in LINEAR_ANSI.iter().enumerate() {
             text.push_str(&format!("palette = {i}=#{c:06x}\n"));
@@ -442,7 +404,6 @@ mod tests {
     fn light_themes_get_dark_text_on_a_light_accent() {
         let light = Palette::from_terminal(0xFFFCF0, 0x100F0F, [0xFFFCF0; 16]);
         assert_eq!(light.on_accent, 0xFFFCF0);
-        // Greys go from the foreground toward the background.
         assert!(luminance(light.muted) > luminance(light.fg) && luminance(light.muted) < luminance(light.bg));
     }
 }

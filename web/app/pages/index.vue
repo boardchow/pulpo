@@ -1,5 +1,4 @@
 <script setup>
-// pulpo.sh: what Pulpo is, and the command that installs it.
 const description = "Spin up a few coding agents, give each its own copy of your repo, and see who needs you. One terminal. Have fun :)";
 const site = useRuntimeConfig().public.site;
 useSeoMeta({
