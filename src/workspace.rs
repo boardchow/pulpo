@@ -19,6 +19,9 @@ pub struct Workspace {
     pub tree: Tree,
     pub files_state: ListState,
     ignore: Gitignore,
+    /// A linked worktree's own git folder (its HEAD and index), in main's
+    /// `.git/worktrees`, where its `.git` file points.
+    own_git: Option<PathBuf>,
 }
 
 impl Workspace {
@@ -31,6 +34,10 @@ impl Workspace {
             tree: Tree::new(root.clone()),
             files_state: ListState::default().with_selected(Some(0)),
             ignore: ignore.build().unwrap_or_else(|_| Gitignore::empty()),
+            // Canonical: a relative gitdir (worktree.useRelativePaths) has `..` in it.
+            own_git: fs::read_to_string(root.join(".git"))
+                .ok()
+                .and_then(|t| t.trim().strip_prefix("gitdir:").and_then(|p| root.join(p.trim()).canonicalize().ok())),
             root,
             repo,
         }
@@ -48,10 +55,14 @@ impl Workspace {
     }
 
     /// Whether a file system event concerns this workspace. Skips ignored
-    /// paths (build output) and git internals other than HEAD, index and refs.
+    /// paths (build output) and git internals other than HEAD, index and
+    /// refs. A worktree's HEAD and index are its own; refs are everyone's.
     pub fn is_affected(&self, path: &Path) -> bool {
         if let Ok(rel) = path.strip_prefix(self.repo.join(".git")) {
             let name = rel.file_name().unwrap_or_default();
+            if rel.starts_with("worktrees") {
+                return self.own_git.as_ref().is_some_and(|own| path.starts_with(own)) && (name == "HEAD" || name == "index");
+            }
             return name == "HEAD" || name == "index" || rel.starts_with("refs");
         }
         path.starts_with(&self.root) && !self.ignore.matched_path_or_any_parents(path, false).is_ignore()
@@ -123,4 +134,36 @@ fn save(repos: &[PathBuf]) {
     }
     let lines: Vec<String> = repos.iter().map(|r| r.display().to_string()).collect();
     let _ = fs::write(path, lines.join("\n") + "\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_worktrees_head_and_index_are_its_own() {
+        let t = std::env::temp_dir().join(format!("pulpo-affected-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        fs::create_dir_all(t.join("main")).unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git").current_dir(t.join("main")).args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args).status().unwrap();
+            assert!(ok.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "a"]);
+        git(&["worktree", "add", "-q", "-b", "a", "../a"]);
+        // A relative gitdir (git 2.48+) too.
+        git(&["-c", "worktree.useRelativePaths=true", "worktree", "add", "-q", "-b", "b", "../b"]);
+        let main = t.join("main").canonicalize().unwrap();
+        let (a, b) = (Workspace::new(t.join("a").canonicalize().unwrap(), main.clone()), Workspace::new(t.join("b").canonicalize().unwrap(), main.clone()));
+        let m = Workspace::new(main.clone(), main.clone());
+        let a_index = main.join(".git/worktrees/a/index");
+        assert!(a.is_affected(&a_index) && !b.is_affected(&a_index) && !m.is_affected(&a_index));
+        assert!(fs::read_to_string(t.join("b/.git")).unwrap().contains("gitdir: .."));
+        assert!(b.is_affected(&main.join(".git/worktrees/b/HEAD")));
+        // A branch moving concerns everyone.
+        let refs = main.join(".git/refs/heads/a");
+        assert!(a.is_affected(&refs) && b.is_affected(&refs) && m.is_affected(&refs));
+        fs::remove_dir_all(&t).unwrap();
+    }
 }
