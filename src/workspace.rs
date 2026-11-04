@@ -1,10 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ratatui::widgets::ListState;
 
-use crate::git::{self, Status};
+use crate::git::Status;
 use crate::tree::{Row, Tree};
 
 pub struct Workspace {
@@ -14,6 +15,9 @@ pub struct Workspace {
     pub status: Status,
     pub tree: Tree,
     pub files_state: ListState,
+    /// `git status` runs off the UI thread, one at a time; changes meanwhile ask for another.
+    status_since: Option<Instant>,
+    status_stale: bool,
     ignore: Gitignore,
     /// A linked worktree's own git folder, in main's `.git/worktrees`.
     own_git: Option<PathBuf>,
@@ -25,9 +29,11 @@ impl Workspace {
         ignore.add(root.join(".gitignore"));
         Workspace {
             name: root.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-            status: git::status(&root),
+            status: Status::default(),
             tree: Tree::new(root.clone()),
             files_state: ListState::default().with_selected(Some(0)),
+            status_since: None,
+            status_stale: false,
             ignore: ignore.build().unwrap_or_else(|_| Gitignore::empty()),
             // Canonical: a relative gitdir (worktree.useRelativePaths) has `..` in it.
             own_git: fs::read_to_string(root.join(".git"))
@@ -44,9 +50,30 @@ impl Workspace {
 
     pub fn refresh(&mut self) {
         let selected = self.selected_row().map(|r| r.path.clone());
-        self.status = git::status(&self.root);
         self.tree.rebuild();
         self.reselect(selected);
+    }
+
+    /// Whether to start a `git status` now.
+    pub fn begin_status(&mut self) -> bool {
+        if self.reading_status() {
+            self.status_stale = true;
+            return false;
+        }
+        self.status_since = Some(Instant::now());
+        true
+    }
+
+    /// Whether to read again: something changed while this one ran.
+    pub fn end_status(&mut self, status: Status) -> bool {
+        self.status = status;
+        self.status_since = None;
+        std::mem::take(&mut self.status_stale)
+    }
+
+    /// One running this long is stuck (a hung disk), and doesn't hold up the next.
+    pub fn reading_status(&self) -> bool {
+        self.status_since.is_some_and(|at| at.elapsed() < STUCK)
     }
 
     /// A worktree's HEAD and index are its own; refs are everyone's.
@@ -81,6 +108,8 @@ impl Workspace {
         self.tree.rows.get(self.files_state.selected()?)
     }
 }
+
+const STUCK: Duration = Duration::from_secs(30);
 
 pub fn clamp(state: &mut ListState, len: usize) {
     let max = len.saturating_sub(1);
@@ -129,6 +158,20 @@ fn save(repos: &[PathBuf]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_status_one_at_a_time_without_losing_a_change() {
+        let mut w = Workspace::new(std::env::temp_dir(), std::env::temp_dir());
+        assert!(w.begin_status());
+        assert!(!w.begin_status() && !w.begin_status());
+        assert!(w.end_status(Status::default()));
+        assert!(w.begin_status());
+        assert!(!w.end_status(Status::default()));
+
+        assert!(w.begin_status());
+        w.status_since = Instant::now().checked_sub(STUCK);
+        assert!(w.begin_status());
+    }
 
     #[test]
     fn a_worktrees_head_and_index_are_its_own() {
