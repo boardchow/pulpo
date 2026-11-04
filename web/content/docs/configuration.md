@@ -25,7 +25,7 @@ theme = "Linear Dark"   # or "ghostty" (the default), or a Ghostty theme's name 
 
 ## Task sessions
 
-`~/.config/pulpo/repos/<repo>.toml`, written the first time from the Compose file. See [Docker and ports](/docs/docker#settings).
+Guessed from the Compose file and lockfiles, then Conductor's `.conductor/settings.toml` if there is one, then `~/.config/pulpo/repos/<repo>.toml`. See [Docker and ports](/docs/docker#settings).
 
 ## Environment
 

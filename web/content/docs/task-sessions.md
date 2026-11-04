@@ -9,10 +9,10 @@ order: 10
 
 :kp[s], then :kp[n], then a name (lowercase letters, digits, `-` and `_`).
 
-1. Pulpo fetches `origin`'s default branch (five seconds at most) and makes a git worktree from it in `<repo>.sessions/<name>`, next to the repository, on a new branch `<you>/<name>`: `you` is git's `user.name` for that repository (a name set in the repository wins over your global one), else your GitHub login for its remote (from `gh`). Without a remote, it starts from `main`'s last commit. Uncommitted work stays in `main`.
+1. Pulpo fetches `origin`'s default branch (five seconds at most) and makes a git worktree from it in `<repo>.sessions/<name>`, next to the repository, on a new branch `<you>/<name>`: `you` is the repository's `branch_prefix` setting (Conductor's too) if set, else git's `user.name` for that repository (a name set in the repository wins over your global one), else your GitHub login for its remote (from `gh`). Without a remote, it starts from `main`'s last commit. Uncommitted work stays in `main`.
 2. Files git ignores aren't in a worktree, so Pulpo copies the ones a session needs from `main`: its `.env` files, and those your `.worktreeinclude` names (the same file Claude Code reads). See [What it gets from main](#what-it-gets-from-main).
 3. A shell opens in it right away.
-4. Its setup runs in the background: submodules (one that can't be fetched is said in the log, and the rest goes on), then Docker (see [Docker and ports](/docs/docker)). The session shows *setting up*, then nothing, or *setup failed* with the path to its log. The log also says what was copied from `main`.
+4. Its setup runs in the background: submodules (one that can't be fetched is said in the log, and the rest goes on), then Docker, then the setup script: yours, Conductor's, or the install its lockfiles call for (see [Docker and ports](/docs/docker#settings)). A script committed to the repository is asked about first. The session shows *setting up*, then nothing, or *setup failed* with the path to its log. The log also says what was copied from `main`.
 
 ## What it gets from main
 
