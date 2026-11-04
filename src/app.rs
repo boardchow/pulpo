@@ -39,6 +39,7 @@ pub enum Focus {
     Terminal,
     Files,
     Changes,
+    History,
 }
 
 pub enum Ask {
@@ -83,6 +84,7 @@ pub struct Areas {
     pub changes_tree: Rect,
     pub changes_file: Rect,
     pub changes_ruler: Rect,
+    pub history: Rect,
     pub editor: Rect,
     pub left_divider: Rect,
     pub divider: Rect,
@@ -138,6 +140,8 @@ pub struct App {
     pub changes_expanded: bool,
     pub reading: bool,
     pub changes: Option<Changes>,
+    /// The workspace's changes, while a commit is shown in their place.
+    shelved: Option<Changes>,
     pub left_width: Option<u16>,
     pub right_width: Option<u16>,
     pub tree_width: Option<u16>,
@@ -218,6 +222,7 @@ impl App {
             changes_expanded: false,
             reading: false,
             changes: None,
+            shelved: None,
             left_width: None,
             right_width: None,
             tree_width: None,
@@ -358,6 +363,7 @@ impl App {
                 self.read_status(i);
             }
             let base = self.worktrees.iter().find(|s| s.root == self.workspaces[i].root).and_then(|s| s.base.clone());
+            self.shelved = None;
             self.changes = Some(Changes::new(&self.workspaces[i].root, base));
             self.reload_changes();
             self.restore_term();
@@ -501,6 +507,26 @@ impl App {
     pub fn on_changes(&mut self, read: crate::review::Read) {
         if let Some(changes) = &mut self.changes {
             changes.apply(read);
+        }
+    }
+
+    fn open_commit(&mut self) {
+        let Some(changes) = &self.changes else { return };
+        let Some(commit) = changes.history_state.selected().and_then(|i| changes.history.commits.get(i)) else { return };
+        let commit = Changes::of_commit(&changes.root, commit);
+        self.shelved = self.changes.replace(commit);
+        (self.focus, self.changes_expanded, self.reading) = (Focus::Changes, true, false);
+        self.reload_changes();
+    }
+
+    /// A commit is shown only full screen: leaving it brings the workspace's changes back.
+    pub fn settle(&mut self) {
+        if self.shelved.is_some() && !(self.focus == Focus::Changes && self.changes_expanded) {
+            self.changes = self.shelved.take();
+            if self.focus == Focus::Changes {
+                self.focus = Focus::History;
+            }
+            self.reload_changes();
         }
     }
 
@@ -949,6 +975,7 @@ impl App {
             Focus::Projects | Focus::Workspaces => self.list_key(key),
             Focus::Files => self.files_key(key),
             Focus::Changes => self.changes_key(key),
+            Focus::History => self.history_key(key),
         }
         false
     }
@@ -961,6 +988,7 @@ impl App {
             't' => self.set_focus(Focus::Terminal),
             'f' => self.set_focus(Focus::Files),
             'c' => self.set_focus(Focus::Changes),
+            'h' => self.set_focus(Focus::History),
             'n' => self.new_here(),
             'x' => self.close_here(),
             '[' => self.cycle_tab(-1),
@@ -975,7 +1003,7 @@ impl App {
             }
             '>' => {
                 self.right_hidden = !self.right_hidden;
-                if self.right_hidden && matches!(self.focus, Focus::Files | Focus::Changes) {
+                if self.right_hidden && matches!(self.focus, Focus::Files | Focus::Changes | Focus::History) {
                     self.set_focus(Focus::Terminal);
                 }
             }
@@ -1047,7 +1075,7 @@ impl App {
         self.focus = focus;
         match focus {
             Focus::Projects | Focus::Workspaces => self.left_hidden = false,
-            Focus::Files | Focus::Changes => self.right_hidden = false,
+            Focus::Files | Focus::Changes | Focus::History => self.right_hidden = false,
             Focus::Terminal => {}
         }
         self.discard = false;
@@ -1084,6 +1112,7 @@ impl App {
                 self.prompt = Some(Prompt { ask: Ask::File(dir), text: String::new() });
             }
             Focus::Changes => self.message = Some("changes are the agents' to make".into()),
+            Focus::History => self.message = Some("commits are the agents' to make".into()),
         }
     }
 
@@ -1120,7 +1149,7 @@ impl App {
                 }
             }
             Focus::Files => self.ask_delete(),
-            Focus::Changes => {}
+            Focus::Changes | Focus::History => {}
         }
     }
 
@@ -1672,6 +1701,26 @@ impl App {
         }
     }
 
+    fn history_step(&mut self, delta: isize) {
+        let Some(changes) = &mut self.changes else { return };
+        let max = changes.history.commits.len().saturating_sub(1);
+        let next = changes.history_state.selected().unwrap_or(0).saturating_add_signed(delta).min(max);
+        changes.history_state.select(Some(next));
+    }
+
+    fn history_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => self.history_step(1),
+            KeyCode::Up | KeyCode::Char('k') => self.history_step(-1),
+            KeyCode::PageDown => self.history_step(10),
+            KeyCode::PageUp => self.history_step(-10),
+            KeyCode::Home | KeyCode::Char('g') => self.history_step(isize::MIN / 2),
+            KeyCode::End | KeyCode::Char('G') => self.history_step(isize::MAX / 2),
+            KeyCode::Enter => self.open_commit(),
+            _ => {}
+        }
+    }
+
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
             self.prefixed = false;
@@ -1880,6 +1929,21 @@ impl App {
                     self.changes_expanded = !self.changes_expanded;
                     self.reading = self.changes_expanded;
                 }
+            }
+        } else if areas.history.contains(pos) {
+            if down {
+                self.focus = Focus::History;
+                self.reading = false;
+                let Some(changes) = &mut self.changes else { return };
+                let i = row(areas.history, changes.history_state.offset());
+                if i < changes.history.commits.len() {
+                    changes.history_state.select(Some(i));
+                    if double {
+                        self.open_commit();
+                    }
+                }
+            } else if wheel != 0 {
+                self.history_step(wheel.signum() as isize);
             }
         }
     }

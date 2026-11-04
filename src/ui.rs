@@ -252,10 +252,49 @@ fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
     } else if app.focus == Focus::Changes && app.changes_expanded {
         draw_changes(frame, app, area);
     } else {
-        let [files, changes] = Layout::vertical([Constraint::Percentage(55), Constraint::Fill(1)]).areas(area);
+        let [files, changes, history] = Layout::vertical([Constraint::Fill(1); 3]).areas(area);
         draw_files(frame, app, files);
         draw_changes(frame, app, changes);
+        draw_history(frame, app, history);
     }
+}
+
+fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.focus == Focus::History;
+    let Some(changes) = &mut app.changes else { return };
+    let history = &changes.history;
+    let unpushed = history.commits.iter().filter(|c| !c.pushed).count();
+    let mut rest = vec![Span::from(format!("{} ", history.commits.len())).fg(theme::blue())];
+    if !changes.since.is_empty() {
+        rest.push(Span::from(format!("{} ", changes.since)).fg(theme::muted()));
+    }
+    rest.extend(match (&history.remote, unpushed) {
+        (_, 0) if history.commits.is_empty() => Vec::new(),
+        (None, _) => vec![Span::from("not pushed ").fg(theme::yellow())],
+        (Some(_), 0) => vec![Span::from("pushed ").fg(theme::green())],
+        (Some(_), n) => vec![Span::from(format!("{n} unpushed ")).fg(theme::yellow())],
+    });
+    if history.behind > 0 {
+        rest.push(Span::from(format!("{} to pull ", history.behind)).fg(theme::yellow()));
+    }
+    let block = Block::bordered().border_type(BorderType::Rounded).title(title("History", focused, rest)).border_style(border(focused)).style(Style::new().bg(theme::bg()));
+    let body = block.inner(area);
+    app.areas.history = body;
+    let items: Vec<ListItem> = history
+        .commits
+        .iter()
+        .map(|c| {
+            let mark = if c.pushed { Span::from("   ") } else { Span::from(" ↑ ").fg(theme::yellow()) };
+            let when = Span::from(format!(" {}", c.when)).fg(theme::dim());
+            ListItem::new(Line::from(vec![mark, Span::from(format!("{} ", c.hash)).fg(theme::dim()), Span::from(c.subject.clone()), when]))
+        })
+        .collect();
+    if items.is_empty() {
+        frame.render_widget(block, area);
+        frame.render_widget(Line::from(" no commits yet").fg(theme::dim()), body);
+        return;
+    }
+    panel(frame, block, area, focused, items, &mut changes.history_state);
 }
 
 fn split_panel(frame: &mut Frame, app: &mut App, area: Rect, title: Line<'static>, focused: bool) -> (Rect, Rect) {
@@ -336,20 +375,26 @@ fn tree_item(row: &Row, kind: Option<char>) -> ListItem<'static> {
 fn draw_changes(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Changes;
     let Some(changes) = &app.changes else { return };
-    let mut rest = vec![Span::from(format!("{} ", changes.files.len())).fg(theme::blue()), Span::from(format!("{} ", changes.since)).fg(theme::muted())];
+    let mut rest = vec![Span::from(format!("{} ", changes.files.len())).fg(theme::blue())];
+    if let Some(c) = &changes.commit {
+        rest.push(Span::from(format!("{} ", c.hash)).fg(theme::muted()));
+        rest.push(Span::from(format!("{} ", c.subject)).fg(theme::fg()));
+        rest.push(Span::from(format!("· {}, {} ", c.author, c.when)).fg(theme::muted()));
+    }
     if let Some((path, diff)) = &changes.diff {
         rest.push(Span::from(format!("· {} ", path.strip_prefix(&changes.root).unwrap_or(path).display())).fg(theme::muted()));
         rest.push(Span::from(format!("+{} ", diff.added)).fg(theme::green()));
         rest.push(Span::from(format!("−{} ", diff.removed)).fg(theme::red()));
     }
-    let (tree, file) = split_panel(frame, app, area, title("Changes", focused, rest), focused);
+    let name = if changes.commit.is_some() { "Commit" } else { "Changes" };
+    let (tree, file) = split_panel(frame, app, area, title(name, focused, rest), focused);
     app.areas.changes_tree = tree;
     app.areas.changes_file = file;
     let in_tree = focused && !app.reading;
     let Some(changes) = &mut app.changes else { return };
     let items: Vec<ListItem> = changes.rows.iter().map(|row| tree_item(row, changes.status_of(&row.path))).collect();
     if items.is_empty() {
-        frame.render_widget(Line::from(" nothing changed").fg(theme::dim()), tree);
+        frame.render_widget(Line::from(" nothing uncommitted").fg(theme::dim()), tree);
     }
     frame.render_stateful_widget(List::new(items).highlight_style(highlight(in_tree)), tree, &mut changes.state);
     let [file, ruler] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1)]).areas(file);
@@ -543,7 +588,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
             "Panels",
             vec![
                 (prefixed("p w t"), "projects, workspaces, the terminal"),
-                (prefixed("f c"), "files, changes"),
+                (prefixed("f c h"), "files, changes, history"),
                 (prefixed("< >"), "hide or show the left side, the right side"),
                 (prefixed("[ ]"), "previous, next terminal tab"),
                 (prefixed("a"), "the next terminal waiting for you"),
@@ -572,6 +617,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
             "Full screen",
             vec![
                 ("esc".into(), "back to the tree, then to the three columns"),
+                ("⏎ in history".into(), "the commit: its files and their changes"),
                 ("⏎ tab".into(), "from the tree into the file, and back"),
                 ("pgup pgdn".into(), "scroll the file"),
                 ("⌘s esc".into(), "editing: save, leave (twice to throw changes away)"),
