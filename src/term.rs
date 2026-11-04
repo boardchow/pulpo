@@ -318,11 +318,38 @@ pub fn to_host(bytes: &[u8]) {
     }
 }
 
+/// Its `argv[0]`, as `ps -o comm=` shows it, without starting `ps`: the server asks every second.
+/// Not the executable: Claude's runs from a file named after its version.
 pub fn process_name(pid: u32) -> Option<String> {
-    let out = std::process::Command::new("ps").args(["-o", "comm=", "-p", &pid.to_string()]).output().ok()?;
-    let comm = String::from_utf8_lossy(&out.stdout);
-    let name = comm.trim().rsplit('/').next()?.trim_start_matches('-');
+    let pid = i32::try_from(pid).ok()?;
+    // A program running as root, like sudo, doesn't show its arguments: its executable, then.
+    let name = argv0(pid).or_else(|| executable(pid))?;
+    let name = name.rsplit('/').next()?.trim_start_matches('-');
     (!name.is_empty()).then(|| name.to_string())
+}
+
+fn argv0(pid: i32) -> Option<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut size = 0;
+    let mut sysctl = |buf: *mut libc::c_void, size: &mut usize| unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf, size, std::ptr::null_mut(), 0) };
+    if sysctl(std::ptr::null_mut(), &mut size) != 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; size];
+    if sysctl(buf.as_mut_ptr().cast(), &mut size) != 0 {
+        return None;
+    }
+    // argc, the executable's path, padding, then the arguments.
+    let rest = buf.get(size_of::<i32>()..size)?;
+    let path_end = rest.iter().position(|&b| b == 0)?;
+    let argv0 = rest[path_end..].split(|&b| b == 0).find(|arg| !arg.is_empty())?;
+    Some(String::from_utf8_lossy(argv0).into_owned())
+}
+
+fn executable(pid: i32) -> Option<String> {
+    let mut buf = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let n = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
 }
 
 pub fn nz(n: u16) -> NonZeroU16 {
@@ -525,6 +552,18 @@ mod tests {
         copy.process(&snapshot(parser.screen(), ""));
         assert!(copy.screen().alternate_screen());
         assert_eq!(copy.screen().contents(), parser.screen().contents());
+    }
+
+    #[test]
+    fn names_a_process_by_its_argv0() {
+        use std::os::unix::process::CommandExt;
+        let mut child = std::process::Command::new("/bin/sleep").arg0("-/opt/claude").arg("5").spawn().unwrap();
+        let name = process_name(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(name.as_deref(), Some("claude"));
+        assert_eq!(process_name(1).as_deref(), Some("launchd"));
+        assert_eq!(process_name(0x7fff_fff0), None);
     }
 
     #[test]
