@@ -1,0 +1,14 @@
+{
+  "name": "pulpo-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "npx serve .output/public"
+  },
+  "dependencies": {
+    "@nuxt/content": "3.16.2",
+    "nuxt": "4.6.4"
+  }
+}
