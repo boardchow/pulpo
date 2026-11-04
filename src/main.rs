@@ -61,12 +61,12 @@ pub enum Msg {
     ServerGone,
     Search(usize, Vec<search::Hit>),
     Repos(Vec<String>),
-    /// A session's removal ended: its copy, its log, and whether it worked.
+    /// A session's removal ended: its folder, its log, and whether it worked.
     Removed(PathBuf, PathBuf, bool),
-    /// A new session's copy (its repository and name) is made, in this
-    /// folder, or why it couldn't be.
-    Copied((PathBuf, String), Result<PathBuf, String>),
-    /// A session's setup ended: its copy, its log, and whether it worked.
+    /// A new session (its repository and name) is made, in this folder,
+    /// with notes for its setup's log, or why it couldn't be.
+    Copied((PathBuf, String), Result<(PathBuf, Vec<String>), String>),
+    /// A session's setup ended: its folder, its log, and whether it worked.
     SetUp(PathBuf, PathBuf, bool),
     /// What a session changed, read in the background.
     Changes(Box<review::Read>),

@@ -167,8 +167,11 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             // A task session: where its app answers.
             if let Some(session) = app.isolated.iter().find(|s| s.root == w.root) {
-                let web = session.ports.iter().filter(|(var, _)| ["APP", "WEB", "HTTP"].iter().any(|k| var.contains(k)));
-                for (_, port) in web {
+                let web: Vec<u16> =
+                    session.ports.iter().filter(|(var, _)| ["APP", "WEB", "HTTP"].iter().any(|k| var.contains(k))).map(|(_, p)| *p).collect();
+                // Without one, its own block's first port.
+                let shown = if web.is_empty() { session.port.into_iter().collect() } else { web };
+                for port in shown {
                     spans.push(Span::from(format!(" :{port}")).fg(theme::sky()));
                 }
             }
