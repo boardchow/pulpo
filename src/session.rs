@@ -508,7 +508,7 @@ fn port_free(port: u16) -> bool {
     std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-pub fn create(repo: &Path, name: &str, config: &Config) -> Result<(Session, Vec<String>)> {
+pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) -> Result<(Session, Vec<String>)> {
     // Lowercase: Compose project names are, and two sessions mustn't share one.
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
         bail!("a session name is lowercase letters, digits, - and _");
@@ -524,7 +524,10 @@ pub fn create(repo: &Path, name: &str, config: &Config) -> Result<(Session, Vec<
     }
     let (from, mut notes) = base(repo);
     let start = git(repo, &["rev-parse", "--verify", &format!("{from}^{{commit}}")], None)?;
-    let branch = branch_name(repo, name, &config.branch_prefix);
+    let branch = match branch {
+        Some(branch) => git(repo, &["check-ref-format", "--branch", branch], None).map_err(|_| anyhow::anyhow!("{branch} isn't a valid branch name"))?,
+        None => branch_name(repo, name, &config.branch_prefix),
+    };
     let made_branch = match git(repo, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")], None) {
         Ok(tip) if tip == start => false,
         Ok(_) => bail!("branch {branch} exists already, with commits of its own: pick another name"),
@@ -1370,7 +1373,7 @@ mod tests {
         }
 
         let config = Config { ports: vec!["APP_PORT".into()], include: vec![".env".into(), "secret.key".into()], ..Config::default() };
-        let (s, notes) = create(&main, "fix", &config).unwrap();
+        let (s, notes) = create(&main, "fix", None, &config).unwrap();
         let root = t.join("app.sessions/fix");
         assert_eq!(s.root, root);
         assert_eq!((s.kind, s.branch.as_deref(), s.made_branch), (Kind::Worktree, Some("test-user/fix"), true));
@@ -1383,11 +1386,14 @@ mod tests {
         assert!(run_git(&main, &["worktree", "list", "--porcelain"]).contains("locked"));
         let port = s.port.unwrap();
         assert!(s.ports[0].1 >= port + BLOCK);
-        let other = create(&main, "other", &Config::default()).unwrap().0;
+        let other = create(&main, "other", None, &Config::default()).unwrap().0;
         let p = other.port.unwrap();
         assert!((p..p + BLOCK).all(|q| !(port..port + BLOCK).contains(&q) && q != s.ports[0].1));
         assert!(env(&s).contains(&("PULPO_PORT".into(), port.to_string())) && env(&s).contains(&("PORT".into(), port.to_string())));
-        assert!(create(&main, "fix", &config).is_err());
+        assert!(create(&main, "fix", None, &config).is_err());
+        assert!(create(&main, "bad", Some("no..dots"), &Config::default()).is_err());
+        let ticket = create(&main, "ticket", Some("team/FND-12-login"), &Config::default()).unwrap().0;
+        assert_eq!(run_git(&ticket.root, &["branch", "--show-current"]), "team/FND-12-login");
 
         assert!(unsaved(&other).is_empty() && kept_branch(&other).is_none());
         fs::write(root.join("c.txt"), "work").unwrap();
@@ -1395,7 +1401,7 @@ mod tests {
         run_git(&root, &["add", "c.txt"]);
         run_git(&root, &["commit", "-q", "-m", "c"]);
         assert_eq!(kept_branch(&s).as_deref(), Some("test-user/fix"));
-        for session in [&s, &other] {
+        for session in [&s, &other, &ticket] {
             let script = teardown_script(session, &Config::default(), Path::new("/usr/bin/true"));
             let out = std::process::Command::new("sh").args(["-c", &script]).current_dir(&main).output().unwrap();
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
@@ -1404,14 +1410,14 @@ mod tests {
         let branches = run_git(&main, &["branch", "--list"]);
         assert!(branches.contains("test-user/fix") && !branches.contains("test-user/other"), "{branches}");
         assert!(!run_git(&main, &["worktree", "list"]).contains("sessions"));
-        let gone = create(&main, "gone", &Config::default()).unwrap().0;
+        let gone = create(&main, "gone", None, &Config::default()).unwrap().0;
         fs::remove_dir_all(&gone.root).unwrap();
         let script = teardown_script(&gone, &Config::default(), Path::new("/usr/bin/true"));
         let out = std::process::Command::new("sh").args(["-c", &script]).current_dir(&main).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
         assert!(!run_git(&main, &["worktree", "list"]).contains("gone"));
         assert!(!run_git(&main, &["branch", "--list"]).contains("test-user/gone"));
-        assert!(create(&main, "gone", &Config::default()).is_ok());
+        assert!(create(&main, "gone", None, &Config::default()).is_ok());
         let main_as_session = Session { root: main.clone(), ..s.clone() };
         assert!(!teardown_script(&main_as_session, &Config::default(), Path::new("/usr/bin/true")).contains("worktree remove"));
     }

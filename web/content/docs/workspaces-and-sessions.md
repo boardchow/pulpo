@@ -30,6 +30,8 @@ Each row shows the session's state, name and uncommitted changes (`±3`).
 
 `<you>` is the `branch_prefix` setting, else git's `user.name`, else your GitHub login.
 
+To pick the branch yourself, say for a Linear ticket, press `Tab` after the name and type or paste it. The name stays the folder's.
+
 Commit and push from a session as usual; `main` sees the commits at once.
 
 ## Copy ignored files
