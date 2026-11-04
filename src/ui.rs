@@ -106,16 +106,10 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
     let rows = block.inner(projects);
     frame.render_widget(block, projects);
 
-    let current_repo = app.ws().repo.clone();
     let items: Vec<ListItem> = app
         .projects()
         .into_iter()
-        .map(|i| {
-            let w = &app.workspaces[i];
-            let states = app.workspaces.iter().enumerate().filter(|(_, s)| s.repo == w.repo).filter_map(|(s, _)| app.workspace_state(s));
-            let state = states.max_by_key(|state| state.urgency());
-            ListItem::new(Line::from(state_name(state, &w.name, w.repo == current_repo)))
-        })
+        .map(|i| ListItem::new(Line::from(state_name(app.workspace_state(i), &app.workspaces[i].name, i == app.current))))
         .collect();
     frame.render_stateful_widget(List::new(items).highlight_style(highlight(focused)), rows, &mut app.projects_state);
     app.areas.projects = rows;
@@ -127,7 +121,7 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
         .into_iter()
         .map(|i| {
             let w = &app.workspaces[i];
-            let mut spans = state_name(app.workspace_state(i), app.workspace_name(i), i == app.current);
+            let mut spans = state_name(app.workspace_state(i), &w.name, i == app.current);
             if !w.status.changes.is_empty() {
                 spans.push(Span::from(format!(" ±{}", w.status.changes.len())).fg(theme::blue()));
             }
@@ -148,7 +142,11 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let focused = app.focus == Focus::Workspaces;
+    let empty = items.is_empty();
     app.areas.workspaces = panel(frame, framed("Workspaces", focused), workspaces, focused, items, &mut app.workspaces_state);
+    if empty {
+        frame.render_widget(Line::from(" none yet").fg(theme::dim()), app.areas.workspaces);
+    }
 }
 
 fn state_name(state: Option<State>, name: &str, current: bool) -> Vec<Span<'static>> {

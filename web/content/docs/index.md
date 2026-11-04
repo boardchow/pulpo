@@ -18,6 +18,8 @@ Every action is the prefix, :k[⌘p], then one key. It works from anywhere, term
 
 ## Concepts
 
-- **Project:** a git repository.
-- **Workspace:** one checkout of a project: `main`, or a git worktree with its own branch, ports and database. The screen shows its terminals, files and changes.
+- **Project:** a git repository. Selecting it opens the repository's own folder.
+- **Workspace:** an isolated copy of a project: a git worktree with its own branch, ports and database.
+
+The screen shows the selected project's or workspace's terminals, files and changes.
 - **Terminals keep running** when you quit Pulpo, and come back after a reboot.
