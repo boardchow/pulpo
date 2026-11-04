@@ -19,7 +19,7 @@ Pulpo made, as in Conductor.
 pulpo (one binary)
 ├── main.rs     terminal setup + event loop (one mpsc channel for everything)
 ├── app.rs      state: focus, the prefix and its keys, the terminals' tabs, files, mouse, workspaces
-├── ui.rs       ratatui rendering: projects and workspaces | terminal tabs | files over changes
+├── ui.rs       ratatui rendering: projects and workspaces | terminal tabs | files, changes, history
 ├── keymap.rs   the prefix (cmd-p, ctrl-b), from keys.toml; `pulpo keytest` and the doctor read it
 ├── input.rs    typing on the bottom line, with readline keys (ctrl-u, ctrl-w, alt-backspace)
 ├── review.rs   Changes: what the workspace changed, as a tree, the selected file's diff
@@ -39,7 +39,7 @@ pulpo (one binary)
 ├── editor.rs   editing a file, highlighted by the viewer's own code (identical by construction)
 ├── theme.rs    the colors on screen (UI, syntax, terminal palette): Pulpo Dark, or Ghostty's theme
 ├── tree.rs     lazy file tree, gitignore-aware (ignore crate), and the tree of a list of paths
-├── git.rs      `git status --porcelain=v2` and `--numstat` parsers
+├── git.rs      `git status --porcelain=v2` and `--numstat` parsers, the commits History shows
 ├── status.rs   program status reports (OSC 7501)
 └── agents.rs   optional hook-based agent status (`pulpo emit`, `pulpo hooks`)
 ```
@@ -75,7 +75,7 @@ panels as tall as their rows: the projects, and every project's
 workspaces, waiting ones first. A project's and a workspace's mark come first on their row. Middle: the workspace's
 terminals as tabs, drawn on the top of its frame (in the order of `terms`,
 which is the order they came in; the one on screen is kept by tag per
-workspace). Right: Files over Changes, each a tree and the selected file; in
+workspace). Right: Files over Changes, each a tree and the selected file, over History; in
 one of them, ⏎ (or a double click), or editing, gives that panel
 everything right of the sidebar, the terminal included, and esc takes it
 back. Only a click moves the focus; hovering or scrolling a panel doesn't.
@@ -84,7 +84,7 @@ width they were dragged to while Pulpo runs. The bottom line is where you type a
 question (y), or read a message.
 
 Keys go to what has the focus. The prefix (⌘p or ⌃b, then one key) is
-taken from anywhere first: p w t f c move the focus, n and x make and
+taken from anywhere first: p w t f c h move the focus, n and x make and
 close what has it, [ ] change tabs, a goes to who waits, / opens the search
 popup (over everything; a file found opens full screen), d e r
 act on files, q and Q quit. < and > hide or show a side; ? shows the keybinds in a popup (any key closes it). The prefix waits 3 s for its key; a click cancels it. ⌃b twice sends one to the program. The editor
@@ -109,18 +109,30 @@ error leave something to read. A new shell prompt (OSC 133 A) ends its runs.
 
 ### Changes
 
-Changes compares the workspace with where it started: a workspace Pulpo made with the
-commit it was copied at (`base`, recorded when it is made), so the
-agents' commits are included; a checkout on another branch with where it
-left the main one; the main branch itself with its last commit, so a
-commit takes its changes away. Only the base of a workspace Pulpo made is kept: every
-other read finds it again, so a commit or a push moves it. The list of files comes from `git diff --name-status`
+Changes is what isn't committed: the workspace against HEAD, so a commit
+takes its changes away (into History). The list of files comes from `git diff --name-status`
 and `ls-files --others`; only the selected file's diff is read, as the whole
 file (`--unified=1000000`) with its changes inline, both sides highlighted
 (reloads run on a thread: `Request::read`, then `Changes::apply`, dropping
 a read that was overtaken or is another workspace's),
 and an overview ruler down its right edge (added, removed, both; the part in
 view lighter).
+
+### History
+
+Under Changes (the right column in thirds): the commits since the workspace
+started, newest first. A workspace Pulpo made starts at the commit it was
+copied at (`base`, recorded when it is made), a checkout on another branch
+where it left the main one; the main branch shows its last 20. A commit is
+pushed when `origin/<branch>` has it; the title says pushed, how many aren't,
+or not pushed, and how many origin has that HEAD doesn't. Read with Changes,
+on the same thread, so a commit or a push (refs move) updates both.
+
+⏎ or a double click opens a commit full screen, read like Changes (its
+files against its parent, the first commit against the empty tree), its
+hash, subject, author and age in the title. It takes the place of the
+workspace's changes (`shelved`) while it is full screen; leaving it (esc,
+or the focus going elsewhere) brings them back, on History. Read-only, like the rest.
 
 ## Milestones
 

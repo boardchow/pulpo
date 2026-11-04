@@ -1,6 +1,6 @@
 ---
 title: Files and changes
-description: The workspace's files, and what it changed, each as a tree beside the selected file.
+description: The workspace's files, what it changed, and its commits.
 section: Using Pulpo
 order: 6
 ---
@@ -19,11 +19,17 @@ order: 6
 
 ## Changes
 
-Every file the workspace changed, shown whole with its changes in place. Marks on the right edge show where it changed.
-
-A workspace you created is compared with the commit it started from, so the agent's commits are included. `main` is compared with its last commit, any other branch with where it left `main`.
+Every file not committed yet, shown whole with its changes in place. Marks on the right edge show where it changed. A commit takes its files out of Changes and into History.
 
 Pulpo never runs git for you. Agents, or you in a terminal, commit and push.
+
+## History
+
+Under Changes, :k[h] after the prefix: the workspace's commits since it started, newest first. A workspace you created starts at the commit it was made from, any other branch where it left `main`; `main` shows its last 20 commits.
+
+`↑` marks a commit not pushed yet, to the branch of the same name on origin. The title says where the branch stands: `pushed`, `2 unpushed`, `not pushed`, and `1 to pull` when origin has commits you don't.
+
+:k[⏎] or a double click opens a commit full screen: its files, each shown whole with the commit's changes in place, and its author and age in the title. :k[esc] goes back to History.
 
 ## Full screen
 

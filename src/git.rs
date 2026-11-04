@@ -59,6 +59,46 @@ pub fn worktrees(repo: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+#[derive(Clone)]
+pub struct Commit {
+    pub hash: String,
+    pub subject: String,
+    pub author: String,
+    pub when: String,
+    pub pushed: bool,
+}
+
+#[derive(Default)]
+pub struct History {
+    /// Newest first.
+    pub commits: Vec<Commit>,
+    /// The branch of the same name on origin, once pushed.
+    pub remote: Option<String>,
+    /// Its commits not here yet.
+    pub behind: usize,
+}
+
+/// The commits since `base`; on the main branch (`base` is HEAD), its last 20.
+pub fn history(root: &Path, base: &str) -> History {
+    let run = |args: &[&str]| git(root, &[&["--no-optional-locks"], args].concat()).unwrap_or_default();
+    let branch = run(&["rev-parse", "--abbrev-ref", "HEAD"]);
+    let remote = Some(format!("origin/{}", branch.trim())).filter(|r| !run(&["rev-parse", "--verify", "--quiet", r]).is_empty());
+    let range = if base == "HEAD" { "-20".to_string() } else { format!("{base}..HEAD") };
+    let log = run(&["log", "--format=%H%x00%h%x00%an%x00%ar%x00%s", &range, "HEAD"]);
+    let unpushed = remote.as_ref().map(|r| run(&["rev-list", "HEAD", &format!("^{r}")]));
+    let commits = log
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(5, '\0');
+            let (full, hash, author, when, subject) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?);
+            let pushed = unpushed.as_ref().is_some_and(|u| !u.contains(full));
+            Some(Commit { hash: hash.into(), subject: subject.into(), author: author.into(), when: when.into(), pushed })
+        })
+        .collect();
+    let behind = remote.as_ref().map_or(0, |r| run(&["rev-list", "--count", &format!("HEAD..{r}")]).trim().parse().unwrap_or(0));
+    History { commits, remote, behind }
+}
+
 pub fn status(root: &Path) -> Status {
     // --no-optional-locks: rewriting the index would wake our own file watcher in a loop.
     let mut status = git(root, &["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"])

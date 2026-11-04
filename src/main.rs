@@ -195,6 +195,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
                 Msg::Status(root, status) => app.on_status(root, *status),
                 Msg::Viewed(loaded) => app.on_viewed(*loaded),
             }
+            app.settle();
         }
         if app.fs_pending() && last_fs_refresh.elapsed() >= FS_THROTTLE {
             app.flush_fs();

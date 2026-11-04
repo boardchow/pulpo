@@ -12,7 +12,7 @@ The prefix is :k[⌘p] or :k[⌃b]. It works everywhere, terminals included.
 | Key | Does |
 | --- | --- |
 | :k[p] :k[w] :k[t] | Projects, Workspaces, Terminal |
-| :k[f] :k[c] | Files, Changes |
+| :k[f] :k[c] :k[h] | Files, Changes, History |
 | :k{k="["} :k{k="]"} | Previous, next tab |
 | :k[a] | Next terminal waiting for you |
 | :k{k="<"} :k{k=">"} | Hide or show the left, right side |
