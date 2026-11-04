@@ -287,14 +287,8 @@ impl App {
             .collect();
         self.isolated.clear();
         for repo in workspace::registered().into_iter().filter(|r| r.is_dir()) {
-            let mut roots = git::worktrees(&repo);
-            if roots.is_empty() {
-                roots.push(repo.clone());
-            }
-            roots.retain(|r| !isolated.iter().any(|s| s.repo == repo && session::same_path(&s.root, r)));
-            for root in roots {
-                self.workspaces.push(reuse(root, &repo));
-            }
+            // Not other worktrees: agents and tools make their own, for a while.
+            self.workspaces.push(reuse(repo.clone(), &repo));
             for s in isolated.iter().filter(|s| s.repo == repo && s.root.is_dir() && !self.removing.contains(&s.root)) {
                 self.workspaces.push(reuse(s.root.clone(), &repo));
                 self.isolated.push(s.clone());
@@ -1102,7 +1096,6 @@ impl App {
                     let question = format!("delete session {}: its {what}, containers and database{lost}{kept}?", session.name);
                     self.ask(question, Confirm::DeleteSession(session.root));
                 }
-                None if self.ws().is_worktree() => self.message = Some("this session is a git worktree; Pulpo leaves worktrees to git".into()),
                 None => self.message = Some(format!("this is the repository itself: {p} w, then {p} x takes it off the list", p = self.keymap.label())),
             },
             Focus::Terminal => {

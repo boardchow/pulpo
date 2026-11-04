@@ -15,7 +15,7 @@ Running `pulpo` in a repository adds it. To add another, :kp[w] then :kp[n].
 
 A session is one checkout of a workspace. Selecting one shows its terminals, files and changes.
 
-Every workspace starts with `main`, the repository itself. Each session you create is a git worktree on its own branch, with its own ports and Docker containers. Worktrees made outside Pulpo show up as sessions too, read only.
+Every workspace starts with `main`, the repository itself. Each session you create is a git worktree on its own branch, with its own ports and Docker containers. Worktrees made outside Pulpo, by agents or by hand, don't show.
 
 Each row shows the session's state, name and uncommitted changes (`±3`).
 
