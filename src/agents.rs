@@ -14,15 +14,18 @@ use serde_json::{Value, json};
 
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
-/// Tests' own state folder, set once, instead of `XDG_STATE_HOME` (setting
-/// the environment while other test threads read it isn't safe).
 #[cfg(test)]
-pub static TEST_STATE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+thread_local! {
+    /// A test's own state folder, instead of `XDG_STATE_HOME` (setting the
+    /// environment while other test threads read it isn't safe). Per test:
+    /// each runs on its thread, and goes with its folder.
+    pub static TEST_STATE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
 
 pub fn state_dir() -> PathBuf {
     #[cfg(test)]
-    if let Some(dir) = TEST_STATE.get() {
-        return dir.clone();
+    if let Some(dir) = TEST_STATE.with_borrow(Clone::clone) {
+        return dir;
     }
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)

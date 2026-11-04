@@ -68,6 +68,18 @@ pub enum Confirm {
     CloseTerminal(usize),
     DeleteFile(PathBuf),
     StopAll,
+    /// Run a new session's setup with the committed scripts it would run
+    /// (yes: trusted from now on; no: without them).
+    TrustSetup(Box<PendingSetup>),
+}
+
+/// A setup waiting on the question about its committed scripts: exactly
+/// what was shown is what's trusted and run.
+pub struct PendingSetup {
+    root: PathBuf,
+    config: session::Config,
+    notes: Vec<String>,
+    asked: Vec<(&'static str, String)>,
 }
 
 /// Where each part was drawn, for the mouse.
@@ -150,6 +162,9 @@ pub struct App {
     pub prompt: Option<Prompt>,
     /// A question on the bottom line, and what y does.
     pub asking: Option<(String, Confirm)>,
+    /// Until when keys aren't answers to it: a question that comes on its
+    /// own (a session's trust) mustn't be answered by what you were typing.
+    asking_from: Option<Instant>,
     pub message: Option<String>,
     message_since: Option<(String, Instant)>,
     /// Searching the session's files (names, then lines), in the Files panel.
@@ -258,6 +273,7 @@ impl App {
             right_hidden: false,
             prompt: None,
             asking: None,
+            asking_from: None,
             message: keys_error.or(theme_error).or_else(|| {
                 (!crate::agents::hooks_installed())
                     .then(|| "run `pulpo hooks install` to see what Claude runs and asks in each terminal".into())
@@ -958,7 +974,10 @@ impl App {
         // question first.
         let open = self.repos.is_some() || self.search.is_some() || self.prompt.is_some() || self.asking.is_some() || self.help;
         if open && !self.prefixed && self.keymap.is_prefix(pressed) {
-            (self.repos, self.search, self.prompt, self.asking, self.help) = (None, None, None, None, false);
+            if let Some((_, confirm)) = self.asking.take() {
+                self.declined(confirm);
+            }
+            (self.repos, self.search, self.prompt, self.help) = (None, None, None, false);
             self.prefixed = true;
             self.prefixed_at = Some(Instant::now());
             return false;
@@ -979,11 +998,18 @@ impl App {
             self.prompt_key(key);
             return false;
         }
-        if let Some((_, confirm)) = self.asking.take() {
+        // A question come on its own lets keys through, still asked, until
+        // a second without typing: what you were typing never answers it.
+        let settling = self.asking.is_some() && self.asking_from.is_some_and(|from| Instant::now() < from);
+        if settling {
+            self.asking_from = Some(Instant::now() + Duration::from_secs(1));
+        }
+        if !settling && let Some((_, confirm)) = self.asking.take() {
             self.message = None;
             if matches!(key.code, KeyCode::Char('y' | 'Y')) {
                 return self.confirmed(confirm);
             }
+            self.declined(confirm);
             return false;
         }
         if std::mem::take(&mut self.prefixed) {
@@ -1068,7 +1094,20 @@ impl App {
         false
     }
 
+    /// The question was answered anything but y: most need nothing more.
+    fn declined(&mut self, confirm: Confirm) {
+        if let Confirm::TrustSetup(pending) = confirm {
+            self.trust_setup(*pending, false);
+        }
+    }
+
     fn ask(&mut self, question: String, confirm: Confirm) {
+        // A question already waiting is answered no, never dropped (a setup
+        // would never run).
+        if let Some((_, waiting)) = self.asking.take() {
+            self.declined(waiting);
+        }
+        self.asking_from = None;
         self.message = None;
         self.asking = Some((question, confirm));
     }
@@ -1085,6 +1124,7 @@ impl App {
             Confirm::DeleteSession(root) => self.remove_session(&root),
             Confirm::CloseTerminal(id) => self.close_terminal(id),
             Confirm::DeleteFile(path) => self.delete(&path),
+            Confirm::TrustSetup(pending) => self.trust_setup(*pending, true),
             Confirm::StopAll => {
                 // Setups still running stop too: they're what Q means by everything.
                 for &pid in self.setting_up.values() {
@@ -1783,11 +1823,12 @@ impl App {
                 let pos = Position::new(mouse.column, mouse.row);
                 self.prompt = None;
                 // Yes on the bottom line answers; a click anywhere else is no.
-                if let Some((_, confirm)) = self.asking.take()
-                    && self.areas.yes.contains(pos)
-                    && self.confirmed(confirm)
-                {
-                    self.quit = true;
+                if let Some((_, confirm)) = self.asking.take() {
+                    if !self.areas.yes.contains(pos) {
+                        self.declined(confirm);
+                    } else if self.confirmed(confirm) {
+                        self.quit = true;
+                    }
                 }
             }
             return;
@@ -2101,7 +2142,7 @@ impl App {
         }
         self.message = Some(format!("making session {name} of {place}…"));
         std::thread::spawn(move || {
-            let made = session::config(&repo).and_then(|(config, _)| session::create(&repo, &name, &config));
+            let made = session::config(&repo, &repo).and_then(|(config, _)| session::create(&repo, &name, &config));
             let made = made.map(|(s, notes)| (s.root, notes)).map_err(|e| format!("could not make the session: {e:#}"));
             let _ = tx.send(Msg::Copied((repo, name), made));
         });
@@ -2125,17 +2166,59 @@ impl App {
             self.set_current(i);
         }
         self.spawn_in(root.clone(), &shell(), &[], true);
-        let (config, warnings) = match session::config(&session.repo) {
-            Ok(config) => config,
+        let config = match session::config(&session.repo, &root) {
+            Ok((config, warnings)) => {
+                notes.extend(warnings.iter().map(|w| format!("! {w}")));
+                config
+            }
             Err(e) => {
                 self.message = Some(format!("session {}: could not read its settings: {e:#}", session.name));
                 return;
             }
         };
-        notes.extend(warnings.iter().map(|w| format!("! {w}")));
-        let script = session::setup_script(&session, &config, &notes);
+        // A script from a committed file runs once you've trusted it.
+        let asked = session::untrusted(&session.repo, &config);
+        if !asked.is_empty() {
+            // Each script, by how it starts.
+            let shown: Vec<String> = asked
+                .iter()
+                .map(|(what, script)| {
+                    let start = script.lines().next().unwrap_or_default();
+                    let short: String = start.chars().take(30).collect();
+                    let more = if short.len() < start.len() || script.lines().count() > 1 { "…" } else { "" };
+                    format!("{what}: {short}{more} ({} lines)", script.lines().count())
+                })
+                .collect();
+            let question = format!("session {}: run the repository's committed {}? y trusts it here", session.name, shown.join("; "));
+            self.ask(question, Confirm::TrustSetup(Box::new(PendingSetup { root, config, notes, asked })));
+            self.asking_from = Some(Instant::now() + Duration::from_secs(1));
+            return;
+        }
+        self.set_up(&session, config, notes);
+    }
+
+    /// The setup's answer: with the committed scripts shown, trusted from
+    /// now on, or without them.
+    fn trust_setup(&mut self, pending: PendingSetup, yes: bool) {
+        let PendingSetup { root, mut config, mut notes, asked } = pending;
+        let Some(session) = self.isolated.iter().find(|s| s.root == root).cloned() else { return };
+        if yes {
+            if let Err(e) = session::trust(&session.repo, &asked) {
+                notes.push(format!("! couldn't record the trust: {e:#}"));
+            }
+        } else {
+            notes.extend(config.without(&asked));
+        }
+        self.set_up(&session, config, notes);
+    }
+
+    /// Set a new session up in the background: main's images, a copy of its
+    /// database, its own containers, its setup command.
+    fn set_up(&mut self, session: &session::Session, config: session::Config, notes: Vec<String>) {
+        let root = session.root.clone();
+        let script = session::setup_script(session, &config, &notes);
         let log = logs().join(format!("setup-{}.log", session.project));
-        match run_in_background(&script, &root, &session, &log) {
+        match run_in_background(&script, &root, session, &log) {
             Ok(mut child) => {
                 self.setting_up.insert(root.clone(), child.id());
                 let tx = self.tx.clone();
@@ -2174,8 +2257,12 @@ impl App {
         if self.removing.contains(&session.root) {
             return;
         }
-        let config = session::config(&session.repo).map(|(c, _)| c).unwrap_or_default();
-        let script = session::teardown_script(&session, &config, &exe);
+        let checkout = if session.root.is_dir() { &session.root } else { &session.repo };
+        let mut config = session::config(&session.repo, checkout).map(|(c, _)| c).unwrap_or_default();
+        let untrusted = session::untrusted(&session.repo, &config);
+        let skipped = config.without(&untrusted);
+        let skipped: String = skipped.iter().map(|n| format!("echo {}\n", session::quote(n))).collect();
+        let script = skipped + &session::teardown_script(&session, &config, &exe);
         // Its terminals stop the usual way (ctrl-c, then hang up).
         let ids: Vec<usize> = self.terms.iter().filter(|t| t.info.cwd == session.root).map(|t| t.id).collect();
         for id in ids {
