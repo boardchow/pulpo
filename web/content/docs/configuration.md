@@ -17,10 +17,10 @@ Modifiers are `cmd-`, `ctrl-`, `alt-` and `shift-`. Run `pulpo keytest` to see w
 
 ## Theme
 
-Pulpo follows Ghostty's theme, or uses Linear Dark without one. To choose, `~/.config/pulpo/config.toml`:
+Pulpo follows Ghostty's theme, or uses Pulpo Dark without one. To choose, `~/.config/pulpo/config.toml`:
 
 ```toml
-theme = "Linear Dark"   # or "ghostty", or any Ghostty theme's name
+theme = "Pulpo Dark"   # or "ghostty", or any Ghostty theme's name
 ```
 
 ## Sessions
