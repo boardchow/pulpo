@@ -19,11 +19,12 @@ use crate::layout::{self, Layout};
 use crate::proto::{Info, PROTOCOL, ToClient, ToServer};
 use crate::review::Changes;
 use crate::search::{Mode, Search};
-use crate::session;
+use crate::worktree;
 use crate::status::Status;
 use crate::term::Term;
 use crate::viewer::{Source, Viewer};
-use crate::workspace::{self, Workspace};
+use crate::project;
+use crate::workspace::Workspace;
 
 const NOTICE_EVERY: Duration = Duration::from_secs(10);
 const MESSAGE_FOR: Duration = Duration::from_secs(5);
@@ -33,8 +34,8 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
+    Projects,
     Workspaces,
-    Sessions,
     Terminal,
     Files,
     Changes,
@@ -42,7 +43,7 @@ pub enum Focus {
 
 pub enum Ask {
     /// The text is the name; this, the branch (empty: from the name).
-    Session(String),
+    Workspace(String),
     /// The text is the branch; this, the name.
     Branch(String),
     File(PathBuf),
@@ -55,8 +56,8 @@ pub struct Prompt {
 }
 
 pub enum Confirm {
-    RemoveWorkspace(PathBuf),
-    DeleteSession(PathBuf),
+    RemoveProject(PathBuf),
+    DeleteWorkspace(PathBuf),
     CloseTerminal(usize),
     DeleteFile(PathBuf),
     StopAll,
@@ -66,15 +67,15 @@ pub enum Confirm {
 /// Exactly what was shown is what's trusted and run.
 pub struct PendingSetup {
     root: PathBuf,
-    config: session::Config,
+    config: worktree::Config,
     notes: Vec<String>,
     asked: Vec<(&'static str, String)>,
 }
 
 #[derive(Default, Clone)]
 pub struct Areas {
+    pub projects: Rect,
     pub workspaces: Rect,
-    pub sessions: Rect,
     pub tabs: Vec<(Option<usize>, Rect)>,
     pub term: Rect,
     pub files_tree: Rect,
@@ -108,10 +109,10 @@ pub struct Selecting {
 
 pub struct App {
     pub workspaces: Vec<Workspace>,
-    pub isolated: Vec<session::Session>,
+    pub worktrees: Vec<worktree::Worktree>,
     pub current: usize,
+    pub projects_state: ListState,
     pub workspaces_state: ListState,
-    pub sessions_state: ListState,
     scratch: PathBuf,
     pub focus: Focus,
     pub agents: Agents,
@@ -151,7 +152,7 @@ pub struct App {
     removing: HashSet<PathBuf>,
     gone: HashSet<PathBuf>,
     last_term: HashMap<PathBuf, String>,
-    last_session: HashMap<PathBuf, PathBuf>,
+    last_workspace: HashMap<PathBuf, PathBuf>,
     saved: Layout,
     ready: bool,
     reopening: HashMap<u64, String>,
@@ -185,10 +186,10 @@ impl App {
         let theme_error = crate::theme::apply(&crate::theme::chosen()).err().map(|e| format!("theme: {e}; using Pulpo Dark"));
         let mut app = App {
             workspaces: Vec::new(),
-            isolated: Vec::new(),
+            worktrees: Vec::new(),
             current: 0,
+            projects_state: ListState::default().with_selected(Some(0)),
             workspaces_state: ListState::default().with_selected(Some(0)),
-            sessions_state: ListState::default().with_selected(Some(0)),
             scratch,
             focus: Focus::Terminal,
             agents,
@@ -231,7 +232,7 @@ impl App {
             removing: HashSet::new(),
             gone: HashSet::new(),
             last_term: layout.terminals.clone().into_iter().collect(),
-            last_session: layout.sessions.clone().into_iter().collect(),
+            last_workspace: layout.workspaces.clone().into_iter().collect(),
             saved: layout.clone(),
             ready: false,
             reopening: HashMap::new(),
@@ -254,7 +255,7 @@ impl App {
         let at = |root: &Path| app.workspaces.iter().position(|w| w.root == root);
         let start = match &launch {
             Some(dir) => at(dir).map(|i| match &app.workspaces[i] {
-                w if !w.is_worktree() => app.last_session.get(&w.repo).and_then(|s| at(s)).unwrap_or(i),
+                w if !w.is_worktree() => app.last_workspace.get(&w.repo).and_then(|s| at(s)).unwrap_or(i),
                 _ => i,
             }),
             None => layout.current.as_deref().and_then(at),
@@ -280,19 +281,19 @@ impl App {
             Some(i) => old.swap_remove(i),
             None => Workspace::new(root, repo.to_path_buf()),
         };
-        let isolated = session::all();
-        let gone: Vec<session::Session> = isolated
+        let worktrees = worktree::all();
+        let gone: Vec<worktree::Worktree> = worktrees
             .iter()
             .filter(|s| s.repo.is_dir() && !s.root.exists() && !self.removing.contains(&s.root) && !self.gone.contains(&s.root))
             .cloned()
             .collect();
-        self.isolated.clear();
-        for repo in workspace::registered().into_iter().filter(|r| r.is_dir()) {
+        self.worktrees.clear();
+        for repo in project::registered().into_iter().filter(|r| r.is_dir()) {
             // Not other worktrees: agents and tools make their own, for a while.
             self.workspaces.push(reuse(repo.clone(), &repo));
-            for s in isolated.iter().filter(|s| s.repo == repo && s.root.is_dir() && !self.removing.contains(&s.root)) {
+            for s in worktrees.iter().filter(|s| s.repo == repo && s.root.is_dir() && !self.removing.contains(&s.root)) {
                 self.workspaces.push(reuse(s.root.clone(), &repo));
-                self.isolated.push(s.clone());
+                self.worktrees.push(s.clone());
             }
         }
         // All marked before any goes: each removal lists them again.
@@ -317,7 +318,7 @@ impl App {
         }
         self.sync_lists();
         self.sync_watches();
-        // Once the list and the current session are settled.
+        // Once the list and the current workspace are settled.
         for s in gone {
             self.remove(s, false);
         }
@@ -339,7 +340,7 @@ impl App {
             return false;
         }
         if i != self.current {
-            // The session on screen is still there to keep its editor.
+            // The workspace on screen is still there to keep its editor.
             if self.current < self.workspaces.len() && self.editing() {
                 self.message = Some(UNSAVED.into());
                 self.sync_lists();
@@ -356,17 +357,17 @@ impl App {
             if !self.workspaces[i].reading_status() {
                 self.read_status(i);
             }
-            let base = self.isolated.iter().find(|s| s.root == self.workspaces[i].root).and_then(|s| s.base.clone());
+            let base = self.worktrees.iter().find(|s| s.root == self.workspaces[i].root).and_then(|s| s.base.clone());
             self.changes = Some(Changes::new(&self.workspaces[i].root, base));
             self.reload_changes();
             self.restore_term();
             self.preview();
             if let Some(log) = self.setup_failed.get(&self.workspaces[i].root) {
-                self.message = Some(format!("this session's setup stopped: see {}", log.display()));
+                self.message = Some(format!("this workspace's setup stopped: see {}", log.display()));
             }
         }
         let ws = &self.workspaces[i];
-        self.last_session.insert(ws.repo.clone(), ws.root.clone());
+        self.last_workspace.insert(ws.repo.clone(), ws.root.clone());
         self.sync_lists();
         true
     }
@@ -375,7 +376,7 @@ impl App {
         self.editor.as_ref().is_some_and(|e| e.dirty)
     }
 
-    pub fn repos(&self) -> Vec<usize> {
+    pub fn projects(&self) -> Vec<usize> {
         let mut out: Vec<usize> = Vec::new();
         for (i, w) in self.workspaces.iter().enumerate() {
             if !out.iter().any(|&o| self.workspaces[o].repo == w.repo) {
@@ -385,13 +386,13 @@ impl App {
         out
     }
 
-    pub fn sessions(&self) -> Vec<usize> {
+    pub fn workspace_order(&self) -> Vec<usize> {
         let mut all: Vec<usize> = (0..self.workspaces.len()).collect();
-        all.sort_by_key(|&i| !matches!(self.session_state(i), Some(State::Waiting | State::Done)));
+        all.sort_by_key(|&i| !matches!(self.workspace_state(i), Some(State::Waiting | State::Done)));
         all
     }
 
-    pub fn session_name(&self, i: usize) -> &str {
+    pub fn workspace_name(&self, i: usize) -> &str {
         let ws = &self.workspaces[i];
         if ws.is_worktree() { &ws.name } else { "main" }
     }
@@ -404,16 +405,16 @@ impl App {
 
     fn sync_lists(&mut self) {
         let repo = &self.ws().repo;
-        let in_repos = self.repos().iter().position(|&i| &self.workspaces[i].repo == repo);
-        let in_sessions = self.sessions().iter().position(|&i| i == self.current);
-        self.workspaces_state.select(in_repos);
-        self.sessions_state.select(in_sessions);
+        let in_repos = self.projects().iter().position(|&i| &self.workspaces[i].repo == repo);
+        let in_workspaces = self.workspace_order().iter().position(|&i| i == self.current);
+        self.projects_state.select(in_repos);
+        self.workspaces_state.select(in_workspaces);
     }
 
     pub fn on_fs(&mut self, paths: &[PathBuf]) {
         for path in paths {
             for w in &self.workspaces {
-                // A build writes thousands of files: once a session is marked, skip matching its .gitignore.
+                // A build writes thousands of files: once a workspace is marked, skip matching its .gitignore.
                 if !self.fs_dirty.contains(&w.root) && w.is_affected(path) {
                     self.fs_dirty.insert(w.root.clone());
                 }
@@ -421,8 +422,8 @@ impl App {
             let added_or_removed = self.workspaces.iter().any(|w| {
                 path.strip_prefix(w.repo.join(".git/worktrees")).is_ok_and(|rel| rel.components().count() == 1)
             });
-            let session_gone = self.isolated.iter().any(|s| path.starts_with(&s.root) && !s.root.exists());
-            self.reload_list |= added_or_removed || session_gone;
+            let worktree_gone = self.worktrees.iter().any(|s| path.starts_with(&s.root) && !s.root.exists());
+            self.reload_list |= added_or_removed || worktree_gone;
         }
     }
 
@@ -441,7 +442,7 @@ impl App {
             }
         }
         if dirty.contains(&self.ws().root) {
-            // Only the current session's tree shows; another's is rebuilt when it becomes current.
+            // Only the current workspace's tree shows; another's is rebuilt when it becomes current.
             self.ws_mut().refresh();
             if let Some(next) = self.viewer.reload() {
                 self.load_preview(next);
@@ -510,7 +511,7 @@ impl App {
         };
         match git::toplevel(&path).and_then(|top| git::main_repo(&top)) {
             Some(repo) => {
-                workspace::register(&repo);
+                project::register(&repo);
                 self.load_workspaces();
                 if let Some(i) = self.workspaces.iter().position(|w| w.root == repo) {
                     self.set_current(i);
@@ -524,7 +525,7 @@ impl App {
         let token = self.next_token;
         self.next_token += 1;
         let (rows, cols) = self.term_size;
-        let env = self.isolated.iter().find(|s| s.root == cwd).map(session::env).unwrap_or_default();
+        let env = self.worktrees.iter().find(|s| s.root == cwd).map(worktree::env).unwrap_or_default();
         self.link.send(&ToServer::Spawn { token, program: program.into(), args: args.to_vec(), cwd, rows, cols, env });
         self.spawning.insert(token, focus);
         token
@@ -559,7 +560,7 @@ impl App {
             .collect();
         Layout {
             current: Some(self.ws().root.clone()),
-            sessions: self.last_session.clone().into_iter().collect(),
+            workspaces: self.last_workspace.clone().into_iter().collect(),
             terminals: self.last_term.clone().into_iter().collect(),
             open,
         }
@@ -575,30 +576,30 @@ impl App {
                 self.terms.push(Term::new(info, (rows, cols), self.link.clone()));
                 let i = self.terms.len() - 1;
                 self.terms[i].resize(self.term_size.0, self.term_size.1);
-                let session = self.session_of(&self.terms[i]);
+                let wt = self.workspace_of(&self.terms[i]);
                 if let Some(old) = token.and_then(|t| self.reopening.remove(&t)) {
                     let new = self.terms[i].info.tag.clone();
                     for tag in self.last_term.values_mut().filter(|tag| **tag == old) {
                         *tag = new.clone();
                     }
                     self.spawning.remove(&token.unwrap_or_default());
-                    if self.reopening.is_empty() || session.is_none_or(|s| s == self.current) {
+                    if self.reopening.is_empty() || wt.is_none_or(|s| s == self.current) {
                         self.restore_term();
                     }
                     return;
                 }
                 let Some(focus) = token.and_then(|t| self.spawning.remove(&t)) else {
-                    if self.ready && self.active.is_none() && session.is_none_or(|s| s == self.current) {
+                    if self.ready && self.active.is_none() && wt.is_none_or(|s| s == self.current) {
                         self.restore_term();
                     }
                     return;
                 };
-                if focus && let Some(session) = session
-                    && !self.set_current(session)
+                if focus && let Some(wt) = wt
+                    && !self.set_current(wt)
                 {
                     return;
                 }
-                if focus || (self.active.is_none() && session.is_none_or(|s| s == self.current)) {
+                if focus || (self.active.is_none() && wt.is_none_or(|s| s == self.current)) {
                     self.select_term(id);
                 }
                 if focus {
@@ -616,7 +617,7 @@ impl App {
                     let reopened = self.message.take().map(|m| format!("; {m}")).unwrap_or_default();
                     self.message = Some(format!("the Pulpo server stopped (see {}){reopened}", log.display()));
                 }
-                if self.session_terms().is_empty() && self.spawning.is_empty() {
+                if self.workspace_terms().is_empty() && self.spawning.is_empty() {
                     self.new_terminal(false);
                 }
                 self.ready = true;
@@ -784,16 +785,16 @@ impl App {
         !self.setting_up.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
     }
 
-    fn session_of(&self, term: &Term) -> Option<usize> {
+    fn workspace_of(&self, term: &Term) -> Option<usize> {
         self.workspaces.iter().position(|w| w.root == term.info.cwd)
     }
 
     /// One started outside every checkout shows in all of them, so it stays reachable.
-    pub fn session_terms(&self) -> Vec<usize> {
-        (0..self.terms.len()).filter(|&i| self.session_of(&self.terms[i]).is_none_or(|s| s == self.current)).collect()
+    pub fn workspace_terms(&self) -> Vec<usize> {
+        (0..self.terms.len()).filter(|&i| self.workspace_of(&self.terms[i]).is_none_or(|s| s == self.current)).collect()
     }
 
-    pub fn session_state(&self, i: usize) -> Option<State> {
+    pub fn workspace_state(&self, i: usize) -> Option<State> {
         let root = &self.workspaces[i].root;
         let states = self.terms.iter().filter(|t| &t.info.cwd == root).map(|t| self.term_state(t));
         states.max_by_key(|state| state.urgency())
@@ -817,13 +818,13 @@ impl App {
 
     fn restore_term(&mut self) {
         let root = self.ws().root.clone();
-        let terms: Vec<&Term> = self.session_terms().into_iter().map(|i| &self.terms[i]).collect();
+        let terms: Vec<&Term> = self.workspace_terms().into_iter().map(|i| &self.terms[i]).collect();
         let last = self.last_term.get(&root).and_then(|tag| terms.iter().find(|t| &t.info.tag == tag));
         self.active = last.or(terms.first()).map(|t| t.id);
     }
 
     fn remove_term(&mut self, id: usize) {
-        let tabs: Vec<usize> = self.session_terms().into_iter().map(|i| self.terms[i].id).collect();
+        let tabs: Vec<usize> = self.workspace_terms().into_iter().map(|i| self.terms[i].id).collect();
         self.terms.retain(|t| t.id != id);
         if self.active == Some(id) {
             let at = tabs.iter().position(|&t| t == id).unwrap_or(0);
@@ -836,7 +837,7 @@ impl App {
     }
 
     fn cycle_tab(&mut self, dir: isize) {
-        let tabs: Vec<usize> = self.session_terms().into_iter().map(|i| self.terms[i].id).collect();
+        let tabs: Vec<usize> = self.workspace_terms().into_iter().map(|i| self.terms[i].id).collect();
         if tabs.is_empty() {
             return;
         }
@@ -862,7 +863,7 @@ impl App {
             self.message = Some("no terminal has anything to read".into());
             return;
         };
-        if let Some(i) = self.terms.iter().find(|t| t.id == id).and_then(|t| self.session_of(t))
+        if let Some(i) = self.terms.iter().find(|t| t.id == id).and_then(|t| self.workspace_of(t))
             && !self.set_current(i)
         {
             return;
@@ -945,7 +946,7 @@ impl App {
                     term.key(key);
                 }
             }
-            Focus::Workspaces | Focus::Sessions => self.list_key(key),
+            Focus::Projects | Focus::Workspaces => self.list_key(key),
             Focus::Files => self.files_key(key),
             Focus::Changes => self.changes_key(key),
         }
@@ -955,8 +956,8 @@ impl App {
     fn command(&mut self, key: Key) -> bool {
         let KeyCode::Char(c) = key.code else { return false };
         match c {
+            'p' => self.set_focus(Focus::Projects),
             'w' => self.set_focus(Focus::Workspaces),
-            's' => self.set_focus(Focus::Sessions),
             't' => self.set_focus(Focus::Terminal),
             'f' => self.set_focus(Focus::Files),
             'c' => self.set_focus(Focus::Changes),
@@ -968,7 +969,7 @@ impl App {
             '?' => self.help = true,
             '<' => {
                 self.left_hidden = !self.left_hidden;
-                if self.left_hidden && matches!(self.focus, Focus::Workspaces | Focus::Sessions) {
+                if self.left_hidden && matches!(self.focus, Focus::Projects | Focus::Workspaces) {
                     self.set_focus(Focus::Terminal);
                 }
             }
@@ -1017,13 +1018,13 @@ impl App {
 
     fn confirmed(&mut self, confirm: Confirm) -> bool {
         match confirm {
-            Confirm::RemoveWorkspace(repo) => {
+            Confirm::RemoveProject(repo) => {
                 let name = repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                workspace::unregister(&repo);
+                project::unregister(&repo);
                 self.message = Some(format!("removed {name} from the list (files kept)"));
                 self.load_workspaces();
             }
-            Confirm::DeleteSession(root) => self.remove_session(&root),
+            Confirm::DeleteWorkspace(root) => self.remove_workspace(&root),
             Confirm::CloseTerminal(id) => self.close_terminal(id),
             Confirm::DeleteFile(path) => self.delete(&path),
             Confirm::TrustSetup(pending) => self.trust_setup(*pending, true),
@@ -1045,7 +1046,7 @@ impl App {
     fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
         match focus {
-            Focus::Workspaces | Focus::Sessions => self.left_hidden = false,
+            Focus::Projects | Focus::Workspaces => self.left_hidden = false,
             Focus::Files | Focus::Changes => self.right_hidden = false,
             Focus::Terminal => {}
         }
@@ -1070,8 +1071,8 @@ impl App {
 
     fn new_here(&mut self) {
         match self.focus {
-            Focus::Workspaces => self.open_repo_picker(),
-            Focus::Sessions => self.prompt = Some(Prompt { ask: Ask::Session(String::new()), text: String::new() }),
+            Focus::Projects => self.open_repo_picker(),
+            Focus::Workspaces => self.prompt = Some(Prompt { ask: Ask::Workspace(String::new()), text: String::new() }),
             Focus::Terminal => self.new_terminal(true),
             Focus::Files => {
                 let root = self.ws().root.clone();
@@ -1087,28 +1088,28 @@ impl App {
     }
 
     fn close_here(&mut self) {
-        if matches!(self.focus, Focus::Workspaces | Focus::Sessions) && self.editing() {
+        if matches!(self.focus, Focus::Projects | Focus::Workspaces) && self.editing() {
             self.message = Some(UNSAVED.into());
             return;
         }
         match self.focus {
-            Focus::Workspaces => {
+            Focus::Projects => {
                 let (repo, name) = (self.ws().repo.clone(), self.ws().name.clone());
-                if workspace::registered().contains(&repo) {
-                    self.ask(format!("remove {name} from the list? its files stay."), Confirm::RemoveWorkspace(repo));
+                if project::registered().contains(&repo) {
+                    self.ask(format!("remove {name} from the list? its files stay."), Confirm::RemoveProject(repo));
                 }
             }
-            Focus::Sessions => match self.isolated.iter().find(|s| s.root == self.ws().root).cloned() {
-                Some(session) => {
-                    let lost = session::unsaved(&session);
+            Focus::Workspaces => match self.worktrees.iter().find(|s| s.root == self.ws().root).cloned() {
+                Some(wt) => {
+                    let lost = worktree::unsaved(&wt);
                     let lost = if lost.is_empty() { String::new() } else { format!(", losing {}", lost.join(" and ")) };
-                    let what = if session.kind == session::Kind::Worktree { "folder" } else { "copy" };
-                    let kept = session::kept_branch(&session).map(|b| format!("; branch {b} stays")).unwrap_or_default();
-                    let place = self.place(&session.root).unwrap_or(session.name.clone());
-                    let question = format!("delete session {place}: its {what}, containers and database{lost}{kept}?");
-                    self.ask(question, Confirm::DeleteSession(session.root));
+                    let what = if wt.kind == worktree::Kind::Worktree { "folder" } else { "copy" };
+                    let kept = worktree::kept_branch(&wt).map(|b| format!("; branch {b} stays")).unwrap_or_default();
+                    let place = self.place(&wt.root).unwrap_or(wt.name.clone());
+                    let question = format!("delete workspace {place}: its {what}, containers and database{lost}{kept}?");
+                    self.ask(question, Confirm::DeleteWorkspace(wt.root));
                 }
-                None => self.message = Some(format!("this is the repository itself: {p} w, then {p} x takes it off the list", p = self.keymap.label())),
+                None => self.message = Some(format!("this is the project itself: {p} p, then {p} x takes it off the list", p = self.keymap.label())),
             },
             Focus::Terminal => {
                 let Some(term) = self.term() else { return };
@@ -1131,13 +1132,13 @@ impl App {
             KeyCode::Enter => {
                 if let Some(Prompt { ask, text }) = self.prompt.take() {
                     let (text, ask) = match ask {
-                        Ask::Branch(name) => (name, Ask::Session(text)),
+                        Ask::Branch(name) => (name, Ask::Workspace(text)),
                         ask => (text, ask),
                     };
                     let text = text.trim().to_string();
                     if !text.is_empty() {
                         match ask {
-                            Ask::Session(branch) => self.create_session(&text, Some(branch.trim()).filter(|b| !b.is_empty())),
+                            Ask::Workspace(branch) => self.create_workspace(&text, Some(branch.trim()).filter(|b| !b.is_empty())),
                             Ask::File(dir) => self.create(&dir, &text),
                             Ask::Rename(path) => self.rename(&path, &text),
                             Ask::Branch(_) => {}
@@ -1146,12 +1147,12 @@ impl App {
                 }
             }
             KeyCode::Tab | KeyCode::BackTab => {
-                let (Ask::Session(other) | Ask::Branch(other)) = &mut prompt.ask else { return };
+                let (Ask::Workspace(other) | Ask::Branch(other)) = &mut prompt.ask else { return };
                 let text = std::mem::replace(&mut prompt.text, std::mem::take(other));
-                prompt.ask = if matches!(prompt.ask, Ask::Session(_)) { Ask::Branch(text) } else { Ask::Session(text) };
+                prompt.ask = if matches!(prompt.ask, Ask::Workspace(_)) { Ask::Branch(text) } else { Ask::Workspace(text) };
             }
-            // Session names are lowercase, like Compose projects.
-            KeyCode::Char(c) if !ctrl && matches!(prompt.ask, Ask::Session(_)) => prompt.text.push(c.to_ascii_lowercase()),
+            // Workspace names are lowercase, like Compose projects.
+            KeyCode::Char(c) if !ctrl && matches!(prompt.ask, Ask::Workspace(_)) => prompt.text.push(c.to_ascii_lowercase()),
             _ => {
                 input::edit(&mut prompt.text, key);
             }
@@ -1164,18 +1165,18 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.step(-1),
             KeyCode::Home | KeyCode::Char('g') => self.step(i32::MIN),
             KeyCode::End | KeyCode::Char('G') => self.step(i32::MAX),
-            KeyCode::Enter | KeyCode::Right if self.focus == Focus::Workspaces => self.set_focus(Focus::Sessions),
+            KeyCode::Enter | KeyCode::Right if self.focus == Focus::Projects => self.set_focus(Focus::Workspaces),
             KeyCode::Enter | KeyCode::Right => self.set_focus(Focus::Terminal),
-            KeyCode::Left if self.focus == Focus::Sessions => self.set_focus(Focus::Workspaces),
+            KeyCode::Left if self.focus == Focus::Workspaces => self.set_focus(Focus::Projects),
             _ => {}
         }
     }
 
     fn step(&mut self, delta: i32) {
-        let (repos, sessions) = (self.repos().len(), self.sessions().len());
+        let (projects, workspaces) = (self.projects().len(), self.workspace_order().len());
         let (state, len) = match self.focus {
-            Focus::Workspaces => (&mut self.workspaces_state, repos),
-            _ => (&mut self.sessions_state, sessions),
+            Focus::Projects => (&mut self.projects_state, projects),
+            _ => (&mut self.workspaces_state, workspaces),
         };
         let from = state.selected().unwrap_or(0) as i64;
         let next = (from + delta as i64).clamp(0, len.saturating_sub(1) as i64) as usize;
@@ -1185,15 +1186,15 @@ impl App {
 
     fn on_select(&mut self) {
         match self.focus {
-            Focus::Workspaces => {
-                if let Some(main) = self.workspaces_state.selected().and_then(|i| self.repos().get(i).copied()) {
+            Focus::Projects => {
+                if let Some(main) = self.projects_state.selected().and_then(|i| self.projects().get(i).copied()) {
                     let ws = &self.workspaces[main];
-                    let last = self.last_session.get(&ws.repo).and_then(|root| self.workspaces.iter().position(|w| &w.root == root));
+                    let last = self.last_workspace.get(&ws.repo).and_then(|root| self.workspaces.iter().position(|w| &w.root == root));
                     self.set_current(last.unwrap_or(main));
                 }
             }
             _ => {
-                if let Some(i) = self.sessions_state.selected().and_then(|i| self.sessions().get(i).copied()) {
+                if let Some(i) = self.workspaces_state.selected().and_then(|i| self.workspace_order().get(i).copied()) {
                     self.set_current(i);
                 }
             }
@@ -1321,7 +1322,7 @@ impl App {
         let path = dir.join(name.trim_end_matches('/'));
         let inside = path.starts_with(&self.ws().root) && !path.components().any(|c| c == std::path::Component::ParentDir);
         if !inside {
-            self.message = Some("files stay inside the session".into());
+            self.message = Some("files stay inside the workspace".into());
         }
         inside.then_some(path)
     }
@@ -1761,18 +1762,18 @@ impl App {
         }
         let row = |area: Rect, offset: usize| (pos.y - area.y) as usize + offset;
 
-        if down && areas.workspaces.contains(pos) {
-            self.set_focus(Focus::Workspaces);
-            let i = row(areas.workspaces, self.workspaces_state.offset());
-            if i < self.repos().len() {
-                self.workspaces_state.select(Some(i));
+        if down && areas.projects.contains(pos) {
+            self.set_focus(Focus::Projects);
+            let i = row(areas.projects, self.projects_state.offset());
+            if i < self.projects().len() {
+                self.projects_state.select(Some(i));
                 self.on_select();
             }
-        } else if down && areas.sessions.contains(pos) {
-            self.set_focus(Focus::Sessions);
-            let i = row(areas.sessions, self.sessions_state.offset());
-            if i < self.sessions().len() {
-                self.sessions_state.select(Some(i));
+        } else if down && areas.workspaces.contains(pos) {
+            self.set_focus(Focus::Workspaces);
+            let i = row(areas.workspaces, self.workspaces_state.offset());
+            if i < self.workspace_order().len() {
+                self.workspaces_state.select(Some(i));
                 self.on_select();
                 if double {
                     self.set_focus(Focus::Terminal);
@@ -1976,18 +1977,18 @@ impl App {
         self.reading = true;
     }
 
-    fn create_session(&mut self, name: &str, branch: Option<&str>) {
+    fn create_workspace(&mut self, name: &str, branch: Option<&str>) {
         let (repo, name, branch, tx) = (self.ws().repo.clone(), name.to_string(), branch.map(str::to_string), self.tx.clone());
         let place = self.place(&repo).unwrap_or_default();
         // Asked twice: the first copy is still being made.
         if !self.copying.insert((repo.clone(), name.clone())) {
-            self.message = Some(format!("session {name} is being made already"));
+            self.message = Some(format!("workspace {name} is being made already"));
             return;
         }
-        self.message = Some(format!("making session {name} of {place}…"));
+        self.message = Some(format!("making workspace {name} of {place}…"));
         std::thread::spawn(move || {
-            let made = session::config(&repo, &repo).and_then(|(config, _)| session::create(&repo, &name, branch.as_deref(), &config));
-            let made = made.map(|(s, notes)| (s.root, notes)).map_err(|e| format!("could not make the session: {e:#}"));
+            let made = worktree::config(&repo, &repo).and_then(|(config, _)| worktree::create(&repo, &name, branch.as_deref(), &config));
+            let made = made.map(|(s, notes)| (s.root, notes)).map_err(|e| format!("could not make the workspace: {e:#}"));
             let _ = tx.send(Msg::Copied((repo, name), made));
         });
     }
@@ -2002,23 +2003,23 @@ impl App {
             }
         };
         self.load_workspaces();
-        let Some(session) = self.isolated.iter().find(|s| s.root == root).cloned() else { return };
+        let Some(wt) = self.worktrees.iter().find(|s| s.root == root).cloned() else { return };
         if let Some(i) = self.workspaces.iter().position(|w| w.root == root) {
             self.set_current(i);
         }
         self.spawn_in(root.clone(), &shell(), &[], true);
-        let config = match session::config(&session.repo, &root) {
+        let config = match worktree::config(&wt.repo, &root) {
             Ok((config, warnings)) => {
                 notes.extend(warnings.iter().map(|w| format!("! {w}")));
                 config
             }
             Err(e) => {
-                self.message = Some(format!("session {}: could not read its settings: {e:#}", session.name));
+                self.message = Some(format!("workspace {}: could not read its settings: {e:#}", wt.name));
                 return;
             }
         };
         // A script from a committed file runs once you've trusted it.
-        let asked = session::untrusted(&session.repo, &config);
+        let asked = worktree::untrusted(&wt.repo, &config);
         if !asked.is_empty() {
             let shown: Vec<String> = asked
                 .iter()
@@ -2029,32 +2030,32 @@ impl App {
                     format!("{what}: {short}{more} ({} lines)", script.lines().count())
                 })
                 .collect();
-            let question = format!("session {}: run the repository's committed {}? y trusts it here", session.name, shown.join("; "));
+            let question = format!("workspace {}: run the repository's committed {}? y trusts it here", wt.name, shown.join("; "));
             self.ask(question, Confirm::TrustSetup(Box::new(PendingSetup { root, config, notes, asked })));
             self.asking_from = Some(Instant::now() + Duration::from_secs(1));
             return;
         }
-        self.set_up(&session, config, notes);
+        self.set_up(&wt, config, notes);
     }
 
     fn trust_setup(&mut self, pending: PendingSetup, yes: bool) {
         let PendingSetup { root, mut config, mut notes, asked } = pending;
-        let Some(session) = self.isolated.iter().find(|s| s.root == root).cloned() else { return };
+        let Some(wt) = self.worktrees.iter().find(|s| s.root == root).cloned() else { return };
         if yes {
-            if let Err(e) = session::trust(&session.repo, &asked) {
+            if let Err(e) = worktree::trust(&wt.repo, &asked) {
                 notes.push(format!("! couldn't record the trust: {e:#}"));
             }
         } else {
             notes.extend(config.without(&asked));
         }
-        self.set_up(&session, config, notes);
+        self.set_up(&wt, config, notes);
     }
 
-    fn set_up(&mut self, session: &session::Session, config: session::Config, notes: Vec<String>) {
-        let root = session.root.clone();
-        let script = session::setup_script(session, &config, &notes);
-        let log = logs().join(format!("setup-{}.log", session.project));
-        match run_in_background(&script, &root, session, &log) {
+    fn set_up(&mut self, wt: &worktree::Worktree, config: worktree::Config, notes: Vec<String>) {
+        let root = wt.root.clone();
+        let script = worktree::setup_script(wt, &config, &notes);
+        let log = logs().join(format!("setup-{}.log", wt.project));
+        match run_in_background(&script, &root, wt, &log) {
             Ok(mut child) => {
                 self.setting_up.insert(root.clone(), child.id());
                 let tx = self.tx.clone();
@@ -2062,63 +2063,63 @@ impl App {
                     let ok = child.wait().is_ok_and(|status| status.success());
                     let _ = tx.send(Msg::SetUp(root, log, ok));
                 });
-                self.message = Some(format!("session {} is yours; setting it up in the background", session.name));
+                self.message = Some(format!("workspace {} is yours; setting it up in the background", wt.name));
             }
-            Err(e) => self.message = Some(format!("could not set up session {}: {e}", session.name)),
+            Err(e) => self.message = Some(format!("could not set up workspace {}: {e}", wt.name)),
         }
     }
 
     pub fn on_set_up(&mut self, root: PathBuf, log: PathBuf, ok: bool) {
         self.setting_up.remove(&root);
         let name = root.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        self.message = Some(if ok { format!("session {name} is set up") } else { format!("the setup of session {name} stopped: see {}", log.display()) });
+        self.message = Some(if ok { format!("workspace {name} is set up") } else { format!("the setup of workspace {name} stopped: see {}", log.display()) });
         if !ok {
             self.setup_failed.insert(root, log);
         }
     }
 
-    fn remove_session(&mut self, root: &Path) {
-        let Some(session) = self.isolated.iter().find(|s| s.root == root).cloned() else { return };
-        self.remove(session, true);
+    fn remove_workspace(&mut self, root: &Path) {
+        let Some(wt) = self.worktrees.iter().find(|s| s.root == root).cloned() else { return };
+        self.remove(wt, true);
     }
 
-    fn remove(&mut self, session: session::Session, asked: bool) {
+    fn remove(&mut self, wt: worktree::Worktree, asked: bool) {
         let Ok(exe) = std::env::current_exe() else { return };
-        if self.removing.contains(&session.root) {
+        if self.removing.contains(&wt.root) {
             return;
         }
-        let checkout = if session.root.is_dir() { &session.root } else { &session.repo };
-        let mut config = session::config(&session.repo, checkout).map(|(c, _)| c).unwrap_or_default();
-        let untrusted = session::untrusted(&session.repo, &config);
+        let checkout = if wt.root.is_dir() { &wt.root } else { &wt.repo };
+        let mut config = worktree::config(&wt.repo, checkout).map(|(c, _)| c).unwrap_or_default();
+        let untrusted = worktree::untrusted(&wt.repo, &config);
         let skipped = config.without(&untrusted);
-        let skipped: String = skipped.iter().map(|n| format!("echo {}\n", session::quote(n))).collect();
-        let script = skipped + &session::teardown_script(&session, &config, &exe);
-        let ids: Vec<usize> = self.terms.iter().filter(|t| t.info.cwd == session.root).map(|t| t.id).collect();
+        let skipped: String = skipped.iter().map(|n| format!("echo {}\n", worktree::quote(n))).collect();
+        let script = skipped + &worktree::teardown_script(&wt, &config, &exe);
+        let ids: Vec<usize> = self.terms.iter().filter(|t| t.info.cwd == wt.root).map(|t| t.id).collect();
         for id in ids {
             self.close_terminal(id);
         }
-        let log = logs().join(format!("remove-{}.log", session.project));
-        let mut child = match run_in_background(&script, &session.repo, &session, &log) {
+        let log = logs().join(format!("remove-{}.log", wt.project));
+        let mut child = match run_in_background(&script, &wt.repo, &wt, &log) {
             Ok(child) => child,
             Err(e) => {
-                self.message = Some(format!("could not delete session {}: {e}", session.name));
+                self.message = Some(format!("could not delete workspace {}: {e}", wt.name));
                 return;
             }
         };
-        let (tx, root) = (self.tx.clone(), session.root.clone());
+        let (tx, root) = (self.tx.clone(), wt.root.clone());
         std::thread::spawn(move || {
             let ok = child.wait().is_ok_and(|status| status.success());
             let _ = tx.send(Msg::Removed(root, log, ok));
         });
-        if let Some(main) = self.workspaces.iter().position(|w| w.root == session.repo).filter(|_| asked) {
+        if let Some(main) = self.workspaces.iter().position(|w| w.root == wt.repo).filter(|_| asked) {
             self.set_current(main);
         }
-        self.removing.insert(session.root.clone());
+        self.removing.insert(wt.root.clone());
         self.load_workspaces();
         self.message = Some(if asked {
-            format!("session {} deleted", session.name)
+            format!("workspace {} deleted", wt.name)
         } else {
-            format!("session {}'s folder was deleted: removing its containers and worktree", session.name)
+            format!("workspace {}'s folder was deleted: removing its containers and worktree", wt.name)
         });
     }
 
@@ -2132,7 +2133,7 @@ impl App {
             let _ = std::fs::remove_file(&log);
         } else {
             let name = root.file_name().unwrap_or_default().to_string_lossy();
-            self.message = Some(format!("could not delete session {name}; see {}", log.display()));
+            self.message = Some(format!("could not delete workspace {name}; see {}", log.display()));
         }
     }
 }
@@ -2145,13 +2146,13 @@ fn logs() -> PathBuf {
 }
 
 /// In its own process group, so it outlives Pulpo.
-fn run_in_background(script: &str, dir: &Path, session: &session::Session, log: &Path) -> std::io::Result<std::process::Child> {
+fn run_in_background(script: &str, dir: &Path, wt: &worktree::Worktree, log: &Path) -> std::io::Result<std::process::Child> {
     use std::os::unix::process::CommandExt;
     let out = std::fs::File::create(log)?;
     std::process::Command::new("sh")
         .args(["-c", script])
         .current_dir(dir)
-        .envs(session::env(session))
+        .envs(worktree::env(wt))
         .stdin(std::process::Stdio::null())
         .stdout(out.try_clone()?)
         .stderr(out)

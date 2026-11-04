@@ -45,7 +45,7 @@ pub fn doctor(_args: &[String]) -> anyhow::Result<()> {
         None => println!("  ✓ the defaults (no keys.toml)"),
     }
     let keys: Vec<String> = keymap.prefix.iter().map(Key::to_string).collect();
-    println!("  the prefix (then w s t f c, n x…): {}", keys.join(" or "));
+    println!("  the prefix (then p w t f c, n x…): {}", keys.join(" or "));
     let ctrl_space = Key::parse("ctrl-space");
     if keymap.prefix.iter().any(|k| Some(*k) == ctrl_space)
         && let Some(layouts) = input_switch_on_ctrl_space()
