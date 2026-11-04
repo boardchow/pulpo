@@ -1,10 +1,3 @@
-//! Changes: what the session changed, as a tree of files, and the selected
-//! one with its changes in place. Against where the session started: the
-//! commit a session Pulpo made was copied from, else where its branch left the
-//! main one (commits included, since agents commit as they go). Only the
-//! selected file's diff is read, and reloads read in the background
-//! (`read`, then `apply`), so following an agent stays cheap.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,38 +10,30 @@ use crate::tree::{self, Row};
 use crate::viewer::{self, Kind, ReviewDiff};
 
 pub struct File {
-    /// Relative to the session's folder.
     pub path: PathBuf,
-    /// git's letter: M, A, D, or ? for a file git doesn't know yet.
+    /// git's status letter, or '?' for an untracked file.
     pub status: char,
 }
 
 pub struct Changes {
     pub root: PathBuf,
-    /// What it's compared with: the commit a session Pulpo made was copied at,
-    /// fixed; else found again by every read (a commit or a push moves it).
+    /// The commit a session Pulpo made was copied at: fixed, while `base` is found again by each read.
     copied: Option<String>,
     base: Option<String>,
     pub since: String,
     /// Bumped by each read asked for, so an older one arriving late is dropped.
     generation: u64,
     pub files: Vec<File>,
-    /// The files as a tree, folders folded or not, and the row selected.
     pub rows: Vec<Row>,
     folded: HashSet<PathBuf>,
     pub state: ListState,
-    /// The selected file's diff, and the first row shown.
     pub diff: Option<(PathBuf, ReviewDiff)>,
     pub scroll: usize,
-    /// Columns of code scrolled off to the left; the line numbers stay.
     pub hscroll: usize,
-    /// Rows on screen, set when drawing.
     pub height: usize,
 }
 
 impl Changes {
-    /// Nothing read yet (`read` then `apply` fill it). `base` is where a task
-    /// session was copied from; else it is found by the first read.
     pub fn new(root: &Path, base: Option<String>) -> Changes {
         Changes {
             root: root.to_path_buf(),
@@ -67,7 +52,6 @@ impl Changes {
         }
     }
 
-    /// Read now, on this thread.
     #[cfg(test)]
     pub fn open(root: &Path, base: Option<String>) -> Changes {
         let mut changes = Changes::new(root, base);
@@ -76,17 +60,13 @@ impl Changes {
         changes
     }
 
-    /// What to read again: the folder, the base, and the file on screen.
     pub fn request(&mut self) -> Request {
         self.generation += 1;
         let base = self.copied.clone().map(|commit| (commit, "since the copy".to_string()));
         Request { root: self.root.clone(), base, shown: self.diff.as_ref().map(|(p, _)| p.clone()), generation: self.generation }
     }
 
-    /// Take what was read, staying on the same row and, for the same file,
-    /// where it was scrolled. The first time, on the first file.
     pub fn apply(&mut self, read: Read) {
-        // Another session's, or overtaken by a newer read.
         if read.root != self.root || read.generation != self.generation {
             return;
         }
@@ -103,7 +83,6 @@ impl Changes {
             self.diff = Some((path, diff));
             self.scroll_by(0);
         }
-        // A file that left the list, or a folder selected: what's selected now.
         let selected_file = self.selected().filter(|r| !r.is_dir).map(|r| r.path.clone());
         if self.diff.as_ref().map(|(p, _)| p) != selected_file.as_ref() {
             self.diff = None;
@@ -111,7 +90,6 @@ impl Changes {
         }
     }
 
-    /// The tree of the files, without what's under a folded folder.
     fn layout(&mut self, selected: Option<PathBuf>) {
         let all = tree::of_paths(&self.root, self.files.iter().map(|f| f.path.to_str().unwrap_or_default()));
         self.rows = all.into_iter().filter(|r| !r.path.ancestors().skip(1).any(|a| self.folded.contains(a))).collect();
@@ -127,7 +105,6 @@ impl Changes {
         self.rows.get(self.state.selected()?)
     }
 
-    /// The selected file's diff, unless it's already on screen.
     pub fn follow(&mut self) {
         match self.selected().filter(|r| !r.is_dir).map(|r| r.path.clone()) {
             Some(path) => self.show(&path),
@@ -141,13 +118,11 @@ impl Changes {
         }
         let untracked = self.files.iter().any(|f| self.root.join(&f.path) == path && f.status == '?');
         let diff = viewer::review_diff(&self.root, self.base.as_deref().unwrap_or("HEAD"), path, untracked);
-        // On its first change, a few lines above it.
         self.scroll = diff.changes.first().map_or(0, |&c| c.saturating_sub(3));
         self.hscroll = 0;
         self.diff = Some((path.to_path_buf(), diff));
     }
 
-    /// The letter git gives the file or, for a folder, any of its files.
     pub fn status_of(&self, path: &Path) -> Option<char> {
         self.files.iter().find(|f| self.root.join(&f.path).starts_with(path)).map(|f| f.status)
     }
@@ -159,8 +134,6 @@ impl Changes {
         self.follow();
     }
 
-    /// Fold or unfold the selected folder; folding on a file or a folded
-    /// folder goes to its parent.
     pub fn fold(&mut self, open: bool) {
         let Some(row) = self.selected() else { return };
         let (path, is_dir) = (row.path.clone(), row.is_dir);
@@ -178,15 +151,11 @@ impl Changes {
         self.follow();
     }
 
-    /// Scroll sideways; 0 columns goes back to the start of the lines.
     pub fn scroll_sideways(&mut self, columns: isize) {
         let widest = self.diff.as_ref().map_or(0, |(_, d)| d.widest);
         self.hscroll = if columns == 0 { 0 } else { self.hscroll.saturating_add_signed(columns).min(widest) };
     }
 
-    /// The marks down the right of the diff, like VS Code's overview ruler:
-    /// for each of `cells`, the color of what its lines hold (added,
-    /// removed, or both) and whether they are in view.
     pub fn ruler(&self, cells: usize) -> Vec<(Option<Color>, bool)> {
         let Some((_, diff)) = &self.diff else { return Vec::new() };
         let lines = diff.kinds.len();
@@ -206,7 +175,6 @@ impl Changes {
             .collect()
     }
 
-    /// A click on the ruler: that part of the file in view.
     pub fn jump_to(&mut self, cell: usize, cells: usize) {
         let lines = self.diff.as_ref().map_or(0, |(_, d)| d.kinds.len());
         let (start, _) = cell_lines(cell, cells, lines);
@@ -220,7 +188,6 @@ impl Changes {
     }
 }
 
-/// What a read needs, taken on the UI thread (`Changes::request`).
 pub struct Request {
     root: PathBuf,
     base: Option<(String, String)>,
@@ -228,8 +195,6 @@ pub struct Request {
     generation: u64,
 }
 
-/// What was read, off the UI thread: the base, the files, and the diff of
-/// the file on screen (or the first one).
 pub struct Read {
     root: PathBuf,
     base: String,
@@ -256,7 +221,6 @@ impl Request {
     }
 }
 
-/// The lines one of `cells` cells of the ruler stands for.
 fn cell_lines(cell: usize, cells: usize, lines: usize) -> (usize, usize) {
     let start = cell * lines / cells.max(1);
     (start, ((cell + 1) * lines / cells.max(1)).max(start + 1).min(lines))
@@ -267,9 +231,6 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
 }
 
-/// Where the session's work starts: on the main branch, its last commit
-/// (what a commit takes away is done); on another, where it left the main
-/// one. Its commit, and how to say it.
 fn base(root: &Path) -> (String, String) {
     let uncommitted = || ("HEAD".to_string(), "uncommitted".to_string());
     let branch = git(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
@@ -282,8 +243,6 @@ fn base(root: &Path) -> (String, String) {
     }
 }
 
-/// The files changed since `base`, the working tree included, then the
-/// ones git doesn't know yet.
 fn changed(root: &Path, base: &str) -> Vec<(PathBuf, char)> {
     let mut files: Vec<(PathBuf, char)> = Vec::new();
     if let Some(out) = git(root, &["diff", "--name-status", "--no-renames", "-z", base]) {
@@ -314,7 +273,6 @@ mod tests {
         std::fs::write(t.join("src/b.txt"), "b\n").unwrap();
         run(&["add", "."]);
         run(&["commit", "-qm", "start"]);
-        // A branch: one change committed, one not, one new file.
         run(&["checkout", "-qb", "task"]);
         std::fs::write(t.join("a.txt"), "one\nTWO\nthree\n").unwrap();
         run(&["commit", "-qam", "agent"]);
@@ -332,31 +290,25 @@ mod tests {
         assert_eq!(rows, ["src", "b.txt", "a.txt", "c.txt"]);
         assert_eq!(changes.status_of(&t.join("src")), Some('M'));
         assert_eq!(changes.status_of(&t.join("c.txt")), Some('?'));
-        // It opens on the first file, its diff on its first change.
         assert_eq!(changes.selected().map(|r| r.name.as_str()), Some("b.txt"));
         assert_eq!(changes.diff.as_ref().map(|(p, d)| (p.clone(), d.added)), Some((t.join("src/b.txt"), 1)));
-        // A folder shows nothing.
         changes.step(-1);
         assert!(changes.diff.is_none());
         changes.step(1);
-        // Its marks: the first line as it was, the second added; all in view.
         changes.height = 10;
         let marks: Vec<Option<ratatui::style::Color>> = changes.ruler(4).into_iter().map(|(color, _)| color).collect();
         assert_eq!(marks, [None, None, Some(theme::green()), Some(theme::green())]);
         assert!(changes.ruler(4).iter().all(|&(_, in_view)| in_view));
         assert_eq!(cell_lines(3, 4, 2), (1, 2));
-        // Sideways, no further than its longest line.
         changes.scroll_sideways(100);
         assert_eq!(changes.hscroll, 4);
         changes.scroll_sideways(0);
         assert_eq!(changes.hscroll, 0);
-        // A reload keeps it; a read that was overtaken is dropped.
         let stale = changes.request().read();
         let fresh = changes.request().read();
         changes.apply(stale);
         changes.apply(fresh);
         assert_eq!(changes.diff.as_ref().map(|(p, _)| p.clone()), Some(t.join("src/b.txt")));
-        // A file that left the list: the diff of what's selected now.
         std::fs::write(t.join("src/b.txt"), "b\n").unwrap();
         let read = changes.request().read();
         changes.apply(read);
@@ -364,13 +316,11 @@ mod tests {
         std::fs::write(t.join("src/b.txt"), "b\nmore\n").unwrap();
         let read = changes.request().read();
         changes.apply(read);
-        // Folded, its files are gone, and back.
         changes.state.select(Some(0));
         changes.fold(false);
         assert_eq!(changes.rows.len(), 3);
         changes.fold(true);
         assert_eq!(changes.rows.len(), 4);
-        // On main itself: only what isn't committed, found again each read.
         let run = |args: &[&str]| assert!(Command::new("git").current_dir(&t).args(args).output().unwrap().status.success());
         run(&["stash", "-qu"]);
         run(&["checkout", "-q", "main"]);
@@ -383,7 +333,6 @@ mod tests {
         assert!(on_main.files.is_empty());
         run(&["checkout", "-q", "task"]);
         run(&["stash", "pop", "-q"]);
-        // From a commit given: only what came after it.
         let head = git(&t, &["rev-parse", "HEAD"]).unwrap();
         let changes = Changes::open(&t, Some(head));
         assert_eq!(changes.files.iter().map(|f| f.path.display().to_string()).collect::<Vec<_>>(), vec!["src/b.txt", "c.txt"]);

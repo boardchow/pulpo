@@ -17,7 +17,7 @@ A session is one checkout of a workspace. Selecting one shows its terminals, fil
 
 Every workspace starts with `main`, the repository itself. Each session you create is a git worktree on its own branch, with its own ports and Docker containers. Worktrees made outside Pulpo show up as sessions too, read only.
 
-Each row shows the session's state, name, uncommitted changes (`±3`) and branch.
+Each row shows the session's state, name and uncommitted changes (`±3`).
 
 ## Create a session
 

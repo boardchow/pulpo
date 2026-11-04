@@ -1,12 +1,3 @@
-//! Editing a file inside Pulpo, drawn exactly like the viewer: the same
-//! syntax definitions, theme and highlighter, so a file looks the same
-//! whether you read it or change it. The keys are the common ones (micro,
-//! VS Code): arrows, shift to select, ctrl-z / ctrl-y, ctrl-c / x / v, ctrl-s.
-//!
-//! Highlighting keeps the highlighter's state at the start of every line it
-//! went through, so an edit only redoes the lines from there to the screen's
-//! end.
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -18,7 +9,6 @@ use syntect::parsing::{ParseState, ScopeStack, SyntaxReference};
 use crate::theme;
 use crate::viewer::{self, MAX_BYTES, MAX_HIGHLIGHTED_LINES};
 
-/// Typing within this long of the last edit undoes together.
 const UNDO_GROUP: Duration = Duration::from_secs(1);
 /// Tabs show as this many columns, as in the viewer.
 const TAB: usize = 4;
@@ -36,7 +26,6 @@ struct Snapshot {
     cursor: Pos,
 }
 
-/// What an edit was, to group typing for undo.
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Insert,
@@ -47,34 +36,26 @@ enum Kind {
 pub struct Editor {
     pub path: PathBuf,
     lines: Vec<String>,
-    /// Kept as the file had them.
     crlf: bool,
     final_newline: bool,
-    /// What tab inserts: a tab, or spaces.
     indent: String,
     pub cursor: Pos,
-    /// The other end of the selection.
     anchor: Option<Pos>,
-    /// The column up and down aim for, kept across short lines.
     goal: Option<usize>,
     pub scroll: usize,
     hscroll: usize,
-    /// Rows and columns of the view, set when drawing.
     pub view: (usize, usize),
     pub dirty: bool,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     last_edit: Option<(Kind, Instant)>,
-    /// Typing a search, and the text searched.
     pub find: Option<String>,
     pub find_typing: bool,
     highlight: Highlight,
-    /// When the file was last read or written, to notice others changing it.
     modified: Option<std::time::SystemTime>,
 }
 
 impl Editor {
-    /// Open `path`, with the cursor on `line` (from 1).
     pub fn open(path: PathBuf, line: Option<usize>) -> Result<Editor, String> {
         if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_BYTES as u64) {
             return Err("this file is too large to edit here".into());
@@ -135,8 +116,7 @@ impl Editor {
         text
     }
 
-    /// Save; if the file changed on disk since (an agent), only when asked
-    /// twice.
+    /// Refuses once if the file changed on disk since; saving again overwrites it.
     pub fn save(&mut self) -> Result<(), String> {
         let modified = std::fs::metadata(&self.path).and_then(|m| m.modified()).ok();
         if modified != self.modified && !self.dirty {
@@ -153,8 +133,6 @@ impl Editor {
         Ok(())
     }
 
-    /// Someone else (an agent) changed the file: take their version, unless
-    /// there are changes here. True if it was taken.
     pub fn reload_if_changed(&mut self) -> bool {
         let modified = std::fs::metadata(&self.path).and_then(|m| m.modified()).ok();
         if self.dirty || modified == self.modified {
@@ -167,8 +145,6 @@ impl Editor {
         true
     }
 
-    // Moving
-
     fn len(&self, line: usize) -> usize {
         self.lines[line].chars().count()
     }
@@ -179,7 +155,6 @@ impl Editor {
         self.anchor = self.anchor.filter(|a| a.line < self.lines.len());
     }
 
-    /// Move the cursor; with `select`, the selection follows.
     fn go(&mut self, to: Pos, select: bool) {
         if select {
             self.anchor.get_or_insert(self.cursor);
@@ -221,7 +196,6 @@ impl Editor {
         self.go(to, select);
     }
 
-    /// Up (negative) or down by `rows`, keeping the column aimed for.
     pub fn vertical(&mut self, rows: isize, select: bool) {
         let goal = *self.goal.get_or_insert(self.display_col(self.cursor));
         let line = self.cursor.line.saturating_add_signed(rows).min(self.lines.len() - 1);
@@ -230,7 +204,6 @@ impl Editor {
         self.goal = Some(goal);
     }
 
-    /// Home: to the first non-blank character, then to the very start.
     pub fn home(&mut self, select: bool) {
         let line = self.cursor.line;
         let first = self.lines[line].chars().take_while(|c| c.is_whitespace()).count();
@@ -250,7 +223,6 @@ impl Editor {
         self.vertical(rows, select);
     }
 
-    /// To the start of the previous word, or past the end of the next one.
     pub fn word(&mut self, forward: bool, select: bool) {
         self.goal = None;
         let to = self.word_from(self.cursor, forward);
@@ -285,7 +257,6 @@ impl Editor {
         Pos { line: from.line, col }
     }
 
-    /// The start of the file, or its end.
     pub fn edge(&mut self, end: bool, select: bool) {
         let line = if end { self.lines.len() - 1 } else { 0 };
         let col = if end { self.len(line) } else { 0 };
@@ -293,7 +264,6 @@ impl Editor {
         self.go(Pos { line, col }, select);
     }
 
-    /// Put the cursor at `pos`, ending any selection.
     pub fn click_at(&mut self, pos: Pos) {
         self.go(pos, false);
     }
@@ -304,8 +274,6 @@ impl Editor {
         self.cursor = Pos { line: last, col: self.len(last) };
     }
 
-    /// Put the cursor where a click landed: a row of the file and a column
-    /// of the screen (both from 0, the column after the line numbers).
     pub fn click(&mut self, row: usize, column: usize, select: bool) {
         let line = (self.scroll + row).min(self.lines.len() - 1);
         let col = self.col_at(line, column + self.hscroll);
@@ -317,7 +285,6 @@ impl Editor {
         self.scroll = self.scroll.saturating_add_signed(rows).min(self.lines.len().saturating_sub(1));
     }
 
-    /// The ordered ends of the selection, if any.
     pub fn selection(&self) -> Option<(Pos, Pos)> {
         let anchor = self.anchor.filter(|a| *a != self.cursor)?;
         Some((anchor.min(self.cursor), anchor.max(self.cursor)))
@@ -349,15 +316,10 @@ impl Editor {
         out
     }
 
-    // Changing
-
-    /// Before an edit: keep what to undo to. Typing in a row undoes as one.
     fn checkpoint(&mut self, kind: Kind) {
         self.checkpoint_after(kind, false);
     }
 
-    /// `new_group`: this edit starts a new undo step even while typing (a
-    /// line break); what is typed next joins it.
     fn checkpoint_after(&mut self, kind: Kind, new_group: bool) {
         let grouped = !new_group
             && self.last_edit.is_some_and(|(last, at)| last == kind && kind != Kind::Other && at.elapsed() < UNDO_GROUP);
@@ -392,7 +354,6 @@ impl Editor {
         self.clamp();
     }
 
-    /// Remove the selection's text; the cursor goes where it started.
     fn remove_selection(&mut self) -> bool {
         let Some((start, end)) = self.selection() else { return false };
         let tail: String = self.lines[end.line].chars().skip(end.col).collect();
@@ -404,7 +365,6 @@ impl Editor {
         true
     }
 
-    /// Type or paste `text` at the cursor, over the selection.
     pub fn insert(&mut self, text: &str) {
         let typed = text.chars().count() == 1 && !text.contains('\n');
         self.insert_as(text, if typed { Kind::Insert } else { Kind::Other }, false);
@@ -429,7 +389,6 @@ impl Editor {
         self.highlight.invalidate(line);
     }
 
-    /// Enter: a new line, indented like this one.
     pub fn newline(&mut self) {
         let indent: String = self.lines[self.cursor.line].chars().take_while(|c| *c == ' ' || *c == '\t').collect();
         let indent = &indent[..byte_at(&indent, self.cursor.col.min(indent.chars().count()))];
@@ -481,7 +440,6 @@ impl Editor {
         self.remove_selection();
     }
 
-    /// Tab: indent the selected lines, or insert one level of indentation.
     pub fn tab(&mut self) {
         match self.selection() {
             Some((start, end)) if start.line != end.line => self.indent_lines(true),
@@ -489,7 +447,6 @@ impl Editor {
         }
     }
 
-    /// Shift-tab: one level less on the selected lines, or this one.
     pub fn untab(&mut self) {
         self.indent_lines(false);
     }
@@ -519,7 +476,6 @@ impl Editor {
         self.clamp();
     }
 
-    /// Ctrl-x: the selection, or the whole line, cut; what was cut.
     pub fn cut(&mut self) -> String {
         if let Some(text) = self.selected_text() {
             self.checkpoint(Kind::Other);
@@ -539,15 +495,10 @@ impl Editor {
         text
     }
 
-    /// Ctrl-c: the selection, or the whole line.
     pub fn copy(&self) -> String {
         self.selected_text().unwrap_or_else(|| format!("{}\n", self.lines[self.cursor.line]))
     }
 
-    // Finding
-
-    /// Go to the next place `query` appears from the cursor (or before it,
-    /// backwards), selecting it. Case-insensitive unless it has capitals.
     pub fn find_next(&mut self, forward: bool) -> bool {
         let Some(query) = self.find.clone().filter(|q| !q.is_empty()) else { return false };
         let fold = |s: &str| if query.chars().any(char::is_uppercase) { s.to_string() } else { s.to_lowercase() };
@@ -574,14 +525,10 @@ impl Editor {
         false
     }
 
-    // Drawing
-
-    /// Columns on screen up to `pos`: tabs are as wide as in the viewer.
     fn display_col(&self, pos: Pos) -> usize {
         self.lines[pos.line].chars().take(pos.col).map(|c| if c == '\t' { TAB } else { 1 }).sum()
     }
 
-    /// The character at screen column `column` of `line`.
     fn col_at(&self, line: usize, column: usize) -> usize {
         let mut at = 0;
         for (i, c) in self.lines[line].chars().enumerate() {
@@ -594,19 +541,15 @@ impl Editor {
         self.len(line)
     }
 
-    /// Width of the line numbers and the space after them.
     pub fn gutter(&self) -> usize {
         self.lines.len().to_string().len() + 2
     }
 
-    /// Scroll sideways (a trackpad swipe, shift + wheel), no further than
-    /// the longest line; the cursor brings it back when it moves.
     pub fn scroll_sideways(&mut self, columns: isize) {
         let widest = self.lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
         self.hscroll = self.hscroll.saturating_add_signed(columns).min(widest);
     }
 
-    /// Scroll so the cursor is in view.
     pub fn follow_cursor(&mut self) {
         let (height, width) = (self.view.0.max(1), self.view.1);
         if self.cursor.line < self.scroll {
@@ -623,8 +566,6 @@ impl Editor {
         }
     }
 
-    /// The rows to draw from `scroll`, as the viewer draws them, with the
-    /// selection, the search and the cursor's line marked.
     pub fn rows(&mut self, height: usize) -> Vec<Line<'static>> {
         let gutter = self.gutter();
         let width = gutter - 2;
@@ -654,7 +595,6 @@ impl Editor {
             .collect()
     }
 
-    /// Where the cursor is drawn, from the view's top left.
     pub fn cursor_cell(&self) -> Option<(usize, usize)> {
         let row = self.cursor.line.checked_sub(self.scroll)?;
         let col = self.display_col(self.cursor).checked_sub(self.hscroll)?;
@@ -662,7 +602,6 @@ impl Editor {
     }
 }
 
-/// The selection's background over columns `from..to` of a drawn line.
 fn mark(line: Line<'static>, from: usize, to: usize) -> Line<'static> {
     let selected = Style::default().bg(theme::text_selection());
     let Line { spans: old, style, alignment } = line;
@@ -691,8 +630,6 @@ fn byte_at(text: &str, col: usize) -> usize {
     text.char_indices().nth(col).map_or(text.len(), |(i, _)| i)
 }
 
-/// What one level of indentation is in this file: a tab if lines start with
-/// tabs, else the smallest step of spaces (2 or 4).
 fn guess_indent(lines: &[String]) -> String {
     let tabs = lines.iter().filter(|l| l.starts_with('\t')).count();
     let spaced: Vec<usize> = lines.iter().map(|l| l.chars().take_while(|c| *c == ' ').count()).filter(|&n| n > 0).collect();
@@ -703,8 +640,6 @@ fn guess_indent(lines: &[String]) -> String {
     " ".repeat(if two * 5 > spaced.len() { 2 } else { 4 })
 }
 
-/// Highlighting as the viewer does it (`viewer::assets`), line by line,
-/// keeping the state before each line so an edit redoes only what follows.
 struct Highlight {
     syntax: &'static SyntaxReference,
     /// The state before line i, for i up to what was highlighted.
@@ -717,7 +652,6 @@ impl Highlight {
         Highlight { syntax, states: Vec::new(), spans: Vec::new() }
     }
 
-    /// Line `from` changed: it and everything after it is redone.
     fn invalidate(&mut self, from: usize) {
         self.states.truncate(from + 1);
         self.spans.truncate(from);
@@ -780,7 +714,6 @@ mod tests {
         std::fs::write(&path, "mine\n").unwrap();
         let mut e = Editor::open(path.clone(), None).unwrap();
         e.insert("x");
-        // An agent writes it a moment later.
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&path, "theirs\n").unwrap();
         assert!(e.save().is_err());
@@ -800,7 +733,6 @@ mod tests {
         e.newline();
         e.insert("w");
         assert_eq!(e.text(), "fn main() {\n    xyz\n    w\n}\n");
-        // Typing undoes in one step, the line break in another.
         e.undo();
         assert_eq!(e.text(), "fn main() {\n    xyz\n}\n");
         e.undo();
@@ -823,7 +755,6 @@ mod tests {
         e.end(false);
         e.insert(&cut);
         assert_eq!(e.text(), "owone\nt\nthree\n");
-        // Without a selection, ctrl-x takes the line.
         assert_eq!(e.cut(), "t\n");
         assert_eq!(e.text(), "owone\nthree\n");
     }
@@ -857,13 +788,11 @@ mod tests {
     fn highlights_like_the_viewer() {
         let mut e = editor("let x = \"hi\";\n");
         let spans = e.highlight.spans(0, &e.lines);
-        // The same pieces and colors the viewer gets for the same line.
         let (syntaxes, colors) = viewer::assets();
         let mut viewer = syntect::easy::HighlightLines::new(viewer::syntax_for(&e.path), &colors);
         let expected = viewer::styled(viewer.highlight_line("let x = \"hi\";\n", syntaxes).ok(), "let x = \"hi\";\n");
         assert_eq!(spans, expected);
         assert!(spans.len() > 3);
-        // An edit redoes it, still the same.
         e.insert("// ");
         assert_ne!(e.highlight.spans(0, &e.lines), expected);
     }

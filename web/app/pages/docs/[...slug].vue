@@ -1,6 +1,4 @@
 <script setup>
-// A page of the docs, from content/docs, with what every page shares: the
-// top bar, the list of pages, its sections, previous and next.
 const SECTIONS = ["Get started", "Using Pulpo", "Reference"];
 const REPO = "https://github.com/boardchow/pulpo";
 
@@ -39,7 +37,6 @@ useHead({ link: [{ rel: "canonical", href: `${site}${path}` }] });
 const menuOpen = ref(false);
 watch(() => route.path, () => (menuOpen.value = false));
 
-// The section being read stands out in "On this page".
 const reading = ref("");
 function onScroll() {
   const ids = toc.value.flatMap((l) => [l.id, ...(l.children ?? []).map((c) => c.id)]);

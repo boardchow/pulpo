@@ -1,16 +1,4 @@
-//! The sessions Pulpo makes: a checkout of a repository to work on one task, with
-//! its own branch, ports, Docker containers and database, so several tasks
-//! (and their agents) run side by side without touching each other.
-//!
-//! The checkout is a git worktree on a new branch, from the default branch
-//! as on the remote (the way Conductor, Claude Code and Cursor do it).
-//! Main's ignored files a session needs (`.env`, keys) are cloned into it
-//! (`clonefile`: instant, no space until changed). Its terminals get a
-//! block of ten ports, its own Compose project and a value for each port
-//! variable of the compose file. Setting it up (main's images, a copy of
-//! main's database) and removing it run as scripts in the background, with
-//! a log. Sessions made before were APFS copies of the whole checkout
-//! (`Kind::Copy`); they're still removed the way they were made.
+//! The sessions Pulpo makes: a git worktree per task, with its own branch, ports, containers and database.
 
 use std::collections::BTreeSet;
 use std::ffi::CString;
@@ -26,17 +14,13 @@ use anyhow::{Context, Result, bail};
 use ignore::gitignore::GitignoreBuilder;
 use serde::{Deserialize, Serialize};
 
-/// Ports are handed out in blocks of this many, from `FIRST_PORT` up.
 const FIRST_PORT: u16 = 20000;
 const BLOCK: u16 = 10;
 const COMPOSE_FILES: [&str; 4] = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
 const COMPOSE_OVERRIDES: [&str; 4] = ["compose.override.yaml", "compose.override.yml", "docker-compose.override.yaml", "docker-compose.override.yml"];
-/// `clonefile`'s flag to clone a link as a link (sys/clonefile.h).
 const CLONE_NOFOLLOW: u32 = 1;
-/// What a session gets of main's ignored files when nothing says otherwise.
 const DEFAULT_INCLUDE: [&str; 5] = [".env", ".env.*", "!.env.example", "!.env.sample", "!.env.template"];
 
-/// How a session was made.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -49,68 +33,44 @@ pub enum Kind {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Session {
     pub name: String,
-    /// The main checkout it copies, and where the copy is.
     pub repo: PathBuf,
     pub root: PathBuf,
-    /// Its Compose project, and main's.
     pub project: String,
     pub main_project: String,
-    /// Its value for each port variable of the compose file.
     pub ports: Vec<(String, u16)>,
-    /// Services whose image main built, tagged for this project too.
     pub images: Vec<String>,
-    /// A copy's: the commit it was copied at, its changes being what came
-    /// after. A worktree's changes are since it left the default branch.
     #[serde(default)]
     pub base: Option<String>,
     #[serde(default)]
     pub kind: Kind,
-    /// The first of its ten ports (`PULPO_PORT`); the compose file's port
-    /// variables take the ones after the block.
     #[serde(default)]
     pub port: Option<u16>,
-    /// Its branch, whether Pulpo made it, and the commit it started at:
-    /// a branch Pulpo made goes with the session if it's still there.
     #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]
     pub made_branch: bool,
     #[serde(default)]
     pub start: Option<String>,
-    /// `COMPOSE_FILE` as made, when a service mounts its folder: its compose
-    /// files, then one that mounts main's `.git`. Its terminals get it read
-    /// again when they start (`env`).
     #[serde(default)]
     pub compose_file: Option<String>,
 }
 
-/// How sessions of one repository are set up, in
-/// layers (`config`): guessed, Conductor's settings, then
-/// `~/.config/pulpo/repos/<repo>.toml`.
 #[derive(Default, Debug, PartialEq, Clone)]
 pub struct Config {
     pub ports: Vec<String>,
     pub images: Vec<String>,
-    /// mysql, postgres, or empty for none: how main's database is copied.
     pub db: String,
     pub db_service: String,
-    /// Run when main's database isn't running to copy from.
     pub fresh: String,
     pub setup: String,
     pub teardown: String,
-    /// Main's ignored files a session gets (gitignore patterns), besides its
-    /// `.env` files and those in `.worktreeinclude`; `!pattern` takes one away.
     pub include: Vec<String>,
-    /// What a session's branch starts with (`<prefix>/<name>`), when not
-    /// git's name.
     pub branch_prefix: String,
-    /// Whether `setup` and `teardown` came from a file committed to the
-    /// repository: run only once trusted (`untrusted`).
+    /// (setup, teardown) came from a committed file: run only once trusted.
     pub committed: (bool, bool),
 }
 
-/// One layer of settings: what it says. Pulpo's file says what's
-/// uncommented, an empty value included (it turns a guess off).
+/// `None` says nothing; an empty value turns a guess off.
 #[derive(Deserialize, Default, Debug, PartialEq)]
 #[serde(default)]
 struct Layer {
@@ -125,12 +85,9 @@ struct Layer {
     branch_prefix: Option<String>,
 }
 
-/// What Pulpo reads of Conductor's settings (`.conductor/settings.toml`,
-/// `settings.local.toml`): the rest is Conductor's.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Conductor {
-    /// Ignored files a workspace gets, one string (comma or line separated).
     file_include_globs: String,
     scripts: ConductorScripts,
     git: ConductorGit,
@@ -149,20 +106,15 @@ struct ConductorGit {
     branch_prefix: String,
 }
 
-/// What a compose file says, as far as sessions are concerned.
 #[derive(Default, Debug, PartialEq)]
 pub struct Guess {
     pub ports: Vec<String>,
     pub images: Vec<String>,
     pub db: Option<(String, String)>,
-    /// What sessions can't isolate: fixed host ports, container names,
-    /// volumes with a fixed name.
     pub warnings: Vec<String>,
 }
 
-/// Read a compose file closely enough: services, their `build`, `image`,
-/// `container_name` and published ports, and top-level volume names. It is
-/// a line scan, not a YAML parser; it expects the usual layout.
+/// A line scan, not a YAML parser: it expects the usual layout.
 pub fn guess(compose: &str) -> Guess {
     let mut guess = Guess::default();
     let indent = |line: &str| line.len() - line.trim_start().len();
@@ -230,10 +182,8 @@ pub fn guess(compose: &str) -> Guess {
     guess
 }
 
-/// One published port, like `${DB_PORT:-3306}:3306` or `'3000:3000'`.
 fn port(service: &str, entry: &str, guess: &mut Guess) {
     let entry = entry.trim_matches(|c| c == '\'' || c == '"');
-    // The host side is all but the last part (the container's port).
     let host = entry.rsplit_once(':').map_or("", |(host, _)| host);
     if let Some(start) = host.find("${") {
         let var: String = host[start + 2..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
@@ -253,13 +203,10 @@ pub fn compose_file(dir: &Path) -> Option<PathBuf> {
     COMPOSE_FILES.iter().map(|f| dir.join(f)).find(|p| p.is_file())
 }
 
-/// The Compose project a checkout runs as: `COMPOSE_PROJECT_NAME` from its
-/// `.env`, or its folder's name the way Compose writes it.
 pub fn compose_project(dir: &Path) -> String {
     dotenv(dir, "COMPOSE_PROJECT_NAME").unwrap_or_else(|| project_name(&dir.file_name().unwrap_or_default().to_string_lossy()))
 }
 
-/// A variable of the `.env` in `dir`, as Compose reads it.
 fn dotenv(dir: &Path, name: &str) -> Option<String> {
     let env = fs::read_to_string(dir.join(".env")).ok()?;
     env.lines()
@@ -267,8 +214,6 @@ fn dotenv(dir: &Path, name: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// The files Compose reads in `dir`: `COMPOSE_FILE` from its `.env`, else
-/// the compose file and its override.
 fn compose_files(dir: &Path) -> Vec<PathBuf> {
     if let Some(list) = dotenv(dir, "COMPOSE_FILE") {
         let separator = dotenv(dir, "COMPOSE_PATH_SEPARATOR").unwrap_or_else(|| ":".into());
@@ -284,7 +229,6 @@ fn project_name(name: &str) -> String {
 
 #[cfg(test)]
 thread_local! {
-    /// A test's own settings folder, like `agents::TEST_STATE`.
     static TEST_CONFIG: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -303,13 +247,6 @@ pub fn config_path(repo: &Path) -> PathBuf {
     config_dir().join(format!("{}.toml", repo.file_name().unwrap_or_default().to_string_lossy()))
 }
 
-/// The repository's session settings, in layers, a later one winning where
-/// it says something: guessed from its compose file and lockfiles,
-/// Conductor's settings (`.conductor/settings.toml` as `checkout` has it,
-/// then `settings.local.toml` in main; an empty value says nothing there),
-/// then Pulpo's own file, written the first time all commented out.
-/// Includes add up instead (a `!pattern` takes one away). Also what can't
-/// be isolated.
 pub fn config(repo: &Path, checkout: &Path) -> Result<(Config, Vec<String>)> {
     let compose = compose_file(repo).map(|f| fs::read_to_string(f).unwrap_or_default());
     let guessed = compose.as_deref().map(guess).unwrap_or_default();
@@ -317,8 +254,6 @@ pub fn config(repo: &Path, checkout: &Path) -> Result<(Config, Vec<String>)> {
     let rails = checkout.join("bin/rails").is_file();
     // After the copy too: main's database is at main's migrations, the
     // session's code at the default branch's (`db:prepare` does what's due).
-    // Without Docker, the install the lockfiles say; with it, that's the
-    // containers' business.
     let setup = if rails && guessed.images.iter().any(|s| s == "app") {
         "docker compose exec -T app bin/rails db:prepare".to_string()
     } else if compose.is_none() {
@@ -356,8 +291,7 @@ pub fn config(repo: &Path, checkout: &Path) -> Result<(Config, Vec<String>)> {
     match fs::read_to_string(&path) {
         Ok(text) => {
             let mut mine: Layer = toml::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
-            // Written by the first worktree release, every line set: its
-            // empty values meant "nothing" then, so they still do.
+            // The first worktree release wrote every line: its empty values meant nothing.
             if text.contains("compose file; edit freely.") {
                 mine.forget_empty();
             }
@@ -371,13 +305,8 @@ pub fn config(repo: &Path, checkout: &Path) -> Result<(Config, Vec<String>)> {
     Ok((config, warnings))
 }
 
-/// Whether a settings file is yours, not the repository's: it's there by
-/// exactly this name, a real folder and file (on a case-insensitive disk
-/// `.Conductor/Settings.toml` opens as `.conductor/settings.toml`, and a
-/// link leads elsewhere, while git, asked about this name, sees nothing),
-/// and git says plainly it's untracked or ignored (it says nothing inside a
-/// submodule, say). Anything unsure is the repository's, so its scripts are
-/// asked about.
+/// Yours only by this exact name, as a real folder and file (a case-insensitive disk or a
+/// link can fool git), and untracked or ignored per git. Anything unsure is the repository's.
 fn yours(dir: &Path, file: &Path) -> bool {
     let Ok(rel) = file.strip_prefix(dir) else { return false };
     let parts: Vec<_> = rel.components().collect();
@@ -400,7 +329,6 @@ fn yours(dir: &Path, file: &Path) -> bool {
 }
 
 impl Layer {
-    /// Its empty values unsaid.
     fn forget_empty(&mut self) {
         for text in [&mut self.db, &mut self.db_service, &mut self.fresh, &mut self.setup, &mut self.teardown, &mut self.branch_prefix] {
             if text.as_deref() == Some("") {
@@ -416,8 +344,6 @@ impl Layer {
 }
 
 impl Config {
-    /// What `layer` says, over this; `committed` when it's a file of the
-    /// repository's.
     fn overlay(&mut self, layer: Layer, committed: bool) {
         let set = |mine: &mut String, theirs: Option<String>| {
             if let Some(theirs) = theirs {
@@ -445,13 +371,11 @@ impl Config {
         set(&mut self.branch_prefix, layer.branch_prefix);
     }
 
-    /// The committed scripts, by what they are: `("setup", script)`.
     fn committed_scripts(&self) -> Vec<(&'static str, String)> {
         let scripts = [(self.committed.0, "setup", &self.setup), (self.committed.1, "teardown", &self.teardown)];
         scripts.into_iter().filter(|(c, _, s)| *c && !s.is_empty()).map(|(_, what, s)| (what, s.clone())).collect()
     }
 
-    /// Without these scripts (`untrusted`'s): what's left out, for the log.
     pub fn without(&mut self, scripts: &[(&'static str, String)]) -> Vec<String> {
         let mut notes = Vec::new();
         for (what, _) in scripts {
@@ -463,7 +387,6 @@ impl Config {
     }
 }
 
-/// The install a checkout's lockfiles call for, empty without any.
 fn install(dir: &Path) -> String {
     let has = |f: &str| dir.join(f).is_file();
     let js = [
@@ -480,8 +403,6 @@ fn install(dir: &Path) -> String {
     steps.into_iter().flatten().collect::<Vec<_>>().join(" && ")
 }
 
-/// The settings file: every setting as it is now, commented out, so it
-/// says nothing until you change one (and later guesses still count).
 fn starter(c: &Config) -> String {
     let list = |items: &[String]| items.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(", ");
     format!(
@@ -523,26 +444,22 @@ fn starter(c: &Config) -> String {
     )
 }
 
-/// The committed scripts of `config` you haven't trusted for this
-/// repository (`trust`). A session starts from the remote, so whoever can
-/// push could otherwise run code here.
+/// A session starts from the remote, so whoever can push could otherwise run code here.
 pub fn untrusted(repo: &Path, config: &Config) -> Vec<(&'static str, String)> {
     let trusted = trusted();
     config.committed_scripts().into_iter().filter(|(_, script)| !trusted.iter().any(|(r, s)| r == repo && s == script)).collect()
 }
 
-/// Run these scripts of this repository from now on, unasked.
 pub fn trust(repo: &Path, scripts: &[(&'static str, String)]) -> Result<()> {
     let mut trusted = trusted();
     trusted.extend(scripts.iter().map(|(_, script)| (repo.to_path_buf(), script.clone())));
     fs::create_dir_all(trust_path().parent().expect("has a parent"))?;
-    // The hashes of before: replaced by exact text.
+    // The old hash-based file, replaced by exact text.
     let _ = fs::remove_file(crate::agents::state_dir().join("trusted-scripts"));
     Ok(fs::write(trust_path(), serde_json::to_vec_pretty(&trusted)?)?)
 }
 
-/// What you trusted: each repository with a script's exact text (no hash
-/// to forge).
+/// Exact text, not a hash: nothing to forge.
 fn trusted() -> Vec<(PathBuf, String)> {
     fs::read(trust_path()).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
 }
@@ -556,18 +473,14 @@ fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3))
 }
 
-// The registry of sessions, in the state directory.
-
 fn registry_path() -> PathBuf {
     crate::agents::state_dir().join("sessions.json")
 }
 
-/// Every session, as recorded.
 pub fn all() -> Vec<Session> {
     fs::read(registry_path()).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
 }
 
-/// Change the registry with no other Pulpo changing it at the same time.
 fn update<T>(change: impl FnOnce(&mut Vec<Session>) -> Result<T>) -> Result<T> {
     let dir = crate::agents::state_dir();
     fs::create_dir_all(&dir)?;
@@ -583,8 +496,6 @@ fn update<T>(change: impl FnOnce(&mut Vec<Session>) -> Result<T>) -> Result<T> {
     Ok(result)
 }
 
-/// The first block of `count` ports that no session holds and that are
-/// free right now.
 fn allocate(taken: &BTreeSet<u16>, count: usize, free: impl Fn(u16) -> bool) -> Option<Vec<u16>> {
     let blocks = (count as u16).div_ceil(BLOCK).max(1);
     (0..1000u16).map(|k| FIRST_PORT + k * BLOCK).find_map(|base| {
@@ -597,12 +508,6 @@ fn port_free(port: u16) -> bool {
     std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-/// Make a session and record it: a git worktree of `repo` in
-/// `<repo>.sessions/<name>`, on its own branch from the default branch as on
-/// the remote, locked so nothing prunes it behind Pulpo's back, with main's
-/// ignored files it needs. Its setup runs next, in the background
-/// (`setup_script`). Also what it noted on the way, for the setup's log.
-/// Whatever it made is undone if a step fails.
 pub fn create(repo: &Path, name: &str, config: &Config) -> Result<(Session, Vec<String>)> {
     // Lowercase: Compose project names are, and two sessions mustn't share one.
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
@@ -620,7 +525,6 @@ pub fn create(repo: &Path, name: &str, config: &Config) -> Result<(Session, Vec<
     let (from, mut notes) = base(repo);
     let start = git(repo, &["rev-parse", "--verify", &format!("{from}^{{commit}}")], None)?;
     let branch = branch_name(repo, name, &config.branch_prefix);
-    // A branch by that name is taken only as it would start: nothing of its own.
     let made_branch = match git(repo, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")], None) {
         Ok(tip) if tip == start => false,
         Ok(_) => bail!("branch {branch} exists already, with commits of its own: pick another name"),
@@ -634,8 +538,7 @@ pub fn create(repo: &Path, name: &str, config: &Config) -> Result<(Session, Vec<
     } else {
         add.extend([path.as_str(), branch.as_str()]);
     }
-    // Hooks run (post-checkout, LFS) and can fail on their own: the
-    // worktree is there or it isn't.
+    // Hooks (post-checkout, LFS) can fail on their own: the worktree is there or it isn't.
     let added = git(repo, &add, None);
     if !root.join(".git").is_file() {
         // Only ours: git won't delete a branch checked out elsewhere.
@@ -669,7 +572,6 @@ pub fn create(repo: &Path, name: &str, config: &Config) -> Result<(Session, Vec<
         notes.push("! the Makefile names compose files with -f: those commands don't see main's .git".into());
     }
     let result = update(|sessions| {
-        // Its own block of ten, then the compose file's port variables.
         let taken: BTreeSet<u16> =
             sessions.iter().flat_map(|s| s.ports.iter().map(|(_, p)| *p).chain(s.port.into_iter().flat_map(|p| p..p + BLOCK))).collect();
         let ports = allocate(&taken, BLOCK as usize + config.ports.len(), port_free).context("no free ports from 20000 up")?;
@@ -701,10 +603,8 @@ pub fn create(repo: &Path, name: &str, config: &Config) -> Result<(Session, Vec<
     }
 }
 
-/// git in `dir`, for making and removing sessions: with no terminal to
-/// ask on (Pulpo's screen is raw; ssh opens the terminal itself to ask,
-/// so it runs in a session of its own). Its output, trimmed, or what it
-/// said as the error. Stopped after `limit`, if given.
+/// No terminal to ask on: Pulpo's screen is raw, and ssh opens the terminal itself unless
+/// in a session of its own.
 fn git(dir: &Path, args: &[&str], limit: Option<Duration>) -> Result<String> {
     use std::os::unix::process::CommandExt;
     let mut command = Command::new("git");
@@ -721,9 +621,8 @@ fn git(dir: &Path, args: &[&str], limit: Option<Duration>) -> Result<String> {
         let end = Instant::now() + limit;
         while child.try_wait()?.is_none() {
             if Instant::now() > end {
-                // Its whole group (ssh, index-pack), and TERM first: git
-                // then removes its ref locks, in the repository every
-                // session shares.
+                // The whole group (ssh, index-pack), TERM first: git then removes its ref
+                // locks, in the repository every session shares.
                 let group = -(child.id() as i32);
                 unsafe { libc::kill(group, libc::SIGTERM) };
                 let grace = Instant::now() + Duration::from_secs(2);
@@ -744,9 +643,6 @@ fn git(dir: &Path, args: &[&str], limit: Option<Duration>) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Where a new session starts: the remote's default branch, fetched now
-/// (five seconds at most, else as last fetched), or main's HEAD when there's
-/// no remote. Also why, when it isn't the remote's.
 fn base(repo: &Path) -> (String, Vec<String>) {
     let head = |why: &str| ("HEAD".to_string(), vec![format!("! {why}: starting from main's last commit")]);
     if git(repo, &["remote", "get-url", "origin"], None).is_err() {
@@ -768,12 +664,6 @@ fn base(repo: &Path) -> (String, Vec<String>) {
     (format!("origin/{default}"), notes)
 }
 
-/// A new session's branch: `<user>/<name>`, as Conductor and Orca name
-/// them. The user is the settings' `branch_prefix` if set (Conductor's own
-/// setting), else the name you gave git, the repository's own before your
-/// global one (git's own order); without one, your account where the
-/// remote is: gh's login for that host (from gh's settings, no network),
-/// else git's `github.user`. As a branch can spell it.
 fn branch_name(repo: &Path, name: &str, prefix: &str) -> String {
     let prefix: String = prefix.chars().filter(|c| c.is_ascii_alphanumeric() || "-_./".contains(*c)).collect();
     let prefix = prefix.trim_matches('/');
@@ -796,8 +686,6 @@ fn branch_name(repo: &Path, name: &str, prefix: &str) -> String {
     if user.is_empty() { name.to_string() } else { format!("{user}/{name}") }
 }
 
-/// The host of a git remote: `git@github.com:o/r.git`,
-/// `https://github.com/o/r`, `ssh://git@host:22/o/r`.
 fn remote_host(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
     let rest = rest.split_once('@').map_or(rest, |(_, host)| host);
@@ -805,18 +693,14 @@ fn remote_host(url: &str) -> Option<String> {
     (!host.is_empty() && url != host).then(|| host.to_string())
 }
 
-/// Clone main's ignored files the session needs into it: those
-/// `.worktreeinclude` (Claude Code's file) and `include` name, in gitignore
-/// syntax, and its `.env` files. Only ignored ones (tracked files come
-/// with the branch), never out of the repository; a folder whole. A
-/// folder that is ignored whole is looked into only when a pattern names
-/// it. What it did, for the log.
+/// Only ignored files (tracked ones come with the branch), never out of the repository; a
+/// folder ignored whole is looked into only when a pattern names it.
 fn include(repo: &Path, root: &Path, extra: &[String]) -> Vec<String> {
     let file = [root, repo].map(|d| d.join(".worktreeinclude")).into_iter().find(|f| f.is_file());
     let mut patterns: Vec<String> = file.map(|f| fs::read_to_string(f).unwrap_or_default().lines().map(str::to_string).collect()).unwrap_or_default();
     patterns.extend(extra.iter().cloned());
     patterns.retain(|p| !p.trim().is_empty() && !p.trim_start().starts_with('#'));
-    // The `.env` files always; what's named adds to them (or, with `!`, takes away).
+    // Defaults first, so a named `!pattern` can take one away.
     patterns.splice(0..0, DEFAULT_INCLUDE.map(String::from));
     let mut builder = GitignoreBuilder::new(repo);
     for p in &patterns {
@@ -859,12 +743,8 @@ fn include(repo: &Path, root: &Path, extra: &[String]) -> Vec<String> {
     notes
 }
 
-/// Where the session's `.git` file points (main's `.git`) doesn't exist in
-/// a container that mounts the session's folder, so git fails there. When
-/// a service does (as Compose resolves them: every profile, `extends`),
-/// an override mounts main's `.git` at the same path, read-only (a
-/// container can't prune or rewrite the shared repository). What the
-/// session's `COMPOSE_FILE` is then: its compose files, the override last.
+/// A session's `.git` file points at main's `.git`, missing in a container that mounts its
+/// folder: an override mounts it there, read-only (the repository is shared).
 fn compose_override(repo: &Path, root: &Path, project: &str) -> Result<Option<String>> {
     let files = compose_files(root);
     if files.is_empty() {
@@ -909,17 +789,13 @@ fn compose_override(repo: &Path, root: &Path, project: &str) -> Result<Option<St
     Ok(Some(files.iter().chain([&path]).map(|f| f.to_string_lossy()).collect::<Vec<_>>().join(":")))
 }
 
-/// The session's compose override: in Pulpo's state, never in its folder,
-/// where it would show in its changes. Named for the repository too: two
-/// repositories of the same name can have sessions of the same name.
+/// In Pulpo's state, not the session's folder (it would show in its changes). Hashed by repo:
+/// two repositories of the same name can have sessions of the same name.
 fn override_path(repo: &Path, project: &str) -> PathBuf {
     let hash = fnv(repo.as_os_str().as_bytes());
     crate::agents::state_dir().join("compose").join(format!("{project}-{:08x}.yaml", hash as u32))
 }
 
-/// A clone of a file or folder (APFS: instant, sharing disk blocks with the
-/// original until either side changes), a link as a link; a plain copy
-/// where cloning can't be done (another disk).
 fn clone(from: &Path, to: &Path) -> Result<()> {
     let (src, dst) = (CString::new(from.as_os_str().as_bytes())?, CString::new(to.as_os_str().as_bytes())?);
     if unsafe { libc::clonefile(src.as_ptr(), dst.as_ptr(), CLONE_NOFOLLOW) } == 0 {
@@ -933,7 +809,6 @@ fn clone(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Take a session off the registry (its removal script calls this last).
 pub fn forget(root: &Path) -> Result<()> {
     update(|sessions| {
         sessions.retain(|s| s.root != root);
@@ -941,15 +816,12 @@ pub fn forget(root: &Path) -> Result<()> {
     })
 }
 
-/// What its terminals get: its own Compose project and ports, and where
-/// it and main are.
 pub fn env(session: &Session) -> Vec<(String, String)> {
     let mut env = vec![("COMPOSE_PROJECT_NAME".to_string(), session.project.clone()), ("PULPO_SESSION".to_string(), session.name.clone())];
     env.extend(session.ports.iter().map(|(var, port)| (var.clone(), port.to_string())));
     let path = |p: &Path| p.to_string_lossy().into_owned();
     if let Some(port) = session.port {
         env.push(("PULPO_PORT".into(), port.to_string()));
-        // Without Docker, the variable web servers read.
         if compose_file(&session.root).is_none() {
             env.push(("PORT".into(), port.to_string()));
         }
@@ -971,13 +843,8 @@ pub fn env(session: &Session) -> Vec<(String, String)> {
     env
 }
 
-/// What deleting the session would lose. A worktree's: uncommitted
-/// changes, and commits on a detached HEAD (its branches stay, and the
-/// repository with them). A copy's: uncommitted changes, and commits on no
-/// remote and not in main either (main's own unpushed commits were copied
-/// with it, and stay in main), and its stash. Read-only git.
+/// A copy's unpushed commits count only if main lacks them: main's own were copied with it.
 pub fn unsaved(session: &Session) -> Vec<String> {
-    // Its output if it worked; `input` on its stdin.
     let run = |dir: &Path, args: &[&str], input: String| -> Option<String> {
         let mut child = Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
         let mut stdin = child.stdin.take()?;
@@ -1021,8 +888,6 @@ pub fn unsaved(session: &Session) -> Vec<String> {
     lost
 }
 
-/// The branch a worktree session leaves behind when deleted: the one it's
-/// on, unless that's the branch Pulpo made and nothing was added to it.
 pub fn kept_branch(session: &Session) -> Option<String> {
     if session.kind != Kind::Worktree {
         return None;
@@ -1033,31 +898,23 @@ pub fn kept_branch(session: &Session) -> Option<String> {
     (!untouched).then_some(current)
 }
 
-/// A folder Pulpo made for a session: `<repo>.sessions/<name>`.
 fn in_sessions_folder(root: &Path) -> bool {
     root.parent().and_then(Path::file_name).is_some_and(|dir| dir.to_string_lossy().ends_with(".sessions"))
         && root.file_name().is_some_and(|name| !name.is_empty() && name != "..")
 }
 
-/// Whether `a` and `b` are the same folder, however spelled.
 pub fn same_path(a: &Path, b: &Path) -> bool {
     a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
-/// A worktree of `repo` other than `repo` itself, in a `.sessions` folder:
-/// all a removal will ever delete.
 fn is_session_worktree(repo: &Path, root: &Path) -> bool {
     in_sessions_folder(root) && !same_path(repo, root) && crate::git::worktrees(repo).iter().any(|w| same_path(w, root))
 }
 
-/// `'text'` for a shell.
 pub fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// The setup, run in the background with the session's environment while
-/// its first terminal is already yours: main's images, its database, the
-/// containers. It exits with an error if a step fails.
 pub fn setup_script(session: &Session, config: &Config, notes: &[String]) -> String {
     let root = quote(&session.root.to_string_lossy());
     let main = &session.main_project;
@@ -1126,9 +983,7 @@ pub fn setup_script(session: &Session, config: &Config, notes: &[String]) -> Str
     s
 }
 
-/// Conductor's variables, so its setup and archive scripts run as they
-/// would there; only in Pulpo's scripts, not its terminals (where tools
-/// would think they run in Conductor).
+/// Only in Pulpo's scripts, not its terminals, where tools would think they run in Conductor.
 fn conductor_exports(session: &Session) -> String {
     let Some(port) = session.port else { return String::new() };
     let vars = [
@@ -1140,18 +995,12 @@ fn conductor_exports(session: &Session) -> String {
     vars.iter().map(|(var, value)| format!("export {var}={}\n", quote(value))).collect()
 }
 
-/// The removal: its teardown, its containers and volumes (its database),
-/// the image tags made for it, then its folder: a worktree's with `git
-/// worktree remove`, and the branch Pulpo made for it if nothing was added
-/// to it. Nothing is deleted if Docker can't stop it, and it exits with an
-/// error. `exe` is Pulpo, to take it off the registry at the end.
 pub fn teardown_script(session: &Session, config: &Config, exe: &Path) -> String {
     // Only ever what Pulpo made: a folder in `<repo>.sessions`, and for a
     // worktree, one of the repository's.
     let safe = match session.kind {
         Kind::Copy => in_sessions_folder(&session.root),
-        // Its folder deleted by hand: nothing on disk left to delete but the
-        // worktree's record in main's `.git`.
+        // Its folder deleted by hand: only the worktree's record in main's `.git` is left.
         Kind::Worktree => is_session_worktree(&session.repo, &session.root) || (in_sessions_folder(&session.root) && !session.root.exists()),
     };
     if !safe {
@@ -1159,13 +1008,10 @@ pub fn teardown_script(session: &Session, config: &Config, exe: &Path) -> String
     }
     let root = quote(&session.root.to_string_lossy());
     let mut s = String::from("remove() (\nset -e\n");
-    // Its teardown, from its folder while it's there.
     if !config.teardown.is_empty() {
         s += &format!("if [ -d {root} ]; then\ncd {root}\n{}{}\nfi\n", conductor_exports(session), config.teardown);
     }
     s += "cd /\n";
-    // Its containers and volumes (its database), by project: with its
-    // folder or without (deleted by hand).
     if compose_file(&session.repo).is_some() || compose_file(&session.root).is_some() || !session.images.is_empty() {
         s += &format!("env -u COMPOSE_FILE docker compose -p {} down -v --remove-orphans\n", quote(&session.project));
         for image in &session.images {
@@ -1254,7 +1100,6 @@ mod tests {
     fn allocates_free_blocks() {
         let taken: BTreeSet<u16> = [20000, 20001].into();
         assert_eq!(allocate(&taken, 4, |_| true).unwrap(), [20010, 20011, 20012, 20013]);
-        // A port in use on the machine moves it to the next block.
         assert_eq!(allocate(&BTreeSet::new(), 2, |p| p != 20001).unwrap(), [20010, 20011]);
         assert_eq!(allocate(&BTreeSet::new(), 0, |_| true).unwrap(), Vec::<u16>::new());
     }
@@ -1284,7 +1129,6 @@ mod tests {
         assert!(teardown.contains("'/bin/pulpo' forget-session '/code/backbone.sessions/a'"));
         assert_eq!(env(&session)[0], ("COMPOSE_PROJECT_NAME".into(), "backbone-a".into()));
         assert_eq!(quote("it's"), r"'it'\''s'");
-        // Never anything but a session copy.
         let elsewhere = Session { root: "/code/backbone".into(), ..session };
         assert!(!teardown_script(&elsewhere, &config, Path::new("/bin/pulpo")).contains("rm -rf"));
     }
@@ -1316,7 +1160,6 @@ mod tests {
         assert!(!root.exists());
     }
 
-    /// Git in a test folder, as a test user; its output.
     fn run_git(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             .current_dir(dir)
@@ -1328,8 +1171,6 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A test's own folder, with Pulpo's state and settings in it (out of
-    /// the real ones), gone when the test ends, passed or failed.
     struct Scratch(PathBuf);
 
     impl Scratch {
@@ -1370,18 +1211,15 @@ mod tests {
         let repo = t.join("layered");
         fs::create_dir_all(repo.join(".conductor")).unwrap();
         run_git(&repo, &["init", "-q"]);
-        // No compose file: the lockfiles say the install.
         fs::write(repo.join("Gemfile.lock"), "").unwrap();
         fs::write(repo.join("package-lock.json"), "").unwrap();
         let (c, _) = config(&repo, &repo).unwrap();
         assert_eq!(c.setup, "bundle install && npm ci");
         assert_eq!(c.committed, (false, false));
-        // The file it wrote says nothing until changed.
         let written = fs::read_to_string(config_path(&repo)).unwrap();
         assert!(written.contains("# setup = \"bundle install && npm ci\""));
         assert_eq!(toml::from_str::<Layer>(&written).unwrap(), Layer::default());
 
-        // Conductor's: committed, then local (ignored by git) over it.
         fs::write(
             repo.join(".conductor/settings.toml"),
             "file_include_globs = \"/config/master.key, .secrets\"\n[scripts]\nsetup = \"bin/setup\"\narchive = \"bin/down\"\n[scripts.run.dev]\ncommand = \"bin/dev\"\n[git]\nbranch_prefix = \"team/\"\n",
@@ -1395,7 +1233,6 @@ mod tests {
         assert_eq!(c.committed, (false, true));
         assert_eq!(branch_name(&repo, "fix", &c.branch_prefix), "team/fix");
 
-        // Committed scripts run once trusted, per repository, by exact text.
         assert_eq!(untrusted(&repo, &c), [("teardown", "bin/down".to_string())]);
         trust(&repo, &untrusted(&repo, &c)).unwrap();
         assert!(untrusted(&repo, &c).is_empty());
@@ -1403,13 +1240,9 @@ mod tests {
         let asked = untrusted(&t.join("elsewhere"), &other);
         assert_eq!(other.without(&asked).len(), 1);
         assert_eq!((other.setup.as_str(), other.teardown.as_str()), ("bin/mine", ""));
-        // A local file committed by mistake is the repository's too.
         run_git(&repo, &["add", "-f", ".conductor/settings.local.toml"]);
         assert_eq!(config(&repo, &repo).unwrap().0.committed, (true, true));
 
-        // A file of the first worktree release, every line set: its empty
-        // values still say nothing.
-        // Both releases' headers, as they wrote them.
         for header in [
             "# with its own Docker project. Guessed from its compose file; edit freely.",
             "# own branch, with its own ports and Docker project. Guessed from its\n# compose file; edit freely.",
@@ -1419,7 +1252,6 @@ mod tests {
             assert_eq!((c.setup.as_str(), c.teardown.as_str()), ("bin/mine", "bin/down"));
         }
 
-        // Pulpo's own file over all of it; an empty value turns one off.
         fs::write(config_path(&repo), "teardown = \"make down\"\nsetup = \"\"\n").unwrap();
         let (c, _) = config(&repo, &repo).unwrap();
         assert_eq!((c.setup.as_str(), c.teardown.as_str(), c.committed), ("", "make down", (false, false)));
@@ -1438,7 +1270,6 @@ mod tests {
         run_git(&repo, &["commit", "-q", "-m", "a"]);
         assert!(run_git(&repo, &["ls-files", "--", ".conductor/settings.toml"]).is_empty());
         assert!(!yours(&repo, &repo.join(".conductor/settings.toml")));
-        // Plainly untracked: yours. Git unable to say (no repository): not.
         fs::remove_file(repo.join(".conductor")).unwrap();
         fs::create_dir_all(repo.join(".conductor")).unwrap();
         fs::write(repo.join(".conductor/settings.local.toml"), "").unwrap();
@@ -1446,8 +1277,7 @@ mod tests {
         fs::create_dir_all(t.join("plain/.conductor")).unwrap();
         fs::write(t.join("plain/.conductor/settings.toml"), "").unwrap();
         assert!(!yours(&t.join("plain"), &t.join("plain/.conductor/settings.toml")));
-        // Committed under another case: the same file on a case-insensitive
-        // disk, never yours.
+        // Committed under another case: the same file on a case-insensitive disk.
         fs::remove_dir_all(repo.join(".conductor")).unwrap();
         fs::create_dir_all(repo.join(".Conductor")).unwrap();
         fs::write(repo.join(".Conductor/Settings.toml"), "").unwrap();
@@ -1491,7 +1321,6 @@ mod tests {
         let t = Scratch::new("hang");
         fs::create_dir_all(&t).unwrap();
         run_git(&t, &["init", "-q"]);
-        // A remote that never answers, and says who it is.
         let hang = t.join("hang.sh");
         fs::write(&hang, format!("#!/bin/sh\necho $$ > {}\nexec sleep 30\n", t.join("pid").display())).unwrap();
         std::process::Command::new("chmod").arg("+x").arg(&hang).status().unwrap();
@@ -1512,9 +1341,7 @@ mod tests {
         assert_eq!(remote_host("ssh://git@git.example.com:22/o/r").as_deref(), Some("git.example.com"));
         assert_eq!(remote_host("/tmp/origin.git"), None);
         assert_eq!(remote_host("origin.git"), None);
-        // A prefix set for the repository wins, as a branch can spell it.
         assert_eq!(branch_name(Path::new("/nowhere"), "fix", "Valentin/"), "Valentin/fix");
-        // Same session name, same project, two repositories: two files.
         assert_ne!(override_path(Path::new("/a/app"), "app-x"), override_path(Path::new("/b/app"), "app-x"));
     }
 
@@ -1532,12 +1359,10 @@ mod tests {
         run_git(&t, &["clone", "-q", "origin.git", "app"]);
         let main = t.join("app");
         run_git(&main, &["config", "user.name", "Test User"]);
-        // Pushed after main last pulled: the session has it, main doesn't.
         fs::write(up.join("b.txt"), "pushed").unwrap();
         run_git(&up, &["add", "."]);
         run_git(&up, &["commit", "-q", "-m", "b"]);
         run_git(&up, &["push", "-q", "../origin.git", "main"]);
-        // Main's own work and ignored files.
         fs::write(main.join("a.txt"), "edited").unwrap();
         for f in [".env", ".env.example", "secret.key", "node_modules/x.js"] {
             fs::create_dir_all(main.join(f).parent().unwrap()).unwrap();
@@ -1556,17 +1381,14 @@ mod tests {
         assert!(!root.join(".env.example").exists() && !root.join("node_modules").exists());
         assert_eq!(fs::read_to_string(main.join("a.txt")).unwrap(), "edited");
         assert!(run_git(&main, &["worktree", "list", "--porcelain"]).contains("locked"));
-        // Its block of ten, the compose variable after it.
         let port = s.port.unwrap();
         assert!(s.ports[0].1 >= port + BLOCK);
         let other = create(&main, "other", &Config::default()).unwrap().0;
         let p = other.port.unwrap();
         assert!((p..p + BLOCK).all(|q| !(port..port + BLOCK).contains(&q) && q != s.ports[0].1));
         assert!(env(&s).contains(&("PULPO_PORT".into(), port.to_string())) && env(&s).contains(&("PORT".into(), port.to_string())));
-        // The same name again, while it's there.
         assert!(create(&main, "fix", &config).is_err());
 
-        // Untouched, it goes with its branch; with a commit, the branch stays.
         assert!(unsaved(&other).is_empty() && kept_branch(&other).is_none());
         fs::write(root.join("c.txt"), "work").unwrap();
         assert_eq!(unsaved(&s), ["1 uncommitted change(s)"]);
@@ -1582,8 +1404,6 @@ mod tests {
         let branches = run_git(&main, &["branch", "--list"]);
         assert!(branches.contains("test-user/fix") && !branches.contains("test-user/other"), "{branches}");
         assert!(!run_git(&main, &["worktree", "list"]).contains("sessions"));
-        // A folder deleted by hand: the removal still clears the locked
-        // worktree and the branch, so the name can be used again.
         let gone = create(&main, "gone", &Config::default()).unwrap().0;
         fs::remove_dir_all(&gone.root).unwrap();
         let script = teardown_script(&gone, &Config::default(), Path::new("/usr/bin/true"));
@@ -1592,7 +1412,6 @@ mod tests {
         assert!(!run_git(&main, &["worktree", "list"]).contains("gone"));
         assert!(!run_git(&main, &["branch", "--list"]).contains("test-user/gone"));
         assert!(create(&main, "gone", &Config::default()).is_ok());
-        // Never main itself.
         let main_as_session = Session { root: main.clone(), ..s.clone() };
         assert!(!teardown_script(&main_as_session, &Config::default(), Path::new("/usr/bin/true")).contains("worktree remove"));
     }
@@ -1616,7 +1435,6 @@ mod tests {
         let mount = &services["web"]["volumes"][0];
         assert_eq!(mount["read_only"], true);
         assert_eq!(mount["source"], t.join("app/.git").canonicalize().unwrap().to_string_lossy().as_ref());
-        // Nothing mounts the session: nothing to add.
         fs::write(t.join("app.sessions/x/compose.yaml"), "services:\n  db:\n    image: alpine\n").unwrap();
         assert_eq!(compose_override(&t.join("app"), &t.join("app.sessions/x"), "app-x").unwrap(), None);
     }
@@ -1627,9 +1445,7 @@ mod tests {
         fs::create_dir_all(t.join("solo")).unwrap();
         run_git(&t.join("solo"), &["init", "-q"]);
         run_git(&t.join("solo"), &["commit", "-q", "--allow-empty", "-m", "a"]);
-        // No remote: main's last commit, nothing to say.
         assert_eq!(base(&t.join("solo")), ("HEAD".to_string(), Vec::<String>::new()));
-        // A remote that can't be reached: as last fetched, and said.
         run_git(&t, &["clone", "-q", "solo", "app"]);
         run_git(&t.join("app"), &["remote", "set-url", "origin", &t.join("nowhere").to_string_lossy()]);
         let (from, notes) = base(&t.join("app"));
@@ -1674,7 +1490,6 @@ mod tests {
             assert!(ok, "git {args:?}");
         };
         git("main", &["init", "-q"]);
-        // Main's own unpushed commit is copied with it: not lost with the copy.
         git("main", &["commit", "-q", "--allow-empty", "-m", "main"]);
         clone(&t.join("main"), &t.join("copy")).unwrap();
         git("copy", &["commit", "-q", "--allow-empty", "-m", "mine"]);
@@ -1690,12 +1505,10 @@ mod tests {
             ..Session::default()
         };
         assert_eq!(unsaved(&session), ["1 uncommitted change(s)", "1 commit(s) not pushed"]);
-        // A commit on a detached HEAD, and a stash, are lost too.
         git("copy", &["checkout", "-q", "--detach"]);
         git("copy", &["commit", "-q", "--allow-empty", "-m", "detached"]);
         git("copy", &["stash", "-q", "-u"]);
         assert_eq!(unsaved(&session), ["2 commit(s) not pushed", "stashed changes"]);
-        // A copy's branches go with it: none is said to stay.
         assert_eq!(kept_branch(&session), None);
     }
 }

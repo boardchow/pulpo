@@ -1,6 +1,4 @@
 <script setup>
-// The docs' top bar: the pulpo, its name and version as on the landing
-// page, the search, GitHub.
 defineEmits(["menu"]);
 // Cargo.toml's version, shown by the name.
 const VERSION = "0.1.0";
