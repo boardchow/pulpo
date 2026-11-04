@@ -550,49 +550,6 @@ impl App {
         }
     }
 
-    /// Before any terminal is reopened in one, so it reopens in the new folder.
-    fn move_old_sessions(&mut self) {
-        let old: Vec<PathBuf> = self
-            .isolated
-            .iter()
-            .map(|s| s.root.clone())
-            .filter(|r| session::in_old_folder(r) && r.is_dir() && !self.removing.contains(r) && !self.setting_up.contains_key(r))
-            .filter(|r| !self.terms.iter().any(|t| t.info.cwd.starts_with(r)))
-            .collect();
-        if old.is_empty() {
-            return;
-        }
-        let Some(cwds) = crate::procs::cwds() else { return };
-        let (mut moved, mut failed) = (Vec::new(), Vec::new());
-        for root in old {
-            let real = root.canonicalize().unwrap_or_else(|_| root.clone());
-            if cwds.iter().any(|d| d.starts_with(&real)) {
-                continue;
-            }
-            match session::move_out(&root) {
-                Ok(to) => moved.push((root, to)),
-                Err(e) => failed.push(format!("{}: {e:#}", root.display())),
-            }
-        }
-        let to = |path: &Path| moved.iter().find(|(from, _)| path.starts_with(from)).map(|(from, to)| to.join(path.strip_prefix(from).unwrap_or(path)));
-        for open in &mut self.saved.open {
-            open.cwd = to(&open.cwd).unwrap_or_else(|| open.cwd.clone());
-        }
-        self.last_term = std::mem::take(&mut self.last_term).into_iter().map(|(root, tag)| (to(&root).unwrap_or(root), tag)).collect();
-        for root in self.last_session.values_mut() {
-            *root = to(root).unwrap_or_else(|| root.clone());
-        }
-        let current = to(&self.ws().root);
-        self.load_workspaces();
-        if let Some(i) = current.and_then(|c| self.workspaces.iter().position(|w| w.root == c)) {
-            self.current = usize::MAX;
-            self.set_current(i);
-        }
-        if !failed.is_empty() {
-            self.message = Some(format!("couldn't move a session to ~/.pulpo/sessions: {}", failed.join("; ")));
-        }
-    }
-
     fn layout(&self) -> Layout {
         let open = self
             .terms
@@ -649,7 +606,6 @@ impl App {
             }
             ToClient::Hello { protocol, exe, built, .. } => self.check_server_build(protocol, &exe, built),
             ToClient::Ready => {
-                self.move_old_sessions();
                 let stopped = self.reconnected.take().is_some_and(|had| had > 0) && self.terms.is_empty();
                 if self.terms.is_empty() && !self.saved.open.is_empty() {
                     self.reopen();

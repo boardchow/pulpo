@@ -909,61 +909,11 @@ pub fn kept_branch(session: &Session) -> Option<String> {
     (!untouched).then_some(current)
 }
 
-/// Made before sessions moved to `~/.pulpo/sessions`: beside the repository, in `<repo>.sessions`.
-pub fn in_old_folder(root: &Path) -> bool {
-    root.parent().and_then(Path::file_name).is_some_and(|dir| dir.to_string_lossy().ends_with(".sessions"))
-}
-
-/// Moves a session out of its old folder, with its Claude conversations. Only once nothing runs in it.
-pub fn move_out(old: &Path) -> Result<PathBuf> {
-    update(|sessions| {
-        let s = sessions.iter_mut().find(|s| s.root == old).context("no longer a session")?;
-        let to = sessions_dir().join(s.repo.file_name().unwrap_or_default()).join(&s.name);
-        if to.exists() {
-            bail!("{} already exists", to.display());
-        }
-        fs::create_dir_all(to.parent().expect("has a parent"))?;
-        let (from, path) = (old.to_string_lossy().into_owned(), to.to_string_lossy().into_owned());
-        match s.kind {
-            // Forced twice: it's locked.
-            Kind::Worktree => {
-                git(&s.repo, &["worktree", "move", "--force", "--force", &from, &path], None)?;
-            }
-            Kind::Copy => fs::rename(old, &to)?,
-        }
-        // Until the registry says where it went: a session whose folder is gone gets removed.
-        let bridge = std::os::unix::fs::symlink(&to, old).is_ok();
-        let claude = crate::agents::claude_dir().join("projects");
-        let (was, now) = (claude.join(claude_project(old)), claude.join(claude_project(&to)));
-        if was.is_dir() && !now.exists() {
-            let _ = fs::rename(&was, &now);
-        }
-        s.compose_file = s.compose_file.as_ref().map(|files| {
-            files.split(':').map(|f| Path::new(f).strip_prefix(old).map_or(f.to_string(), |rel| to.join(rel).to_string_lossy().into_owned())).collect::<Vec<_>>().join(":")
-        });
-        s.root = to.clone();
-        Ok((to, bridge))
-    })
-    .map(|(to, bridge)| {
-        if bridge {
-            let _ = fs::remove_file(old);
-        }
-        let _ = fs::remove_dir(old.parent().expect("has a parent"));
-        to
-    })
-}
-
-/// Claude keeps a folder's conversations under its path, each character not a letter or digit a dash.
-fn claude_project(dir: &Path) -> String {
-    dir.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
-}
-
 fn in_sessions_folder(root: &Path) -> bool {
     let parent = root.parent();
-    let legacy = in_old_folder(root);
     let ours = parent.and_then(Path::parent).is_some_and(|dir| same_path(dir, &sessions_dir()))
         && parent.and_then(Path::file_name).is_some_and(|repo| repo != "..");
-    (ours || legacy) && root.file_name().is_some_and(|name| !name.is_empty() && name != "..")
+    ours && root.file_name().is_some_and(|name| !name.is_empty() && name != "..")
 }
 
 pub fn same_path(a: &Path, b: &Path) -> bool {
@@ -1175,10 +1125,11 @@ mod tests {
 
     #[test]
     fn scripts_use_the_session() {
+        let root = sessions_dir().join("backbone/a");
         let session = Session {
             name: "a".into(),
             repo: "/code/backbone".into(),
-            root: "/code/backbone.sessions/a".into(),
+            root: root.clone(),
             project: "backbone-a".into(),
             main_project: "backbone".into(),
             ports: vec![("APP_PORT".into(), 20002)],
@@ -1188,8 +1139,8 @@ mod tests {
         let config = Config { db: "mysql".into(), db_service: "db".into(), ..Config::default() };
         let teardown = teardown_script(&session, &config, Path::new("/bin/pulpo"));
         assert!(teardown.contains("docker compose -p 'backbone-a' down -v --remove-orphans\n"));
-        assert!(teardown.contains("\nrm -rf '/code/backbone.sessions/a'"));
-        assert!(teardown.contains("'/bin/pulpo' forget-session '/code/backbone.sessions/a'"));
+        assert!(teardown.contains(&format!("\nrm -rf '{}'", root.display())));
+        assert!(teardown.contains(&format!("'/bin/pulpo' forget-session '{}'", root.display())));
         assert_eq!(env(&session)[0], ("COMPOSE_PROJECT_NAME".into(), "backbone-a".into()));
         assert_eq!(quote("it's"), r"'it'\''s'");
         let elsewhere = Session { root: "/code/backbone".into(), ..session };
@@ -1408,37 +1359,6 @@ mod tests {
         assert_eq!(remote_host("origin.git"), None);
         assert_eq!(branch_name(Path::new("/nowhere"), "fix", "Valentin/"), "Valentin/fix");
         assert_ne!(override_path(Path::new("/a/app"), "app-x"), override_path(Path::new("/b/app"), "app-x"));
-    }
-
-    #[test]
-    fn moves_a_session_out_of_its_old_folder() {
-        let t = Scratch::new("move");
-        let repo = t.join("app");
-        fs::create_dir_all(&repo).unwrap();
-        run_git(&repo, &["init", "-q"]);
-        run_git(&repo, &["commit", "-q", "--allow-empty", "-m", "a"]);
-        let old = t.join("app.sessions/fix");
-        run_git(&repo, &["worktree", "add", "-q", "--lock", "-b", "u/fix", &old.to_string_lossy()]);
-        let compose = format!("{}/compose.yaml:/state/o.yaml", old.display());
-        let session = Session { name: "fix".into(), repo: repo.clone(), root: old.clone(), kind: Kind::Worktree, compose_file: Some(compose), ..Session::default() };
-        update(|sessions| {
-            sessions.push(session);
-            Ok(())
-        })
-        .unwrap();
-
-        let to = move_out(&old).unwrap();
-        assert_eq!(to, t.join("sessions/app/fix"));
-        assert!(!t.join("app.sessions").exists());
-        assert_eq!(run_git(&to, &["branch", "--show-current"]), "u/fix");
-        assert!(crate::git::worktrees(&repo).iter().any(|w| same_path(w, &to)));
-        assert!(run_git(&repo, &["worktree", "list", "--porcelain"]).contains("locked"));
-        let moved = all().pop().unwrap();
-        assert_eq!(moved.root, to);
-        assert_eq!(moved.compose_file.as_deref(), Some(format!("{}/compose.yaml:/state/o.yaml", to.display()).as_str()));
-        assert!(teardown_script(&moved, &Config::default(), Path::new("/bin/pulpo")).contains("worktree remove"));
-        assert!(move_out(&old).is_err());
-        assert_eq!(claude_project(Path::new("/Users/a.b/.pulpo/sessions/app/fix")), "-Users-a-b--pulpo-sessions-app-fix");
     }
 
     #[test]
