@@ -9,7 +9,7 @@ order: 4
 
 Running `pulpo` in a repository adds it. To add another, :kp[p] then :kp[n].
 
-Selecting a project opens the project itself, the repository folder you added: its terminals, files and changes. Use it for quick work on `main`, pulling, or running the app.
+Selecting a project opens the project itself, the repository folder you added: its terminals, files and changes. Use it for quick work on `main`, pulling, or running the app. The branch you're on shows in the bottom right corner.
 
 :kp[x] in Projects removes a project from the list. Its files stay.
 

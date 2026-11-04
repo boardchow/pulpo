@@ -82,7 +82,7 @@ everything right of the sidebar, the terminal included, and esc takes it
 back. Only a click moves the focus; hovering or scrolling a panel doesn't.
 The sidebar, the right side and the trees (one width for both) keep the
 width they were dragged to while Pulpo runs. The bottom line is where you type a name, answer a
-question (y), or read a message.
+question (y), or read a message; its right end shows the current checkout's branch.
 
 Keys go to what has the focus. The prefix (⌘p or ⌃b, then one key) is
 taken from anywhere first: p w t f c h move the focus, n and x make and
