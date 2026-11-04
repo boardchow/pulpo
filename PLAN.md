@@ -7,9 +7,10 @@ How Pulpo is built and what comes next. For using it, see the README.
 Pulpo is a VS Code replacement in one Ghostty window: workspaces (your
 repositories), terminals (shells and Claude Code), changes, files, search.
 Terminals run in a background server, so quitting or rebuilding Pulpo
-leaves them running (see "Terminals that keep running"). It doesn't create
-or manage git worktrees (a repository that already has some shows them as
-sessions, read only); task sessions are copies made without git.
+leaves them running (see "Terminals that keep running"). Git is the
+agents' job; the one place Pulpo does git is making and removing task
+sessions (git worktrees, see "Task sessions"). Worktrees made otherwise
+show as sessions, read only.
 
 ## Architecture
 
@@ -30,7 +31,7 @@ pulpo (one binary)
 ├── proto.rs    the frames and messages between the two
 ├── pty.rs      pseudo-terminals with libc: a master fd and a pid, nothing to rebuild
 ├── procs.rs    process trees (`ps`), to hang up what a terminal started
-├── session.rs  task sessions: clone, registry, ports, compose guess, setup and removal scripts
+├── session.rs  task sessions: worktree, includes, registry, ports, compose guess and override, setup and removal scripts
 ├── layout.rs   where you were, and what was open, across restarts and reboots
 ├── viewer.rs   read-only file view (syntect), and the inline diffs Changes shows
 ├── editor.rs   editing a file, highlighted by the viewer's own code (identical by construction)
@@ -148,6 +149,8 @@ view lighter).
 - [x] Themes: following Ghostty's by default, any Ghostty theme, Omarchy's first, tried live in a picker. A Ghostty theme's background, foreground and ANSI colors give the rest (greys faded from the foreground, blue as the accent, syntax from the ANSI colors as Linear Dark's are).
 - [x] Layouts (`L`: main pane left, side by side, stacked, grid), the board (every terminal of the repository, tiled), swarms (N task sessions, Claude started on a task in each once set up), scrolling back and finding in a terminal, readline keys in every prompt (`input.rs`), right-click menus, dragging pane borders.
 - [x] Start again from Herdr's layout, keeping what's under it: workspaces and sessions | terminal tabs | files over changes, a prefix from anywhere, the mouse for all of it. The palette, splits, layouts, the board, swarms, the graph, the review scroll, scrollback search and the theme picker are gone. A new session is yours at once, set up in the background.
+- [x] Task sessions as git worktrees, the industry's pattern (Conductor, Claude Code, Cursor): a branch from the remote's default branch, main's ignored files it needs, a block of ten ports, git in containers (see "Task sessions").
+- [ ] Task session recipes: Conductor's settings read, an install guessed from lockfiles, a trust prompt for committed scripts (see "Task sessions: next").
 - [ ] Codex support.
 
 ## Terminals that keep running
@@ -207,34 +210,137 @@ for drawing and for encoding keys and the mouse.
 
 ## Task sessions
 
-A task session is a copy of a main checkout made with `clonefile` (APFS,
-copy-on-write, the whole folder in one call) into `<repo>.sessions/<name>`,
-recorded in `~/.local/state/pulpo/sessions.json` (written under a `flock`).
-It is chosen over a git worktree because a worktree starts from the last
-commit: `.env`, hand-made settings and dependencies would have to be set up
-again. Its `.git/worktrees` is removed, since those are main's.
+A session is three things, each with one job:
 
-Isolation is the environment of its terminals: `COMPOSE_PROJECT_NAME`
-(`<main project>-<name>`) and each port variable of the compose file, in
-blocks of ten from 20000 (free ports, none held by another session).
-`Spawn` carries that environment to the server. The compose file is read
-with a line scan (`session::guess`): port variables, services built
+```
+Session = checkout (git worktree, own branch)     agents can't touch each other's files or branch
+        + runtime  (own ports, Compose project)   processes, containers, databases can't collide
+        + recipe   (includes, setup, teardown)    no manual step, the same every time
+```
+
+This is the pattern Conductor, Orca, Claude Code (`--worktree`) and Cursor
+share: a worktree on its own branch, the ignored files it needs copied, a
+setup script, per-session ports. None of them isolates Docker; Pulpo does.
+Sessions were APFS copies of the whole checkout before (`Kind::Copy` in the
+registry): no setup again, but commits stayed trapped in the copy until
+pushed, and nobody else works that way. Those are still removed the way
+they were made.
+
+**Checkout.** `session::create`, in a background thread, every git call
+with `GIT_TERMINAL_PROMPT=0` and in its own Unix session (`setsid`), so
+neither git nor ssh can ask on Pulpo's raw-mode terminal:
+
+1. The default branch: `origin/HEAD`, else `main` or `master` on origin.
+   `git fetch origin <it>`, killed after 5 s (then as last fetched). No
+   remote: main's HEAD. No commit at all: refused.
+2. The branch `<user>/<name>` (the way Conductor and Orca name them),
+   `user` being git's `user.name`, so the repository's own name before the
+   global one (a name chosen for a repository wins); without any, gh's login
+   for the remote's host (`gh config get -h <host> user`, no network), else
+   git's `github.user`; slugged. An existing one is reused only if it
+   sits at the base; with commits of its own, refused.
+3. `git worktree add --lock` into `<repo>.sessions/<name>` (beside the
+   repository: same disk, so includes can be cloned). The lock keeps
+   `git worktree prune` and other tools' cleanups off it. Hooks
+   (post-checkout, LFS) run; what they say goes to the setup log.
+4. Includes, the Compose override, then the registry entry
+   (`~/.local/state/pulpo/sessions.json`, under a `flock`) with its ports.
+   A failure undoes what this call made: the worktree, and the branch if it
+   made it (git won't delete a branch checked out elsewhere).
+
+Changes compares with the merge-base with the default branch (`base` is
+None for worktrees), so a rebase doesn't show main's commits as the
+session's. The file watcher sends `.git/worktrees/<id>/{HEAD,index}` to
+that worktree only; refs concern everyone. The sidebar lists a session's
+worktree once, as the session. A registry entry whose folder is gone
+(deleted by hand) is forgotten, freeing its ports.
+
+**Includes.** A worktree has only tracked files. Main's ignored files that
+`.worktreeinclude` (Claude Code's file, gitignore syntax) and the
+repository's `include` setting name are cloned in (`clonefile`, links as
+links, `cp -RP` where it can't clone), on top of `.env` and `.env.*` but
+`.example`, `.sample`, `.template`, always (a `!pattern` takes one away).
+A Rails app's first settings add `config/master.key` and
+`config/credentials/*.key`, and `bin/rails db:prepare` as `setup`: the
+copied database is at main's migrations, the code at the default
+branch's. Candidates come from `git ls-files
+--others --ignored --directory`, so `node_modules` isn't walked; a folder
+ignored whole is looked into only when a pattern starts with it. Only
+ignored files, never out of the repository. Dependencies aren't copied by
+default: a `.venv` copied elsewhere still runs main's interpreter.
+
+**Runtime.** Each session holds a block of ten ports from 20000:
+`PULPO_PORT` to `PULPO_PORT+9` for the user (`PORT` too without a compose
+file), the compose file's port variables after the block. All of it counts
+as taken. The terminals' environment also has `COMPOSE_PROJECT_NAME`
+(`<main project>-<name>`), `PULPO_SESSION`, `PULPO_ROOT_PATH`,
+`PULPO_WORKSPACE_PATH`; `Spawn` carries it to the server. The compose file
+is read with a line scan (`session::guess`): port variables, services built
 locally (their images are tagged for the session instead of rebuilt), the
 database service and engine, and what can't be isolated. The result is
 written once to `~/.config/pulpo/repos/<repo>.toml` for you to adjust.
 
-The copy starts from main's last commit (`git reset --hard`, `git clean`,
-done before it shows), and that commit is kept as its `base`. Its first
-terminal is a plain shell, yours at once. Setting up and removing are
-shell scripts run in the background in their own process group, so they
-survive Pulpo quitting (Q stops a setup still running); their output goes to
-a log in `~/.local/state/pulpo/logs` and the session shows "setting up"
-meanwhile, then "setup failed" if it did, until the session goes. A copy
-left half made by quitting mid-copy is no session's, and making one by that
-name again removes it first. Setup copies main's database
-by streaming a dump between the two containers (`mysqldump` or
-`pg_dumpall`), consistent without stopping main. Removal runs from main:
-the teardown command, `docker compose down -v`, untagging, then deleting
-the copy (only ever a folder inside a `.sessions` directory). Then
-`pulpo forget-session` takes it off the registry. If Docker fails, nothing
-more is deleted and Pulpo points at the log.
+**Git in containers.** A worktree's `.git` is a file pointing at
+`<repo>/.git/worktrees/<id>`, absent in a container that mounts the
+session's folder. `docker compose --profile '*' config --format json`
+(Compose's own resolution: `extends`, every profile, `COMPOSE_FILE` from
+`.env`) finds the services bind-mounting the folder; an override in
+`~/.local/state/pulpo/compose/<project>-<hash of the repository's path>.yaml`
+mounts main's `.git` at the same path, read-only, in each, and the
+session's `COMPOSE_FILE` is its files then the override, read again each
+time a terminal starts (a compose file added since counts; a missing
+override is left out rather than failing Compose). Read-only plus the lock: a container can read
+history (`merge-base`, `diff`, `log`) but can't prune or rewrite the shared
+repository. Checked in a container: `log`, `status`, `merge-base` work,
+`worktree prune` removes nothing, a commit is refused. Docker's short
+`-v src:dst:ro` form mangled that target on OrbStack; Compose's long form
+(what the override uses) is fine. Makefiles passing `-f` skip the
+override; the setup log says so.
+
+**Setup and removal** are shell scripts run in the background in their own
+process group, so they survive Pulpo quitting (Q stops a setup still
+running); their output goes to a log in `~/.local/state/pulpo/logs`, which
+starts with what creation noted, and the session shows "setting up"
+meanwhile, then "setup failed" if it did, until the session goes. Setup:
+submodules (a failure is said and the setup goes on), main's images tagged, main's database copied by streaming a
+dump between the two containers (`mysqldump` or `pg_dumpall`, consistent
+without stopping main), `docker compose up -d`, the `setup` command.
+Removal, from main: the teardown command, `docker compose -p <project>
+down -v` (by project, so it works without the folder), untagging, `git
+worktree remove --force --force` (it's locked), the branch
+Pulpo made only if still at its start commit (else kept: squash merges
+never look merged to `git branch -d`), the override, then `pulpo
+forget-session`. Only a registered worktree of the repository in a
+`.sessions` folder is ever removed. If Docker fails, nothing more is
+deleted and Pulpo points at the log. Before, Pulpo says what would be
+lost (uncommitted changes, commits on a detached HEAD) and which branch
+stays. A session whose folder was deleted by hand is removed the same way,
+once, as soon as the watcher sees it gone (its locked worktree would
+otherwise block the name, and its containers stay).
+
+**Known limits**, shared by every worktree tool: one `git stash` per
+repository; concurrent fetches can fail with "cannot lock ref" (retry); a
+branch checked out elsewhere can't be a session's; an agent's `git branch
+-D` or `gc` affects every session; `COMPOSE_PROJECT_NAME` and
+`COMPOSE_FILE` follow a `cd` to another project in a session's terminal;
+cookies aren't port-scoped, so localhost logins clash between sessions.
+
+### Task sessions: next
+
+- **Recipes.** Settings read in order, later overriding earlier: the guess,
+  `.conductor/settings.toml`, `.conductor/settings.local.toml` (its
+  `file_include_globs`, `[scripts] setup` and `archive`), then Pulpo's local
+  file. That file written only when opened, not on first use (today it is,
+  which would hide later Conductor changes). Conductor's variables
+  (`CONDUCTOR_PORT`, `_ROOT_PATH`, `_WORKSPACE_NAME`, `_WORKSPACE_PATH`) only
+  in the environment of a Conductor script Pulpo runs.
+- **An install guessed from lockfiles**: `npm ci`, `pnpm i
+  --frozen-lockfile`, `yarn --frozen-lockfile`, `bun i`, `bundle install`,
+  `uv sync`.
+- **Trust.** A setup or teardown script from a committed file is shown and
+  asked once per (repository, script hash) before it runs: a session is
+  based on a fresh `origin`, so anyone who can push could otherwise run code
+  here.
+- **Setting up, for agents.** A marker an agent can check while setup still
+  runs (the terminal's environment is fixed when it starts).
+- **Later.** A session from an existing branch or pull request.
