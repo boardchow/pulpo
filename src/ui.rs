@@ -146,8 +146,8 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(List::new(items).highlight_style(highlight(focused)), rows, &mut app.workspaces_state);
     app.areas.workspaces = rows;
 
-    // The repository's sessions: the checkout itself, its worktrees, its
-    // task sessions. The current one is on screen.
+    // The repository's sessions: the checkout itself, its worktrees, the
+    // sessions Pulpo made. The current one is on screen.
     let items: Vec<ListItem> = app
         .sessions()
         .into_iter()
@@ -165,7 +165,7 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
             if !w.status.changes.is_empty() {
                 spans.push(Span::from(format!(" ±{}", w.status.changes.len())).fg(theme::blue()));
             }
-            // A task session: where its app answers.
+            // A session Pulpo made: where its app answers.
             if let Some(session) = app.isolated.iter().find(|s| s.root == w.root) {
                 let web: Vec<u16> =
                     session.ports.iter().filter(|(var, _)| ["APP", "WEB", "HTTP"].iter().any(|k| var.contains(k))).map(|(_, p)| *p).collect();

@@ -48,7 +48,7 @@ pub enum Focus {
 
 /// A name typed on the bottom line.
 pub enum Ask {
-    /// A new task session of the repository.
+    /// A new session of the repository.
     Session,
     /// A new file or folder (ending with /) in this folder.
     File(PathBuf),
@@ -134,7 +134,7 @@ pub struct Selecting {
 
 pub struct App {
     pub workspaces: Vec<Workspace>,
-    /// The task sessions among them: copies of a main checkout with their
+    /// The sessions Pulpo made among them: copies of a main checkout with their
     /// own Docker project and ports.
     pub isolated: Vec<session::Session>,
     pub current: usize,
@@ -586,7 +586,7 @@ impl App {
         let token = self.next_token;
         self.next_token += 1;
         let (rows, cols) = self.term_size;
-        // A task session's terminals get its Compose project and ports.
+        // A session Pulpo made: its terminals get its Compose project and ports.
         let env = self.isolated.iter().find(|s| s.root == cwd).map(session::env).unwrap_or_default();
         self.link.send(&ToServer::Spawn { token, program: program.into(), args: args.to_vec(), cwd, rows, cols, env });
         self.spawning.insert(token, focus);
@@ -2128,7 +2128,7 @@ impl App {
         self.reading = true;
     }
 
-    // Task sessions
+    // Making and deleting sessions
 
     /// Make a new session of the repository, in the background (`on_copied`
     /// goes on).

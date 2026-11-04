@@ -1,6 +1,6 @@
 //! Changes: what the session changed, as a tree of files, and the selected
 //! one with its changes in place. Against where the session started: the
-//! commit a task session was copied from, else where its branch left the
+//! commit a session Pulpo made was copied from, else where its branch left the
 //! main one (commits included, since agents commit as they go). Only the
 //! selected file's diff is read, and reloads read in the background
 //! (`read`, then `apply`), so following an agent stays cheap.
@@ -25,7 +25,7 @@ pub struct File {
 
 pub struct Changes {
     pub root: PathBuf,
-    /// What it's compared with: the commit a task session was copied at,
+    /// What it's compared with: the commit a session Pulpo made was copied at,
     /// fixed; else found again by every read (a commit or a push moves it).
     copied: Option<String>,
     base: Option<String>,
