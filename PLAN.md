@@ -237,8 +237,10 @@ neither git nor ssh can ask on Pulpo's raw-mode terminal:
    `user` being git's `user.name`, so the repository's own name before the
    global one (a name chosen for a repository wins); without any, gh's login
    for the remote's host (`gh config get -h <host> user`, no network), else
-   git's `github.user`; slugged. An existing one is reused only if it
-   sits at the base; with commits of its own, refused.
+   git's `github.user`; slugged. Or the branch typed after the name (Tab
+   in the prompt), as is if `git check-ref-format --branch` takes it. An
+   existing one is reused only if it sits at the base; with commits of its
+   own, refused.
 3. `git worktree add --lock` into `<repo>.sessions/<name>` (beside the
    repository: same disk, so includes can be cloned). The lock keeps
    `git worktree prune` and other tools' cleanups off it. Hooks

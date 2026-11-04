@@ -41,7 +41,10 @@ pub enum Focus {
 }
 
 pub enum Ask {
-    Session,
+    /// The text is the name; this, the branch (empty: from the name).
+    Session(String),
+    /// The text is the branch; this, the name.
+    Branch(String),
     File(PathBuf),
     Rename(PathBuf),
 }
@@ -1019,7 +1022,7 @@ impl App {
     fn new_here(&mut self) {
         match self.focus {
             Focus::Workspaces => self.open_repo_picker(),
-            Focus::Sessions => self.prompt = Some(Prompt { ask: Ask::Session, text: String::new() }),
+            Focus::Sessions => self.prompt = Some(Prompt { ask: Ask::Session(String::new()), text: String::new() }),
             Focus::Terminal => self.new_terminal(true),
             Focus::Files => {
                 let root = self.ws().root.clone();
@@ -1078,18 +1081,28 @@ impl App {
             KeyCode::Esc => self.prompt = None,
             KeyCode::Enter => {
                 if let Some(Prompt { ask, text }) = self.prompt.take() {
+                    let (text, ask) = match ask {
+                        Ask::Branch(name) => (name, Ask::Session(text)),
+                        ask => (text, ask),
+                    };
                     let text = text.trim().to_string();
                     if !text.is_empty() {
                         match ask {
-                            Ask::Session => self.create_session(&text),
+                            Ask::Session(branch) => self.create_session(&text, Some(branch.trim()).filter(|b| !b.is_empty())),
                             Ask::File(dir) => self.create(&dir, &text),
                             Ask::Rename(path) => self.rename(&path, &text),
+                            Ask::Branch(_) => {}
                         }
                     }
                 }
             }
+            KeyCode::Tab | KeyCode::BackTab => {
+                let (Ask::Session(other) | Ask::Branch(other)) = &mut prompt.ask else { return };
+                let text = std::mem::replace(&mut prompt.text, std::mem::take(other));
+                prompt.ask = if matches!(prompt.ask, Ask::Session(_)) { Ask::Branch(text) } else { Ask::Session(text) };
+            }
             // Session names are lowercase, like Compose projects.
-            KeyCode::Char(c) if !ctrl && matches!(prompt.ask, Ask::Session) => prompt.text.push(c.to_ascii_lowercase()),
+            KeyCode::Char(c) if !ctrl && matches!(prompt.ask, Ask::Session(_)) => prompt.text.push(c.to_ascii_lowercase()),
             _ => {
                 input::edit(&mut prompt.text, key);
             }
@@ -1917,8 +1930,8 @@ impl App {
         self.reading = true;
     }
 
-    fn create_session(&mut self, name: &str) {
-        let (repo, name, tx) = (self.ws().repo.clone(), name.to_string(), self.tx.clone());
+    fn create_session(&mut self, name: &str, branch: Option<&str>) {
+        let (repo, name, branch, tx) = (self.ws().repo.clone(), name.to_string(), branch.map(str::to_string), self.tx.clone());
         let place = self.place(&repo).unwrap_or_default();
         // Asked twice: the first copy is still being made.
         if !self.copying.insert((repo.clone(), name.clone())) {
@@ -1927,7 +1940,7 @@ impl App {
         }
         self.message = Some(format!("making session {name} of {place}…"));
         std::thread::spawn(move || {
-            let made = session::config(&repo, &repo).and_then(|(config, _)| session::create(&repo, &name, &config));
+            let made = session::config(&repo, &repo).and_then(|(config, _)| session::create(&repo, &name, branch.as_deref(), &config));
             let made = made.map(|(s, notes)| (s.root, notes)).map_err(|e| format!("could not make the session: {e:#}"));
             let _ = tx.send(Msg::Copied((repo, name), made));
         });
