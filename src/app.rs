@@ -16,7 +16,7 @@ use crate::git;
 use crate::input;
 use crate::keymap::{Key, Keymap};
 use crate::layout::{self, Layout};
-use crate::proto::{PROTOCOL, ToClient, ToServer};
+use crate::proto::{Info, PROTOCOL, ToClient, ToServer};
 use crate::review::Changes;
 use crate::search::{Mode, Search};
 use crate::session;
@@ -415,7 +415,8 @@ impl App {
     pub fn on_fs(&mut self, paths: &[PathBuf]) {
         for path in paths {
             for w in &self.workspaces {
-                if w.is_affected(path) {
+                // A build writes thousands of files: once a session is marked, skip matching its .gitignore.
+                if !self.fs_dirty.contains(&w.root) && w.is_affected(path) {
                     self.fs_dirty.insert(w.root.clone());
                 }
             }
@@ -636,6 +637,16 @@ impl App {
             ToClient::Exit { id } => self.remove_term(id as usize),
             ToClient::Error { message } => self.message = Some(message),
         }
+    }
+
+    pub fn shows(&self, id: u32) -> bool {
+        self.active == Some(id as usize)
+    }
+
+    /// The title isn't shown, and programs change it all the time.
+    pub fn changes_view(&self, info: &Info) -> bool {
+        let Some(term) = self.terms.iter().find(|t| t.id == info.id as usize) else { return true };
+        Info { title: term.info.title.clone(), ..info.clone() } != term.info
     }
 
     pub fn on_output(&mut self, id: u32, bytes: &[u8]) {
