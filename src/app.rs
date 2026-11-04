@@ -18,7 +18,7 @@ use crate::keymap::{Key, Keymap};
 use crate::layout::{self, Layout};
 use crate::proto::{Info, PROTOCOL, ToClient, ToServer};
 use crate::review::Changes;
-use crate::search::{Mode, Search};
+use crate::search::{Hit, Kind, Mode, Search};
 use crate::worktree;
 use crate::status::Status;
 use crate::term::Term;
@@ -399,6 +399,7 @@ impl App {
                 out.push(i);
             }
         }
+        out.sort_by_key(|&i| self.workspaces[i].name.to_lowercase());
         out
     }
 
@@ -1248,11 +1249,19 @@ impl App {
             Focus::Projects => (&mut self.projects_state, projects),
             _ => (&mut self.workspaces_state, workspaces),
         };
-        let next = match state.selected() {
-            Some(from) => (from as i64 + delta as i64).clamp(0, len.saturating_sub(1) as i64) as usize,
-            None => 0,
-        };
-        state.select(Some(next));
+        let to = state.selected().map_or(0, |from| from as i64 + delta as i64);
+        // One past the end of a list: on into the other, as if they were one.
+        match self.focus {
+            Focus::Projects if delta == 1 && to >= projects as i64 && workspaces > 0 => {
+                self.set_focus(Focus::Workspaces);
+                self.workspaces_state.select(Some(0));
+            }
+            Focus::Workspaces if delta == -1 && to < 0 && projects > 0 => {
+                self.set_focus(Focus::Projects);
+                self.projects_state.select(Some(projects - 1));
+            }
+            _ => state.select(Some(to.clamp(0, len.saturating_sub(1) as i64) as usize)),
+        }
         self.on_select();
     }
 
@@ -1582,12 +1591,22 @@ impl App {
     }
 
     fn start_search(&mut self) {
-        self.search = Some(Search::new(Mode::Files, self.ws().root.clone(), &self.tx));
+        let place = |kind, i: usize, text: String| {
+            let w = &self.workspaces[i];
+            Hit { kind, rel: w.name.clone(), line: None, text, path: w.root.clone() }
+        };
+        let projects = self.projects().into_iter().map(|i| place(Kind::Project, i, String::new()));
+        let workspaces = self.workspace_order().into_iter().map(|i| {
+            let repo = self.workspaces[i].repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            place(Kind::Workspace, i, repo)
+        });
+        let places = projects.chain(workspaces).collect();
+        self.search = Some(Search::new(Mode::Everything, self.ws().root.clone(), places, &self.tx));
     }
 
     pub fn open_repo_picker(&mut self) {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-        self.repos = Some(Search::new(Mode::Repos, home, &self.tx));
+        self.repos = Some(Search::new(Mode::Repos, home, Vec::new(), &self.tx));
     }
 
     pub fn on_search(&mut self, generation: usize, hits: Vec<crate::search::Hit>) {
@@ -1605,7 +1624,6 @@ impl App {
     fn search_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let Some(search) = &mut self.search else { return };
-        let in_tree = search.mode == Mode::Files && search.query.is_empty();
         match key.code {
             KeyCode::Esc => self.search = None,
             KeyCode::Enter => self.open_hit(),
@@ -1615,12 +1633,6 @@ impl App {
             KeyCode::Char('j' | 'n') if ctrl => self.search_step(1),
             KeyCode::PageUp => self.search_step(-10),
             KeyCode::PageDown => self.search_step(10),
-            KeyCode::Right if in_tree => self.fold_tree(true),
-            KeyCode::Left if in_tree => self.fold_tree(false),
-            KeyCode::Tab | KeyCode::BackTab => {
-                search.mode = if search.mode == Mode::Files { Mode::Text } else { Mode::Files };
-                search.update(&self.tx);
-            }
             _ => {
                 if input::edit(&mut search.query, key) {
                     search.update(&self.tx);
@@ -1630,40 +1642,23 @@ impl App {
     }
 
     fn search_step(&mut self, delta: isize) {
-        match &mut self.search {
-            Some(search) if search.mode == Mode::Files && search.query.is_empty() => {
-                let w = &mut self.workspaces[self.current];
-                let max = w.tree.rows.len().saturating_sub(1) as isize;
-                let next = (w.files_state.selected().unwrap_or(0) as isize).saturating_add(delta).clamp(0, max);
-                w.files_state.select(Some(next as usize));
-                self.preview();
-            }
-            Some(search) => search.step(delta),
-            None => {}
+        if let Some(search) = &mut self.search {
+            search.step(delta);
         }
     }
 
     fn open_hit(&mut self) {
-        let Some(search) = &self.search else { return };
-        let picked = match search.mode {
-            Mode::Files if search.query.is_empty() => self.ws().selected_row().map(|r| (r.path.clone(), None, r.is_dir)),
-            Mode::Files => search.selected_row().map(|r| (r.path.clone(), None, r.is_dir)),
-            _ => search.selected().map(|h| (search.root.join(&h.rel), h.line, false)),
-        };
-        let Some((path, line, is_dir)) = picked else { return };
-        if is_dir {
-            if search.query.is_empty() {
-                let open = !self.ws().selected_row().is_some_and(|r| r.expanded);
-                return self.fold_tree(open);
-            }
-            self.ws_mut().tree.set_expanded(&path, true);
-            self.ws_mut().reveal(&path);
-            if let Some(search) = &mut self.search {
-                search.query.clear();
-                search.update(&self.tx);
+        let Some(hit) = self.search.as_ref().and_then(Search::selected).cloned() else { return };
+        if matches!(hit.kind, Kind::Project | Kind::Workspace) {
+            self.search = None;
+            if let Some(i) = self.workspaces.iter().position(|w| w.root == hit.path)
+                && self.set_current(i)
+            {
+                self.set_focus(Focus::Terminal);
             }
             return;
         }
+        let (path, line) = (hit.path, hit.line);
         if self.editing() {
             self.message = Some(UNSAVED.into());
             return;
@@ -2010,10 +2005,6 @@ impl App {
             MouseEventKind::ScrollDown => 1,
             _ if down && list.contains(pos) => {
                 let offset_and_at = match (&self.search, &self.repos) {
-                    (Some(s), _) if s.mode == Mode::Files && s.query.is_empty() => {
-                        let state = &self.ws().files_state;
-                        (state.offset(), state.selected().unwrap_or(0))
-                    }
                     (Some(s), _) | (None, Some(s)) => (s.state.offset(), s.state.selected().unwrap_or(0)),
                     (None, None) => return,
                 };
