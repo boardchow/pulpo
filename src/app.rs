@@ -73,7 +73,6 @@ pub enum Confirm {
 /// Where each part was drawn, for the mouse.
 #[derive(Default, Clone)]
 pub struct Areas {
-    pub counts: Rect,
     /// The rows of the two lists.
     pub workspaces: Rect,
     pub sessions: Rect,
@@ -1842,9 +1841,7 @@ impl App {
         let row = |area: Rect, offset: usize| (pos.y - area.y) as usize + offset;
         // Only a click moves the focus: hovering or scrolling a panel leaves it.
 
-        if down && areas.counts.contains(pos) {
-            self.next_waiting();
-        } else if down && areas.workspaces.contains(pos) {
+        if down && areas.workspaces.contains(pos) {
             self.set_focus(Focus::Workspaces);
             let i = row(areas.workspaces, self.workspaces_state.offset());
             if i < self.repos().len() {
