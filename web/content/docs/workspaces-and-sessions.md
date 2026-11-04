@@ -23,12 +23,14 @@ Each row shows the session's state, name and uncommitted changes (`±3`).
 
 :kp[s], then :kp[n], then a name.
 
-1. Pulpo fetches the remote's default branch and makes a worktree from it in `<repo>.sessions/<name>`, on the branch `<you>/<name>`.
+1. Pulpo fetches the remote's default branch and makes a worktree from it in `~/.pulpo/sessions/<repo>/<name>`, on the branch `<you>/<name>`.
 2. It copies `main`'s `.env` files, and the files listed in `.worktreeinclude`.
 3. A shell opens in it right away.
 4. Setup runs in the background: submodules, [Docker](/docs/docker), then the setup script. The session shows *setting up* meanwhile, or *setup failed* with its log.
 
 `<you>` is the `branch_prefix` setting, else git's `user.name`, else your GitHub login.
+
+To pick the branch yourself, say for a Linear ticket, press `Tab` after the name and type or paste it. The name stays the folder's.
 
 Commit and push from a session as usual; `main` sees the commits at once.
 
