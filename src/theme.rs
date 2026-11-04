@@ -21,12 +21,12 @@ pub struct Palette {
     text_selection: u32,
 }
 
-const LINEAR_ANSI: [u32; 16] = [
+const PULPO_ANSI: [u32; 16] = [
     0x232429, 0xEB5757, 0x4CB782, 0xFCC581, 0x8FA4FF, 0xF1ADE0, 0x58EBDD, 0xD4D4D4, 0x595A5C, 0xF2777A, 0x6FD3A0, 0xFDD6A3, 0x94A8FF,
     0xF5C4EA, 0x55CDFF, 0xFFFFFF,
 ];
 
-const LINEAR_DARK: Palette = Palette {
+const PULPO_DARK: Palette = Palette {
     bg: 0x090909,
     editor_bg: 0x101012,
     border: 0x232429,
@@ -37,14 +37,14 @@ const LINEAR_DARK: Palette = Palette {
     dim: 0x595A5C,
     selection: 0x1E2025,
     hover: 0x16171A,
-    ansi: LINEAR_ANSI,
+    ansi: PULPO_ANSI,
     text_selection: mix(0x5E6AD2, 0x101012, 0x70),
 };
 
 impl Palette {
     fn from_terminal(bg: u32, fg: u32, ansi: [u32; 16]) -> Palette {
-        if (bg, fg, ansi) == (LINEAR_DARK.bg, LINEAR_DARK.fg, LINEAR_DARK.ansi) {
-            return LINEAR_DARK;
+        if (bg, fg, ansi) == (PULPO_DARK.bg, PULPO_DARK.fg, PULPO_DARK.ansi) {
+            return PULPO_DARK;
         }
         let accent = ansi[4];
         let editor_bg = mix(fg, bg, 8);
@@ -82,7 +82,7 @@ fn luminance(hex: u32) -> f32 {
     0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
 }
 
-static CURRENT: RwLock<Palette> = RwLock::new(LINEAR_DARK);
+static CURRENT: RwLock<Palette> = RwLock::new(PULPO_DARK);
 static SYNTAX: RwLock<Option<Arc<Theme>>> = RwLock::new(None);
 
 fn palette() -> Palette {
@@ -176,7 +176,7 @@ enum Ink {
 const ITALIC: u8 = 1;
 const BOLD: u8 = 2;
 
-/// Linear Dark's tokenColors, as its terminal colors, which is how other themes get theirs.
+/// Pulpo Dark's tokenColors, as its terminal colors, which is how other themes get theirs.
 const TOKENS: &[(&str, Ink, u8)] = &[
     ("comment, punctuation.definition.comment", Ink::Dim, ITALIC),
     (
@@ -233,8 +233,8 @@ fn build_syntax(p: &Palette) -> Theme {
     let color = |hex: u32| syntect::highlighting::Color { r: (hex >> 16) as u8, g: (hex >> 8) as u8, b: hex as u8, a: 0xFF };
     let ink = |ink: Ink| match ink {
         Ink::Fg => p.fg,
-        // Linear Dark's punctuation is its color 7; other themes fade their foreground.
-        Ink::Soft if *p == LINEAR_DARK => p.ansi[7],
+        // Pulpo Dark's punctuation is its color 7; other themes fade their foreground.
+        Ink::Soft if *p == PULPO_DARK => p.ansi[7],
         Ink::Soft => mix(p.fg, p.bg, 235),
         Ink::Dim => p.dim,
         Ink::Ansi(i) => p.ansi[i],
@@ -264,7 +264,7 @@ fn build_syntax(p: &Palette) -> Theme {
 }
 
 pub const FOLLOW: &str = "ghostty";
-pub const LINEAR: &str = "Linear Dark";
+pub const PULPO: &str = "Pulpo Dark";
 pub fn apply(name: &str) -> Result<(), String> {
     set(load(name)?);
     Ok(())
@@ -272,8 +272,8 @@ pub fn apply(name: &str) -> Result<(), String> {
 
 fn load(name: &str) -> Result<Palette, String> {
     match name {
-        LINEAR => Ok(LINEAR_DARK),
-        FOLLOW => ghostty_theme().map_or(Ok(LINEAR_DARK), |theme| from_ghostty(&theme)),
+        PULPO => Ok(PULPO_DARK),
+        FOLLOW => ghostty_theme().map_or(Ok(PULPO_DARK), |theme| from_ghostty(&theme)),
         theme => from_ghostty(theme),
     }
 }
@@ -379,7 +379,7 @@ mod tests {
     fn blends_and_parses_every_scope() {
         assert_eq!(mix(0xFFFFFF, 0x000000, 0xFF), 0xFFFFFF);
         assert_eq!(mix(0xFFFFFF, 0x000000, 0), 0);
-        assert_eq!(build_syntax(&LINEAR_DARK).scopes.len(), TOKENS.len());
+        assert_eq!(build_syntax(&PULPO_DARK).scopes.len(), TOKENS.len());
     }
 
     #[test]
@@ -392,12 +392,12 @@ mod tests {
     }
 
     #[test]
-    fn linear_darks_colors_are_linear_dark() {
+    fn pulpo_darks_colors_are_pulpo_dark() {
         let mut text = String::from("background = #090909\nforeground = #e3e4e7\n");
-        for (i, c) in LINEAR_ANSI.iter().enumerate() {
+        for (i, c) in PULPO_ANSI.iter().enumerate() {
             text.push_str(&format!("palette = {i}=#{c:06x}\n"));
         }
-        assert_eq!(parse(&text), Some(LINEAR_DARK));
+        assert_eq!(parse(&text), Some(PULPO_DARK));
     }
 
     #[test]

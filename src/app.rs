@@ -182,7 +182,7 @@ impl App {
         agents.load();
         let layout = layout::load();
         let (keymap, keys_error) = Keymap::load();
-        let theme_error = crate::theme::apply(&crate::theme::chosen()).err().map(|e| format!("theme: {e}; using Linear Dark"));
+        let theme_error = crate::theme::apply(&crate::theme::chosen()).err().map(|e| format!("theme: {e}; using Pulpo Dark"));
         let mut app = App {
             workspaces: Vec::new(),
             isolated: Vec::new(),

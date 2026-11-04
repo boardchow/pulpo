@@ -36,7 +36,7 @@ pulpo (one binary)
 ├── layout.rs   where you were, and what was open, across restarts and reboots
 ├── viewer.rs   read-only file view (syntect), and the inline diffs Changes shows
 ├── editor.rs   editing a file, highlighted by the viewer's own code (identical by construction)
-├── theme.rs    the colors on screen (UI, syntax, terminal palette): Linear Dark, or Ghostty's theme
+├── theme.rs    the colors on screen (UI, syntax, terminal palette): Pulpo Dark, or Ghostty's theme
 ├── tree.rs     lazy file tree, gitignore-aware (ignore crate), and the tree of a list of paths
 ├── git.rs      `git status --porcelain=v2` and `--numstat` parsers
 ├── status.rs   program status reports (OSC 7501)
@@ -129,7 +129,7 @@ view lighter).
       `~/.config/pulpo/workspaces`.
 - [x] **v4** — navigation: go to file, search in files, find in file.
 - [x] **v5** — mnemonic keys, full-height viewer, inline and side-by-side
-      diffs with added and removed counts, full-height terminal, Linear Dark
+      diffs with added and removed counts, full-height terminal, Pulpo Dark
       theme.
 - [x] **v6** — Graph panel (`git log --graph` of the local branches; a
       commit unfolds into its files, read like Changes), terminal states
@@ -147,7 +147,7 @@ view lighter).
 - [x] Two modes, one key (Zellij's unlock-first): in a terminal every key is the program's but ⌘p (Ghostty leaves it free, and sends it with the kitty keyboard protocol); in Pulpo, plain keys, `space` for everything (one palette), `r` to review every change in one scroll. Replaced a first try with a prefix, chords and over a hundred bindings.
 - [x] Tabs and panes: each session's tabs, each a tree of splits of terminals and the file pane, kept across restarts. The sidebar in one box: the pulpo with who waits and works, the lists, and the session's tabs with the modes on (BOARD, SCROLL). A top bar came and went: the sidebar already said it all.
 - [x] Go to (every terminal of every repo, by state, with what its agent asks), the next one to read, back to the last place, and a menu of every action (`picker.rs`).
-- [x] Themes: following Ghostty's by default, any Ghostty theme, Omarchy's first, tried live in a picker. A Ghostty theme's background, foreground and ANSI colors give the rest (greys faded from the foreground, blue as the accent, syntax from the ANSI colors as Linear Dark's are).
+- [x] Themes: following Ghostty's by default, any Ghostty theme, Omarchy's first, tried live in a picker. A Ghostty theme's background, foreground and ANSI colors give the rest (greys faded from the foreground, blue as the accent, syntax from the ANSI colors as Pulpo Dark's are).
 - [x] Layouts (`L`: main pane left, side by side, stacked, grid), the board (every terminal of the repository, tiled), swarms (N sessions, Claude started on a task in each once set up), scrolling back and finding in a terminal, readline keys in every prompt (`input.rs`), right-click menus, dragging pane borders.
 - [x] Start again from Herdr's layout, keeping what's under it: workspaces and sessions | terminal tabs | files over changes, a prefix from anywhere, the mouse for all of it. The palette, splits, layouts, the board, swarms, the graph, the review scroll, scrollback search and the theme picker are gone. A new session is yours at once, set up in the background.
 - [x] Sessions as git worktrees, the industry's pattern (Conductor, Claude Code, Cursor): a branch from the remote's default branch, main's ignored files it needs, a block of ten ports, git in containers (see "Sessions Pulpo makes").
