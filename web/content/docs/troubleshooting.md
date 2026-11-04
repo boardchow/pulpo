@@ -19,9 +19,11 @@ Its terminals stopped with it. Pulpo starts a new one; the reason is in `~/.loca
 
 ## A task session can't be made
 
-- *"it has to be on an APFS disk"*: the copy is an APFS clone; move the repository to an APFS volume.
-- *".git isn't a folder"*: the repository is itself a worktree or a submodule; open its main checkout.
-- *"could not start the copy from the last commit"*: git was busy in `main` (a lock file); try again.
+- *"the repository has no commit yet"*: a worktree starts from a commit; make one.
+- *"branch … exists already, with commits of its own"*: a session by that name was deleted with work on its branch, which stayed. Pick another name, or delete the branch.
+- *"already exists"*: the folder `<repo>.sessions/<name>` is there. If no session shows it, it's a worktree left behind: `git worktree list`, then `git worktree remove --force --force <path>`.
+
+The setup log starts with what Pulpo noted while making it: a fetch that failed (it then starts from `origin` as last fetched), a file it couldn't copy from `main`.
 
 ## "setup failed" on a session
 

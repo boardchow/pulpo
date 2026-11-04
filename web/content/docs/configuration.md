@@ -29,6 +29,6 @@ theme = "Linear Dark"   # or "ghostty" (the default), or a Ghostty theme's name 
 
 ## Environment
 
-Every terminal Pulpo starts has `PULPO_TAB`, which the hooks use to match Claude to its terminal. A task session's terminals also have `PULPO_SESSION`, `COMPOSE_PROJECT_NAME` and their port variables.
+Every terminal Pulpo starts has `PULPO_TAB`, which the hooks use to match Claude to its terminal. A task session's terminals also have `PULPO_SESSION`, `PULPO_PORT`, `COMPOSE_PROJECT_NAME` and their port variables (see [Docker and ports](/docs/docker#what-a-session-gets)).
 
 `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move Pulpo's folders; `CLAUDE_CONFIG_DIR` moves where the hooks go.

@@ -18,8 +18,8 @@ The current workspace's sessions:
 | Session | What it is |
 | --- | --- |
 | `main` | The repository itself. |
-| A git worktree | Shown if the repository has worktrees. Pulpo doesn't create or delete them. |
-| A task session | A copy of the repository for one task. See [Task sessions](/docs/task-sessions). |
+| A git worktree | Shown if the repository has worktrees (an agent's, say). Pulpo leaves them to git. |
+| A task session | A worktree Pulpo made for one task, with its own ports and containers. See [Task sessions](/docs/task-sessions). |
 
 Each row shows the session's state, its name, its number of uncommitted changes (`±3`), the web port of a task session (`:20000`), and under the name its branch, or *setting up* / *setup failed*.
 
