@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Changes · Pulpo docs</title>
+<meta name="description" content="What the session changed: a tree of the files, the selected one shown whole, its changes in place.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../docs.css">
+<script src="../docs.js" defer></script>
+</head>
+<body data-page="changes">
+<main>
+<p class="eyebrow">Using Pulpo</p>
+<h1>Changes</h1>
+<p class="lead">What the session changed: a tree of the files, the selected one shown whole, its changes in place.</p>
+<h2>Compared with what</h2>
+<table>
+<tr><th>Session</th><th>Changes shows</th></tr>
+<tr><td>On <code>main</code> itself</td><td>What isn't committed. A commit takes it away.</td></tr>
+<tr><td>On another branch</td><td>What the branch changed since it left <code>main</code>, commits included.</td></tr>
+<tr><td>A task session</td><td>Everything since it was copied, commits included, so you see all an agent did.</td></tr>
+</table>
+<p>New files git doesn't know yet are included. The list follows what agents do as they do it.</p>
+
+<h2>Reading</h2>
+<ul>
+<li>The file shows whole: removed lines in red where they were, added lines in green. It opens on its first change.</li>
+<li>Marks down its right edge show where it changed (green added, red removed, blue both); click one to go there.</li>
+<li><kbd>⏎</kbd> opens it full screen, the same way as in Files.</li>
+</ul>
+<div class="note"><p>Pulpo never runs git for you: no staging, committing or pushing. The agents (or you, in a terminal) do that.</p></div>
+</main>
+</body>
+</html>

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Files on disk · Pulpo docs</title>
+<meta name="description" content="Where Pulpo keeps its settings and state.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../docs.css">
+<script src="../docs.js" defer></script>
+</head>
+<body data-page="files-on-disk">
+<main>
+<p class="eyebrow">Reference</p>
+<h1>Files on disk</h1>
+<p class="lead">Where Pulpo keeps its settings and state.</p>
+<h2>Settings</h2>
+<table>
+<tr><th>Path</th><th>Holds</th></tr>
+<tr><td><code>~/.config/pulpo/workspaces</code></td><td>Your repositories, one path per line</td></tr>
+<tr><td><code>~/.config/pulpo/keys.toml</code></td><td>The prefix</td></tr>
+<tr><td><code>~/.config/pulpo/config.toml</code></td><td>The theme</td></tr>
+<tr><td><code>~/.config/pulpo/repos/&lt;repo&gt;.toml</code></td><td>How the repository's task sessions are set up</td></tr>
+</table>
+
+<h2>State</h2>
+<table>
+<tr><th>Path</th><th>Holds</th></tr>
+<tr><td><code>~/.local/state/pulpo/server/sock</code></td><td>The server's socket (private to you; Pulpo never listens on the network)</td></tr>
+<tr><td><code>~/.local/state/pulpo/server/log</code></td><td>The server's log</td></tr>
+<tr><td><code>~/.local/state/pulpo/server/layout.json</code></td><td>Where you were and what was open, to come back to it</td></tr>
+<tr><td><code>~/.local/state/pulpo/sessions.json</code></td><td>The task sessions</td></tr>
+<tr><td><code>~/.local/state/pulpo/events.jsonl</code></td><td>What the Claude hooks reported</td></tr>
+<tr><td><code>~/.local/state/pulpo/logs/</code></td><td>Task session setup and removal logs</td></tr>
+</table>
+<p>A Pulpo started inside a Pulpo terminal uses <code>server-nested/</code> instead, so it doesn't show itself.</p>
+
+<h2>Task sessions</h2>
+<p><code>&lt;repo&gt;.sessions/&lt;name&gt;</code>, next to the repository.</p>
+</main>
+</body>
+</html>

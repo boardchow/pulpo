@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docker and ports · Pulpo docs</title>
+<meta name="description" content="With a Compose file, each task session gets its own containers, ports and copy of the database.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../docs.css">
+<script src="../docs.js" defer></script>
+</head>
+<body data-page="docker">
+<main>
+<p class="eyebrow">Task sessions</p>
+<h1>Docker and ports</h1>
+<p class="lead">With a Compose file, each task session gets its own containers, ports and copy of the database.</p>
+<h2>What a session gets</h2>
+<p>Every terminal of a task session has these in its environment:</p>
+<table>
+<tr><th>Variable</th><th>Value</th></tr>
+<tr><td><code>COMPOSE_PROJECT_NAME</code></td><td><code>&lt;main's project&gt;-&lt;session&gt;</code>: its own containers and volumes</td></tr>
+<tr><td>Each port variable</td><td>Its own free port, in blocks of ten from 20000</td></tr>
+<tr><td><code>PULPO_SESSION</code></td><td>The session's name</td></tr>
+</table>
+<p>So <code>docker compose up</code> in a session never collides with <code>main</code> or another session, as long as the Compose file reads its host ports from variables:</p>
+<pre><code>services:
+  app:
+    ports:
+      - ${APP_PORT:-8080}:8080</code></pre>
+
+<h2>Setup</h2>
+<p>In the background, with that environment:</p>
+<ol>
+<li>tags the images <code>main</code> built for the session, instead of building them again;</li>
+<li>starts the database and copies <code>main</code>'s into it (MySQL or Postgres, by streaming a dump), or runs the <code>fresh</code> command if <code>main</code>'s database isn't running;</li>
+<li><code>docker compose up -d</code>;</li>
+<li>runs the <code>setup</code> command.</li>
+</ol>
+
+<h2>Settings</h2>
+<p>The first time, Pulpo writes <code>~/.config/pulpo/repos/&lt;repo&gt;.toml</code> from the Compose file. Edit it freely.</p>
+<pre><code>ports = ["APP_PORT", "DB_PORT"]   <span class="comment"># port variables; each session gets its own</span>
+images = ["app"]                  <span class="comment"># services main builds, reused</span>
+db = "mysql"                      <span class="comment"># mysql, postgres, or "" for no copy</span>
+db_service = "db"
+fresh = ""                        <span class="comment"># run when main's database isn't running</span>
+setup = ""                        <span class="comment"># run at the end of the setup</span>
+teardown = ""                     <span class="comment"># run before the session is deleted</span></code></pre>
+
+<h2>What can't be isolated</h2>
+<p>The setup log lists what sessions would still share: a fixed host port (<code>3000:3000</code>), a <code>container_name</code>, a volume with a fixed <code>name</code>. Make those come from variables.</p>
+</main>
+</body>
+</html>

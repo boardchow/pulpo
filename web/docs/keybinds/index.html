@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keybinds · Pulpo docs</title>
+<meta name="description" content="Press the prefix, let go, then a key. The prefix works everywhere, in terminals and popups too.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../docs.css">
+<script src="../docs.js" defer></script>
+</head>
+<body data-page="keybinds">
+<main>
+<p class="eyebrow">Reference</p>
+<h1>Keybinds</h1>
+<p class="lead">Press the prefix, let go, then a key. The prefix works everywhere, in terminals and popups too.</p>
+<p>The prefix is <kbd class="prefix">⌘p</kbd> or <kbd class="prefix">⌃b</kbd>. Pressing <kbd>⌃b</kbd> twice sends one to the program. If no key follows within 3 seconds, nothing happens. To change it, see <a href="../configuration/">Configuration</a>.</p>
+
+<h2>Panels</h2>
+<table>
+<tr><th>After <kbd class="prefix">⌘p</kbd></th><th>Does</th></tr>
+<tr><td><kbd>w</kbd> <kbd>s</kbd> <kbd>t</kbd></td><td>Workspaces, Sessions, the terminal</td></tr>
+<tr><td><kbd>f</kbd> <kbd>c</kbd></td><td>Files, Changes</td></tr>
+<tr><td><kbd>&lt;</kbd> <kbd>&gt;</kbd></td><td>Hide or show the left side, the right side</td></tr>
+<tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>Previous, next terminal tab</td></tr>
+<tr><td><kbd>a</kbd></td><td>The terminal that has waited longest</td></tr>
+<tr><td><kbd>?</kbd></td><td>The keybinds</td></tr>
+</table>
+
+<h2>Make and close</h2>
+<table>
+<tr><th>After <kbd class="prefix">⌘p</kbd></th><th>In Workspaces</th><th>In Sessions</th><th>In the terminal</th><th>In Files</th></tr>
+<tr><td><kbd>n</kbd></td><td>Add a repository</td><td>New task session</td><td>New terminal</td><td>New file or folder</td></tr>
+<tr><td><kbd>x</kbd></td><td>Remove from the list</td><td>Delete the session</td><td>Close the terminal</td><td>Delete</td></tr>
+</table>
+
+<h2>Files</h2>
+<table>
+<tr><th>After <kbd class="prefix">⌘p</kbd></th><th>Does</th></tr>
+<tr><td><kbd>/</kbd></td><td>Search: names, <kbd>tab</kbd> for inside files</td></tr>
+<tr><td><kbd>e</kbd> <kbd>r</kbd> <kbd>d</kbd></td><td>Edit, rename, delete</td></tr>
+</table>
+<p>Without the prefix, in Files and Changes:</p>
+<table>
+<tr><th>Keys</th><th>Does</th></tr>
+<tr><td><kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> <kbd>⏎</kbd></td><td>Move, fold, open full screen</td></tr>
+<tr><td><kbd>esc</kbd></td><td>From the file to the tree, then to the three columns</td></tr>
+<tr><td><kbd>tab</kbd></td><td>Between the tree and the file, full screen</td></tr>
+<tr><td><kbd>pgup</kbd> <kbd>pgdn</kbd></td><td>Scroll the file</td></tr>
+</table>
+
+<h2>Quit</h2>
+<table>
+<tr><th>After <kbd class="prefix">⌘p</kbd></th><th>Does</th></tr>
+<tr><td><kbd>q</kbd></td><td>Quit; terminals keep running</td></tr>
+<tr><td><kbd>Q</kbd></td><td>Quit and stop every terminal</td></tr>
+</table>
+
+<h2>Mouse</h2>
+<table>
+<tr><th>Do</th><th>Does</th></tr>
+<tr><td>Click</td><td>Goes there: a panel, a row, a tab, <code>+</code> for a new tab</td></tr>
+<tr><td>Double-click</td><td>Opens a file full screen</td></tr>
+<tr><td>Drag</td><td>Selects text in a terminal (copied when you let go); a border resizes</td></tr>
+<tr><td>Wheel, swipe</td><td>Scrolls; <kbd>shift</kbd> + wheel or a sideways swipe scrolls files sideways</td></tr>
+<tr><td>Ctrl-click</td><td>Opens a link, or a <code>path:line</code></td></tr>
+</table>
+</main>
+</body>
+</html>

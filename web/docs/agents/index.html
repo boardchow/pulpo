@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents · Pulpo docs</title>
+<meta name="description" content="How Pulpo knows that a terminal works or waits for you, and tells you.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../docs.css">
+<script src="../docs.js" defer></script>
+</head>
+<body data-page="agents">
+<main>
+<p class="eyebrow">Using Pulpo</p>
+<h1>Agents</h1>
+<p class="lead">How Pulpo knows that a terminal works or waits for you, and tells you.</p>
+<h2>States</h2>
+<ul>
+<li><strong>Working</strong> (spinner): the program is printing on its own. Output right after you type, paste or resize is the program answering you, and short bursts are redraws: neither counts.</li>
+<li><strong>Waiting</strong> (◆): a run of at least a second ended, the terminal rang its bell, or Claude asks something or stopped. It clears once you look at that terminal.</li>
+</ul>
+
+<h2>Claude Code</h2>
+<p>With the hooks installed (<code>pulpo hooks install</code>), Claude says exactly when it waits and what it asks. Pulpo also learns each terminal's Claude session, to resume it after a reboot.</p>
+
+<h2>Other programs</h2>
+<p>A program that reports its own state with <a href="https://mitchellh.com/writing/program-status-osc7501">OSC 7501</a> is taken at its word: <em>blocked</em> shows as waiting, <em>working</em> as working. Progress reports (OSC 9;4) count as working until then.</p>
+
+<h2>Notifications</h2>
+<p>When an agent asks something or finishes, Ghostty shows a macOS notification with what it said: at most one per terminal every 10 seconds.</p>
+
+<h2>Go to it</h2>
+<p><kbd class="prefix">⌘p</kbd> <kbd>a</kbd> goes to the terminal that has waited longest: those asking before those that finished.</p>
+</main>
+</body>
+</html>

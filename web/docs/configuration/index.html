@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration · Pulpo docs</title>
+<meta name="description" content="Pulpo works without settings. These files change the prefix, the colors and how task sessions are set up.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../docs.css">
+<script src="../docs.js" defer></script>
+</head>
+<body data-page="configuration">
+<main>
+<p class="eyebrow">Reference</p>
+<h1>Configuration</h1>
+<p class="lead">Pulpo works without settings. These files change the prefix, the colors and how task sessions are set up.</p>
+<h2>The prefix</h2>
+<p><code>~/.config/pulpo/keys.toml</code>:</p>
+<pre><code>prefix = ["cmd-j", "ctrl-a"]</code></pre>
+<p>Keys are written <code>cmd-</code>, <code>ctrl-</code>, <code>alt-</code> (or <code>opt-</code>), <code>shift-</code>, then a character or <code>space</code>, <code>tab</code>, <code>enter</code>, <code>esc</code>, <code>backspace</code>, <code>left</code>, <code>right</code>, <code>up</code>, <code>down</code>. Run <code>pulpo keytest</code> to see what your terminal sends.</p>
+
+<h2>Colors</h2>
+<p>Pulpo uses Ghostty's theme, so it matches the terminal around it; without one, its own Linear Dark. To choose, <code>~/.config/pulpo/config.toml</code>:</p>
+<pre><code>theme = "Linear Dark"   <span class="comment"># or "ghostty" (the default), or a Ghostty theme's name or path</span></code></pre>
+
+<h2>Task sessions</h2>
+<p><code>~/.config/pulpo/repos/&lt;repo&gt;.toml</code>, written the first time from the Compose file. See <a href="../docker/#settings">Docker and ports</a>.</p>
+
+<h2>Environment</h2>
+<p>Every terminal Pulpo starts has <code>PULPO_TAB</code>, which the hooks use to match Claude to its terminal. A task session's terminals also have <code>PULPO_SESSION</code>, <code>COMPOSE_PROJECT_NAME</code> and their port variables.</p>
+<p><code>XDG_CONFIG_HOME</code> and <code>XDG_STATE_HOME</code> move Pulpo's folders; <code>CLAUDE_CONFIG_DIR</code> moves where the hooks go.</p>
+</main>
+</body>
+</html>

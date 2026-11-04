@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The screen · Pulpo docs</title>
+<meta name="description" content="Three columns and a bottom line.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../docs.css">
+<script src="../docs.js" defer></script>
+</head>
+<body data-page="screen">
+<main>
+<p class="eyebrow">Using Pulpo</p>
+<h1>The screen</h1>
+<p class="lead">Three columns and a bottom line.</p>
+<h2>Columns</h2>
+<table>
+<tr><th>Column</th><th>Panels</th><th>Go there</th></tr>
+<tr><td>Left</td><td>Workspaces, Sessions</td><td><kbd class="prefix">⌘p</kbd> <kbd>w</kbd>, <kbd class="prefix">⌘p</kbd> <kbd>s</kbd></td></tr>
+<tr><td>Middle</td><td>The session's terminals</td><td><kbd class="prefix">⌘p</kbd> <kbd>t</kbd></td></tr>
+<tr><td>Right</td><td>Files, Changes</td><td><kbd class="prefix">⌘p</kbd> <kbd>f</kbd>, <kbd class="prefix">⌘p</kbd> <kbd>c</kbd></td></tr>
+</table>
+<p>The panel with the focus has the accent border. A click also moves the focus; hovering doesn't.</p>
+
+<h2>Full screen</h2>
+<p>Opening a file in Files or Changes (<kbd>⏎</kbd> or a double click) gives that panel everything right of the sidebar, terminal included, with the keys on the file.</p>
+<ul>
+<li><kbd>esc</kbd> puts the keys on the tree; moving in it shows each file.</li>
+<li><kbd>⏎</kbd> or <kbd>tab</kbd> goes back into the file.</li>
+<li><kbd>esc</kbd> on the tree goes back to the three columns.</li>
+</ul>
+
+<h2>Hide and resize</h2>
+<ul>
+<li><kbd class="prefix">⌘p</kbd> <kbd>&lt;</kbd> hides or shows the left side, <kbd class="prefix">⌘p</kbd> <kbd>&gt;</kbd> the right side. Going to a hidden panel shows it again.</li>
+<li>Drag a border to resize: the sidebar's, the right side's, and the line between a tree and its file.</li>
+</ul>
+
+<h2>Bottom line</h2>
+<p>Names you type (a new file, a session), questions (answer <kbd>y</kbd>, or click <em>yes</em>; anything else is no) and short messages.</p>
+</main>
+</body>
+</html>

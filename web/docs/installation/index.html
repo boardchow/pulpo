@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Installation · Pulpo docs</title>
+<meta name="description" content="One command builds Pulpo and connects it to Claude Code.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../docs.css">
+<script src="../docs.js" defer></script>
+</head>
+<body data-page="installation">
+<main>
+<p class="eyebrow">Get started</p>
+<h1>Installation</h1>
+<p class="lead">One command builds Pulpo and connects it to Claude Code.</p>
+<h2>Requirements</h2>
+<ul>
+<li><strong>macOS.</strong> Task sessions also need the repository on an APFS disk (the default).</li>
+<li><strong><a href="https://ghostty.org">Ghostty</a>.</strong> Pulpo is built and tested in it. Other terminals may work; Apple's Terminal can't draw the pulpo.</li>
+<li><strong><a href="https://claude.com/claude-code">Claude Code</a></strong>, to see what each agent is doing. Any other program runs fine, but its state only shows if it reports it (see <a href="../agents/">Agents</a>).</li>
+</ul>
+
+<h2>Install</h2>
+<pre><code>curl -fsSL https://pulpo.sh/install | sh</code></pre>
+<p>The script:</p>
+<ol>
+<li>installs the Xcode Command Line Tools if they're missing (accept the dialog, then run the script again);</li>
+<li>installs Rust with rustup if there's no Rust 1.88 or newer;</li>
+<li>builds Pulpo into <code>~/.cargo/bin</code> (a minute or two);</li>
+<li>adds Pulpo's hooks to Claude Code, if Claude Code is installed.</li>
+</ol>
+<p>Then, in a new terminal:</p>
+<pre><code>pulpo</code></pre>
+
+<h2>From a checkout</h2>
+<pre><code>git clone https://github.com/boardchow/pulpo
+cd pulpo
+make install
+pulpo hooks install</code></pre>
+
+<h2>Update</h2>
+<p>Run the install command again, or <code>make install</code> in a checkout. Your terminals keep running: the next time you open Pulpo, its server switches to the new build in place.</p>
+
+<h2>Claude Code hooks</h2>
+<p>The hooks tell Pulpo when Claude works, waits for you or stops, and what it asks. They go in <code>~/.claude/settings.json</code> (or <code>$CLAUDE_CONFIG_DIR</code>), next to your own hooks, which stay untouched.</p>
+<pre><code>pulpo hooks install   <span class="comment"># add them (again after installing Claude Code)</span>
+pulpo hooks status    <span class="comment"># what's installed</span>
+pulpo hooks remove    <span class="comment"># take them out</span></code></pre>
+<p>Only Claude sessions started after installing them report to Pulpo.</p>
+
+<h2>Check</h2>
+<pre><code>pulpo doctor</code></pre>
+<p>It checks that the prefix reaches Pulpo and that the hooks are installed.</p>
+
+<h2>Uninstall</h2>
+<ol>
+<li>In Pulpo, <kbd class="prefix">⌘p</kbd> <kbd>Q</kbd> stops every terminal.</li>
+<li>Then:</li>
+</ol>
+<pre><code>pulpo hooks remove
+cargo uninstall pulpo
+rm -rf ~/.config/pulpo ~/.local/state/pulpo   <span class="comment"># settings and state, if you want them gone</span></code></pre>
+<p>Task sessions are folders next to their repository (<code>&lt;repo&gt;.sessions/</code>); delete them in Pulpo first, or by hand.</p>
+</main>
+</body>
+</html>
