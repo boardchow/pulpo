@@ -1,7 +1,7 @@
 <script setup>
 // A page of the docs, from content/docs, with what every page shares: the
 // top bar, the list of pages, its sections, previous and next.
-const SECTIONS = ["Get started", "Using Pulpo", "Task sessions", "Reference"];
+const SECTIONS = ["Get started", "Using Pulpo", "Reference"];
 const REPO = "https://github.com/boardchow/pulpo";
 
 const route = useRoute();

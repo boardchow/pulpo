@@ -1,34 +1,39 @@
 ---
 title: Terminals
-description: Each session has its terminals, as tabs. They run in a background server, so quitting Pulpo doesn't stop them.
+description: Each session has its own terminals, as tabs, run by a background server.
 section: Using Pulpo
-order: 6
+order: 5
 ---
 
 ## Tabs
 
-| Do | Keys | Mouse |
+| Action | Keys | Mouse |
 | --- | --- | --- |
-| New terminal (a shell) | :kp[n] in the terminal, or :kp[t] in a session without one | Click `+` |
-| Next, previous tab | :kp{k="]"}, :kp{k="["} | Click the tab |
+| New terminal | :kp[n] | Click `+` |
+| Previous, next | :kp{k="["}, :kp{k="]"} | Click the tab |
 | Close | :kp[x] | |
 
-Closing asks first when a program is running in it. A terminal belongs to the session it was started in.
-
-## Keys
-
-Every key goes to the program, except the prefix. Claude Code uses :k[⌃b] to background a command: press :k[⌃b ⌃b].
+Every key goes to the program, except the prefix. To send :k[⌃b], press it twice.
 
 ## Mouse
 
-- **Wheel:** scrolls back through the output. In full-screen programs (`less`, `vim`), it sends arrow keys.
-- **Drag:** selects text; it's copied when you let go.
-- **Ctrl-click:** opens a link in the browser, or a path like `src/app.rs:120` in Files at that line.
-- A program that takes the mouse itself gets the clicks; hold :k[shift] to select anyway.
+- **Wheel:** scrolls back through the output.
+- **Drag:** selects text and copies it. Hold :k[shift] if the program takes the mouse.
+- **Ctrl-click:** opens a link, or a path like `src/app.rs:120` in Files.
 
-## Quitting, rebooting, updating
+## Agent status
 
-- :kp[q] quits Pulpo. Terminals keep running; `pulpo` brings them back as you left them.
-- After a reboot, Pulpo opens them again in their folders, and resumes the Claude sessions that were running (with `claude --resume`; this needs the hooks).
-- Updating Pulpo doesn't stop them either.
-- :kp[Q] stops them all: Ctrl-C first, so dev servers free their ports and `docker compose up` stops its containers, then, after up to 10 seconds, a hang-up.
+| State | When |
+| --- | --- |
+| Working | The program prints on its own |
+| Waiting (◆) | A long run ended, the bell rang, or Claude asks something. Clears once you look. |
+
+With the [hooks](/docs/installation#claude-code-hooks), Claude reports exactly when it waits. Other programs can report their own state with [OSC 7501](https://mitchellh.com/writing/program-status-osc7501).
+
+When an agent asks something or finishes, Ghostty shows a notification. :kp[a] goes to the terminal that has waited longest.
+
+## Quit and restart
+
+- :kp[q] quits Pulpo. Terminals keep running; `pulpo` brings them back.
+- After a reboot, Pulpo reopens them and resumes their Claude sessions (needs the hooks).
+- :kp[Q] stops every terminal, then quits.

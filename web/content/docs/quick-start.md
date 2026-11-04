@@ -13,17 +13,17 @@ order: 3
    pulpo
    ```
 
-   The repository joins your workspaces and a shell opens in the middle. Keys go to it.
+   A shell opens in the middle.
 
-2. **Start an agent.** Type `claude` in that shell and give it a task.
+2. **Start an agent.** Type `claude` and give it a task.
 
-3. **Use the prefix.** Press :k[⌘p], let go, then a key. :kp[?] lists them all. :kp[n] opens another terminal tab (try `make run` there); :kp{k="["} and :kp{k="]"} go between tabs.
+3. **Learn the prefix.** Press :k[⌘p], release, then a key. :kp[?] lists every key.
 
-4. **Give the next task its own worktree.** :kp[s] goes to Sessions, :kp[n] asks for a name. You get a shell in a fresh worktree on its own branch right away, with its own Docker containers and ports set up in the background. Start `claude` there too.
+4. **Start a second task in a new session.** :kp[s], then :kp[n], then a name. It's a worktree on its own branch, and a shell opens in it. Start `claude` there too.
 
-5. **See who needs you.** A ◆ marks the session and tab waiting for you, and Ghostty sends a notification. :kp[a] goes to the one that has waited longest.
+5. **See who needs you.** A ◆ marks the session waiting for you. :kp[a] goes to it.
 
-6. **Review the work.** :kp[c] goes to Changes: every file the session changed. :k[⏎] opens a file over the right side, with its changes in place. :k[esc] goes back to the tree, :k[esc] again to the three columns.
+6. **Review the work.** :kp[c] shows every file the session changed. :k[⏎] opens one, :k[esc] goes back.
 
-7. **Quit.** :kp[q] quits; the agents keep working. Run `pulpo` to come back. :kp[Q] stops everything.
+7. **Quit.** :kp[q] quits and leaves the agents working. Run `pulpo` to come back.
 ::

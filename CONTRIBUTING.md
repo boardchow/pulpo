@@ -27,7 +27,7 @@ A few things Pulpo won't do, on purpose:
 - Keep it small. One thing per PR.
 - `make test` passes.
 - Write it like the code around it. Same names, same style, same amount of comments.
-- If it changes what the user sees or the keys, update the docs too (`web/docs/`).
+- If it changes what the user sees or the keys, update the docs too (`web/content/docs/`).
 
 [PLAN.md](PLAN.md) explains how it's built. Read it first, it'll save you some digging.
 

@@ -1,59 +1,53 @@
 ---
 title: Keybinds
-description: Press the prefix, let go, then a key. The prefix works everywhere, in terminals and popups too.
+description: Press the prefix, release, then a key.
 section: Reference
-order: 12
+order: 8
 ---
 
-The prefix is :k[⌘p] or :k[⌃b]. Pressing :k[⌃b] twice sends one to the program. If no key follows within 3 seconds, nothing happens. To change it, see [Configuration](/docs/configuration).
+The prefix is :k[⌘p] or :k[⌃b]. It works everywhere, terminals included.
 
-## Panels
+## Navigate
 
-| After the prefix | Does |
+| Key | Does |
 | --- | --- |
-| :k[w] :k[s] :k[t] | Workspaces, Sessions, the terminal |
+| :k[w] :k[s] :k[t] | Workspaces, Sessions, Terminal |
 | :k[f] :k[c] | Files, Changes |
-| :k{k="<"} :k{k=">"} | Hide or show the left side, the right side |
-| :k{k="["} :k{k="]"} | Previous, next terminal tab |
-| :k[a] | The terminal that has waited longest |
-| :k[?] | The keybinds |
+| :k{k="["} :k{k="]"} | Previous, next tab |
+| :k[a] | Next terminal waiting for you |
+| :k{k="<"} :k{k=">"} | Hide or show the left, right side |
+| :k[/] | Search |
+| :k[?] | All keys |
 
-## Make and close
+## Create and close
 
-| After the prefix | In Workspaces | In Sessions | In the terminal | In Files |
+Acts on the focused panel.
+
+| Key | Workspaces | Sessions | Terminal | Files |
 | --- | --- | --- | --- | --- |
-| :k[n] | Add a repository | New task session | New terminal | New file or folder |
-| :k[x] | Remove from the list | Delete the session | Close the terminal | Delete |
+| :k[n] | Add repository | New session | New terminal | New file |
+| :k[x] | Remove from list | Delete session | Close terminal | Delete file |
 
 ## Files
 
-| After the prefix | Does |
+| Key | Does |
 | --- | --- |
-| :k[/] | Search: names, :k[tab] for inside files |
-| :k[e] :k[r] :k[d] | Edit, rename, delete |
-
-Without the prefix, in Files and Changes:
-
-| Keys | Does |
-| --- | --- |
-| :k[↑] :k[↓] :k[←] :k[→] :k[⏎] | Move, fold, open full screen |
-| :k[esc] | From the file to the tree, then to the three columns |
-| :k[tab] | Between the tree and the file, full screen |
-| :k[pgup] :k[pgdn] | Scroll the file |
+| :k[e] | Edit |
+| :k[r] | Rename |
+| :k[d] | Delete |
 
 ## Quit
 
-| After the prefix | Does |
+| Key | Does |
 | --- | --- |
-| :k[q] | Quit; terminals keep running |
+| :k[q] | Quit. Terminals keep running. |
 | :k[Q] | Quit and stop every terminal |
 
 ## Mouse
 
-| Do | Does |
+| Action | Does |
 | --- | --- |
-| Click | Goes there: a panel, a row, a tab, `+` for a new tab |
-| Double-click | Opens a file full screen |
-| Drag | Selects text in a terminal (copied when you let go); a border resizes |
-| Wheel, swipe | Scrolls; :k[shift] + wheel or a sideways swipe scrolls files sideways |
-| Ctrl-click | Opens a link, or a `path:line` |
+| Click | Focus a panel, row or tab |
+| Double-click | Open a file full screen |
+| Drag | Select text, or resize a border |
+| Ctrl-click | Open a link or a `path:line` |

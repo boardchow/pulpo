@@ -7,9 +7,9 @@ order: 2
 
 ## Requirements
 
-- **macOS**, with git. On an APFS disk (the default), the files task sessions get from `main` are copied in an instant.
-- **[Ghostty](https://ghostty.org).** Pulpo is built and tested in it. Other terminals may work; Apple's Terminal can't draw the pulpo.
-- **[Claude Code](https://claude.com/claude-code)**, to see what each agent is doing. Any other program runs fine, but its state only shows if it reports it (see [Agents](/docs/agents)).
+- macOS, with git.
+- [Ghostty](https://ghostty.org). Other terminals may work, but aren't tested.
+- [Claude Code](https://claude.com/claude-code), to see what each agent is doing. Optional.
 
 ## Install
 
@@ -17,20 +17,9 @@ order: 2
 curl -fsSL https://pulpo.sh/install | sh
 ```
 
-The script:
+The script installs the Xcode Command Line Tools and Rust if they're missing, builds Pulpo into `~/.cargo/bin`, and adds its hooks to Claude Code if it's installed.
 
-1. installs the Xcode Command Line Tools if they're missing (accept the dialog, then run the script again);
-2. installs Rust with rustup if there's no Rust 1.88 or newer;
-3. builds Pulpo into `~/.cargo/bin` (a minute or two);
-4. adds Pulpo's hooks to Claude Code, if Claude Code is installed.
-
-Then, in a new terminal:
-
-```sh
-pulpo
-```
-
-## From a checkout
+From a checkout instead:
 
 ```sh
 git clone https://github.com/boardchow/pulpo
@@ -39,38 +28,32 @@ make install
 pulpo hooks install
 ```
 
-## Update
-
-Run the install command again, or `make install` in a checkout. Your terminals keep running: the next time you open Pulpo, its server switches to the new build in place.
+Check the result with `pulpo doctor`.
 
 ## Claude Code hooks
 
-The hooks tell Pulpo when Claude works, waits for you or stops, and what it asks. They go in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`), next to your own hooks, which stay untouched.
+The hooks tell Pulpo when Claude works, waits or stops. They go in `~/.claude/settings.json`, next to your own hooks.
 
 ```sh
-pulpo hooks install   # add them (again after installing Claude Code)
-pulpo hooks status    # what's installed
-pulpo hooks remove    # take them out
+pulpo hooks install
+pulpo hooks status
+pulpo hooks remove
 ```
 
 Only Claude sessions started after installing them report to Pulpo.
 
-## Check
+## Update
 
-```sh
-pulpo doctor
-```
-
-It checks that the prefix reaches Pulpo and that the hooks are installed.
+Run the install command again. Running terminals keep running: the server switches to the new build in place.
 
 ## Uninstall
 
-In Pulpo, :kp[Q] stops every terminal. Then:
+Press :kp[Q] in Pulpo to stop every terminal, then:
 
 ```sh
 pulpo hooks remove
 cargo uninstall pulpo
-rm -rf ~/.config/pulpo ~/.local/state/pulpo   # settings and state, if you want them gone
+rm -rf ~/.config/pulpo ~/.local/state/pulpo
 ```
 
-Task sessions are folders next to their repository (`<repo>.sessions/`); delete them in Pulpo first, or by hand.
+Delete sessions in Pulpo first, or remove the `<repo>.sessions/` folders by hand.
