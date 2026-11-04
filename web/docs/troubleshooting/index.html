@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting · Pulpo docs</title>
+<meta name="description" content="The usual problems, and what to do.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../docs.css">
+<script src="../docs.js" defer></script>
+</head>
+<body data-page="troubleshooting">
+<main>
+<p class="eyebrow">Reference</p>
+<h1>Troubleshooting</h1>
+<p class="lead">The usual problems, and what to do.</p>
+<h2>The prefix does nothing</h2>
+<p>Run <code>pulpo keytest</code> and press it. If <kbd>⌘p</kbd> doesn't show up, your terminal keeps <kbd>⌘</kbd> for itself: use <kbd>⌃b</kbd>, or pick another prefix in <a href="../configuration/">keys.toml</a>. macOS takes <kbd>⌃space</kbd> to switch keyboard layouts, so it's a poor choice.</p>
+
+<h2>No working or waiting marks for Claude</h2>
+<p>Run <code>pulpo hooks status</code>. If hooks are missing or outdated, <code>pulpo hooks install</code>, then start a new Claude session: running ones don't pick them up.</p>
+
+<h2>"The Pulpo server stopped"</h2>
+<p>Its terminals stopped with it. Pulpo starts a new one; the reason is in <code>~/.local/state/pulpo/server/log</code>. If it keeps stopping, Pulpo stops trying: <kbd class="prefix">⌘p</kbd> <kbd>t</kbd> tries again.</p>
+
+<h2>A task session can't be made</h2>
+<ul>
+<li><em>"it has to be on an APFS disk"</em>: the copy is an APFS clone; move the repository to an APFS volume.</li>
+<li><em>".git isn't a folder"</em>: the repository is itself a worktree or a submodule; open its main checkout.</li>
+<li><em>"could not start the copy from the last commit"</em>: git was busy in <code>main</code> (a lock file); try again.</li>
+</ul>
+
+<h2>"setup failed" on a session</h2>
+<p>Going to the session shows the path to its log, in <code>~/.local/state/pulpo/logs/</code>. Fix the cause, then run the remaining steps in the session's terminal, or delete it and make it again.</p>
+
+<h2>The pulpo is drawn as boxes</h2>
+<p>It's made of Unicode 16 block characters, which Ghostty draws itself. Other terminals need a font that has them.</p>
+
+<h2>"no Ghostty theme named …"</h2>
+<p>Pulpo couldn't find the theme Ghostty uses, and uses Linear Dark. Set <code>theme</code> in <code>~/.config/pulpo/config.toml</code> (see <a href="../configuration/#colors">Colors</a>).</p>
+</main>
+</body>
+</html>

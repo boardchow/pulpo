@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workspaces and sessions · Pulpo docs</title>
+<meta name="description" content="A workspace is a repository; a session is one checkout of it, with its own terminals, files and changes.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="../../favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../docs.css">
+<script src="../docs.js" defer></script>
+</head>
+<body data-page="workspaces-and-sessions">
+<main>
+<p class="eyebrow">Using Pulpo</p>
+<h1>Workspaces and sessions</h1>
+<p class="lead">A workspace is a repository; a session is one checkout of it, with its own terminals, files and changes.</p>
+<h2>Workspaces</h2>
+<p>Opening <code>pulpo</code> inside a repository adds it. To add another, <kbd class="prefix">⌘p</kbd> <kbd>w</kbd> then <kbd class="prefix">⌘p</kbd> <kbd>n</kbd>: pick from the git repositories in your home folder, or type a path.</p>
+<p><kbd class="prefix">⌘p</kbd> <kbd>x</kbd> in Workspaces takes a repository off the list. Its files stay.</p>
+
+<h2>Sessions</h2>
+<p>The current workspace's sessions:</p>
+<table>
+<tr><th>Session</th><th>What it is</th></tr>
+<tr><td><code>main</code></td><td>The repository itself.</td></tr>
+<tr><td>A git worktree</td><td>Shown if the repository has worktrees. Pulpo doesn't create or delete them.</td></tr>
+<tr><td>A task session</td><td>A copy of the repository for one task. See <a href="../task-sessions/">Task sessions</a>.</td></tr>
+</table>
+<p>Each row shows the session's state, its name, its number of uncommitted changes (<code>±3</code>), the web port of a task session (<code>:20000</code>), and under the name its branch, or <em>setting up</em> / <em>setup failed</em>.</p>
+<p>Selecting a session (click, or arrows in Sessions) puts its terminals, files and changes on screen. Pulpo remembers the last session of each workspace.</p>
+
+<h2>States</h2>
+<table>
+<tr><th>Mark</th><th>Meaning</th></tr>
+<tr><td>spinner</td><td>A terminal is working.</td></tr>
+<tr><td><span style="color:#D27CDB">◆</span></td><td>A terminal waits for you, or finished something you haven't seen.</td></tr>
+<tr><td>○</td><td>Quiet.</td></tr>
+</table>
+<p>A session shows its most urgent terminal; a workspace its most urgent session. See <a href="../agents/">Agents</a>.</p>
+</main>
+</body>
+</html>
