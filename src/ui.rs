@@ -76,36 +76,19 @@ fn pulpo(wiggle: bool) -> Vec<String> {
 
 /// The pulpo, and beside it the version, what the terminals are doing and
 /// where the current session lives.
-fn draw_header(frame: &mut Frame, app: &mut App, area: Rect) {
+fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let art_width = PULPO[0].chars().count() as u16;
-    let [_, art, text] = Layout::horizontal([Constraint::Length(1), Constraint::Length(art_width), Constraint::Fill(1)]).spacing(1).areas(area);
-    let states: Vec<State> = app.terms.iter().map(|term| app.term_state(term)).collect();
-    let count = |state: State| states.iter().filter(|&&s| s == state).count();
-    let (waiting, working) = (count(State::Waiting) + count(State::Done), count(State::Running));
-    let lines: Vec<Line> = pulpo(working > 0).into_iter().map(|row| Line::from(row).fg(theme::blue())).collect();
+    // Two columns of air between the pulpo and its name.
+    let [_, art, text] = Layout::horizontal([Constraint::Length(0), Constraint::Length(art_width), Constraint::Fill(1)]).spacing(2).areas(area);
+    // Its tentacles move while something works.
+    let working = app.terms.iter().any(|term| app.term_state(term) == State::Running);
+    let lines: Vec<Line> = pulpo(working).into_iter().map(|row| Line::from(row).fg(theme::blue())).collect();
     frame.render_widget(Paragraph::new(lines), art);
 
-    let busy: Vec<String> = [(waiting, "to read"), (working, "working")].into_iter().filter(|&(n, _)| n > 0).map(|(n, label)| format!("{n} {label}")).collect();
-    let activity = match states.len() {
-        _ if !busy.is_empty() => busy.join(" · "),
-        0 => "no terminals yet".to_string(),
-        1 => "1 terminal, all quiet".to_string(),
-        n => format!("{n} terminals, all quiet"),
-    };
-    let lines = vec![
-        Line::from(vec![Span::from("Pulpo").fg(theme::fg()).bold(), Span::from(concat!(" v", env!("CARGO_PKG_VERSION"))).fg(theme::muted())]),
-        // Colored only when a terminal waits for you or works.
-        Line::from(activity).fg(match (waiting, working) {
-            (0, 0) => theme::muted(),
-            (0, _) => theme::yellow(),
-            _ => theme::magenta(),
-        }),
-    ];
-    frame.render_widget(Paragraph::new(lines), text);
-    // A click on who waits goes there.
-    if waiting > 0 {
-        app.areas.counts = Rect { y: text.y + 1, height: 1, ..text };
-    }
+    // The name across from the pulpo's middle.
+    let [_, title, _] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)]).areas(text);
+    let name = Line::from(vec![Span::from("Pulpo").fg(theme::fg()).bold(), Span::from(concat!(" v", env!("CARGO_PKG_VERSION"))).fg(theme::muted())]);
+    frame.render_widget(name, title);
 }
 
 /// A list in its own frame, titled; where the rows are, for the mouse.

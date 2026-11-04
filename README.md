@@ -71,7 +71,7 @@ Run it anywhere and you get your workspaces. Run it inside a git repo and it add
 
 Three columns, nothing else:
 
-- **Left:** the pulpo (who's working, who's waiting), then two small panels: your workspaces (repos), and the sessions of the one you're on, each with its branch under its name.
+- **Left:** the pulpo (its tentacles move while anything works), then two small panels: your workspaces (repos), and the sessions of the one you're on, each with its branch under its name.
 - **Middle:** the session's terminals, as tabs. Claude, `make run`, a shell, whatever.
 - **Right:** Files over Changes. Each is a tree on the left and the file on the right.
 
@@ -144,7 +144,7 @@ Spinner next to a tab, a session or a workspace: it's working.
 
 `◆`: it's waiting for you.
 
-Next to the pulpo, the sidebar counts them for all your repos. `⌘p a` (or a click on that count) goes straight to the one that has waited longest.
+The pulpo's tentacles move while anything works. `⌘p a` goes straight to the terminal that has waited longest.
 
 And Ghostty pings you when an agent asks something or finishes. No more clicking through tabs to find the one that's been stuck for ten minutes.
 
