@@ -885,6 +885,14 @@ impl App {
         self.set_focus(Focus::Terminal);
     }
 
+    fn go_to_workspace(&mut self, n: usize) {
+        match self.workspace_order().get(n) {
+            Some(&i) if self.set_current(i) => self.set_focus(Focus::Terminal),
+            Some(_) => {}
+            None => self.message = Some(format!("no workspace {}", n + 1)),
+        }
+    }
+
     fn next_waiting(&mut self) {
         let mut waiting: Vec<(bool, u64, usize)> = self
             .terms
@@ -1006,6 +1014,7 @@ impl App {
             '[' => self.cycle_tab(-1),
             ']' => self.cycle_tab(1),
             'a' => self.next_waiting(),
+            '1'..='9' => self.go_to_workspace(c as usize - '1' as usize),
             '?' => self.help = true,
             '<' => {
                 self.left_hidden = !self.left_hidden;

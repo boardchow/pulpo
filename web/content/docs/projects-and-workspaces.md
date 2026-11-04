@@ -21,7 +21,7 @@ Workspaces lists every project's workspaces, each with its project's name on the
 
 A new project has no workspaces. Worktrees made outside Pulpo, by agents or by hand, don't show.
 
-Each row shows the workspace's state, name, uncommitted changes (`±3`) and project.
+Each row shows its number, the workspace's state, name, uncommitted changes (`±3`) and project. The prefix then the number goes straight to that workspace's terminal: with two workspaces waiting for you, :kp[1] is the first and :kp[2] the second. The numbers follow the order, so they change when a workspace's state does.
 
 ## Create a workspace
 

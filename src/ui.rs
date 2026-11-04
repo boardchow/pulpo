@@ -119,9 +119,13 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
     app.workspaces_state.select(order.iter().position(|&i| i == app.current));
     let items: Vec<ListItem> = order
         .into_iter()
-        .map(|i| {
+        .enumerate()
+        .map(|(n, i)| {
             let w = &app.workspaces[i];
-            let mut spans = state_name(app.workspace_state(i), &w.name, i == app.current);
+            // Prefix and this number goes to it.
+            let number = if n < 9 { format!(" {}", n + 1) } else { "  ".to_string() };
+            let mut spans = vec![Span::from(number).fg(theme::dim())];
+            spans.extend(state_name(app.workspace_state(i), &w.name, i == app.current));
             if !w.status.changes.is_empty() {
                 spans.push(Span::from(format!(" ±{}", w.status.changes.len())).fg(theme::blue()));
             }
@@ -170,15 +174,14 @@ fn draw_center(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut x = area.x + 2;
     let tabs: Vec<usize> = app.workspace_terms();
     let room = area.width.saturating_sub(2 + 1 + 3) as usize;
-    let tab_width = |n: usize, cap: usize| format!(" {} ", n + 1).chars().count() + app.terms[tabs[n]].label().chars().count().min(cap) + 1 + 3;
+    let tab_width = |n: usize, cap: usize| 1 + app.terms[tabs[n]].label().chars().count().min(cap) + 1 + 3;
     let cap = (0..=20).rev().find(|&cap| (0..tabs.len()).map(|n| tab_width(n, cap)).sum::<usize>() <= room).unwrap_or(0);
-    for (n, &i) in tabs.iter().enumerate() {
+    for &i in &tabs {
         let term = &app.terms[i];
         let on = app.active == Some(term.id);
         let (icon, color) = state_icon(app.term_state(term));
         let label: String = term.label().chars().take(cap).collect();
-        let label = if label.is_empty() { String::new() } else { format!("{label} ") };
-        let text = format!(" {} {label}", n + 1);
+        let text = if label.is_empty() { " ".to_string() } else { format!(" {label} ") };
         let width = text.chars().count() as u16 + 2;
         let style = if on { Style::new().fg(theme::fg()).bg(theme::hover()).bold() } else { Style::new().fg(theme::muted()) };
         spans.extend([Span::styled(text, style), Span::styled(format!("{icon} "), style.fg(color)), Span::from(" ")]);
@@ -629,6 +632,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
                 (prefixed("< >"), "hide or show the left side, the right side"),
                 (prefixed("[ ]"), "previous, next terminal tab"),
                 (prefixed("a"), "the next terminal waiting for you"),
+                (prefixed("1-9"), "the workspace with that number"),
             ],
         ),
         (

@@ -15,6 +15,7 @@ The prefix is :k[⌘p] or :k[⌃b]. It works everywhere, terminals included.
 | :k[f] :k[c] :k[h] | Files, Changes, History |
 | :k{k="["} :k{k="]"} | Previous, next tab |
 | :k[a] | Next terminal waiting for you |
+| :k[1] to :k[9] | The workspace with that number in Workspaces, its terminal focused |
 | :k{k="<"} :k{k=">"} | Hide or show the left, right side |
 | :k[/] | Search |
 | :k[?] | All keys |
