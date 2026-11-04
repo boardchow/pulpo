@@ -1235,7 +1235,7 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.step(-1),
             KeyCode::Home | KeyCode::Char('g') => self.step(i32::MIN),
             KeyCode::End | KeyCode::Char('G') => self.step(i32::MAX),
-            KeyCode::Enter | KeyCode::Right if self.focus == Focus::Projects => self.set_focus(Focus::Workspaces),
+            KeyCode::Right if self.focus == Focus::Projects => self.set_focus(Focus::Workspaces),
             KeyCode::Enter | KeyCode::Right => self.set_focus(Focus::Terminal),
             KeyCode::Left if self.focus == Focus::Workspaces => self.set_focus(Focus::Projects),
             _ => {}
@@ -1301,6 +1301,9 @@ impl App {
                 _ => self.tree_key(key),
             }
             return;
+        }
+        if key.code == KeyCode::Esc {
+            return self.set_focus(Focus::Terminal);
         }
         self.tree_key(key);
     }
@@ -1720,6 +1723,9 @@ impl App {
             }
             return;
         }
+        if key.code == KeyCode::Esc {
+            return self.set_focus(Focus::Terminal);
+        }
         self.changes_tree_key(key);
     }
 
@@ -1763,6 +1769,7 @@ impl App {
             KeyCode::Home | KeyCode::Char('g') => self.history_step(isize::MIN / 2),
             KeyCode::End | KeyCode::Char('G') => self.history_step(isize::MAX / 2),
             KeyCode::Enter => self.open_commit(),
+            KeyCode::Esc => self.set_focus(Focus::Terminal),
             _ => {}
         }
     }

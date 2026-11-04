@@ -658,7 +658,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
         (
             "Full screen",
             vec![
-                ("esc".into(), "back to the tree, then to the three columns"),
+                ("esc".into(), "back to the tree, the three columns, then the terminal"),
                 ("⏎ in history".into(), "the commit: its files and their changes"),
                 ("⏎ tab".into(), "from the tree into the file, and back"),
                 ("pgup pgdn".into(), "scroll the file"),
