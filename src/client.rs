@@ -1,6 +1,3 @@
-//! Pulpo's side of the server: connect to it, or start it, then pass what
-//! it says on to the event loop.
-
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -16,8 +13,7 @@ use crate::Msg;
 use crate::proto::{self, Frame, ToClient, ToServer};
 use crate::server;
 
-/// The way to the server, shared by every terminal. Writes that fail are
-/// dropped: the reader notices the server is gone and says so.
+/// Failed writes are dropped: the reader notices the server is gone.
 #[derive(Clone)]
 pub struct Link(Arc<Mutex<UnixStream>>);
 
@@ -37,8 +33,6 @@ impl Link {
     }
 }
 
-/// Connect to the server, starting it if none runs, and say hello. Its
-/// messages arrive on `tx`; `Msg::ServerGone` when it goes away.
 pub fn connect(tx: Sender<Msg>) -> Result<Link> {
     let path = server::socket();
     let stream = match UnixStream::connect(&path) {
@@ -81,8 +75,7 @@ pub fn connect(tx: Sender<Msg>) -> Result<Link> {
     Ok(link)
 }
 
-/// Start `pulpo serve` on its own: its own session, no terminal, output to
-/// its log, so it keeps running after this Pulpo quits.
+/// Its own session, no terminal, so it keeps running after this Pulpo quits.
 fn start() -> Result<()> {
     let dir = server::dir();
     fs::create_dir_all(&dir)?;

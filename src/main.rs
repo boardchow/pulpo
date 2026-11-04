@@ -48,8 +48,7 @@ const USAGE: &str = "usage:
   pulpo emit     record a hook event from stdin (called by the hooks)
   pulpo serve    run the server that keeps terminals running (Pulpo starts it)";
 
-/// Minimum time between two refreshes caused by file changes, so a build
-/// writing thousands of files doesn't run `git status` thousands of times.
+/// So a build writing thousands of files doesn't run `git status` thousands of times.
 const FS_THROTTLE: Duration = Duration::from_millis(300);
 
 pub enum Msg {
@@ -61,14 +60,9 @@ pub enum Msg {
     ServerGone,
     Search(usize, Vec<search::Hit>),
     Repos(Vec<String>),
-    /// A session's removal ended: its folder, its log, and whether it worked.
     Removed(PathBuf, PathBuf, bool),
-    /// A new session (its repository and name) is made, in this folder,
-    /// with notes for its setup's log, or why it couldn't be.
     Copied((PathBuf, String), Result<(PathBuf, Vec<String>), String>),
-    /// A session's setup ended: its folder, its log, and whether it worked.
     SetUp(PathBuf, PathBuf, bool),
-    /// What a session changed, read in the background.
     Changes(Box<review::Read>),
 }
 
@@ -77,7 +71,7 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("emit") => agents::emit(),
         Some("serve") => server::serve(&args[1..])?,
-        // The last step of removing a session, run by its removal script.
+        // Run by a session's removal script.
         Some("forget-session") if args.len() == 2 => session::forget(std::path::Path::new(&args[1]))?,
         Some("hooks") => agents::hooks(&args[1..])?,
         Some("doctor") => doctor::doctor(&args[1..])?,
@@ -85,7 +79,6 @@ fn main() -> Result<()> {
         Some("-h" | "--help") => println!("{USAGE}"),
         arg => {
             let start = arg.map(PathBuf::from).unwrap_or(std::env::current_dir()?).canonicalize()?;
-            // Opening Pulpo inside a repository adds it to the workspace list.
             let launch = git::toplevel(&start);
             // A session's copy is its repository's session, not a repository.
             let copy = launch.as_ref().is_some_and(|top| session::all().iter().any(|s| &s.root == top));
@@ -124,8 +117,7 @@ fn run(launch: Option<PathBuf>, scratch: PathBuf) -> Result<()> {
     let link = client::connect(tx.clone())?;
     let mut app = App::new(launch, scratch, tx, link)?;
     let mut terminal = ratatui::init();
-    // The kitty keyboard protocol lets Ghostty report keys like Shift+Enter
-    // that the legacy encoding can't tell apart. Terminals without it ignore this.
+    // Kitty keyboard protocol, so Ghostty reports keys like Shift+Enter; others ignore it.
     let keys = PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES);
     execute!(stdout(), EnableMouseCapture, EnableBracketedPaste, keys)?;
     let result = event_loop(&mut terminal, &mut app, &rx);
@@ -135,8 +127,7 @@ fn run(launch: Option<PathBuf>, scratch: PathBuf) -> Result<()> {
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>) -> Result<()> {
-    // Draw once so the terminal size is known; the server then shows its
-    // terminals, or a first shell.
+    // Draw once so the terminal size is known before the server shows its terminals.
     terminal.draw(|frame| ui::draw(frame, app))?;
     if workspace::registered().is_empty() {
         app.open_repo_picker();
@@ -147,8 +138,6 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
         app.tick();
         terminal.draw(|frame| ui::draw(frame, app))?;
 
-        // Wake at least twice a second so "busy" indicators fade out, and
-        // often enough to turn the spinner while something works.
         let wake = Duration::from_millis(if app.animating() { 100 } else { 500 });
         let first = match rx.recv_timeout(wake) {
             Ok(msg) => Some(msg),

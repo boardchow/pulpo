@@ -11,8 +11,7 @@ pub struct Row {
     pub expanded: bool,
 }
 
-/// A file tree that only lists expanded directories, so it stays cheap to
-/// rebuild on every file system change.
+/// Only lists expanded directories, so it stays cheap to rebuild on every change.
 pub struct Tree {
     root: PathBuf,
     expanded: HashSet<PathBuf>,
@@ -53,8 +52,6 @@ impl Tree {
     }
 }
 
-/// A tree of only `paths` (relative to `root`) and the folders down to
-/// them, all unfolded; folders first at every level, like the full tree.
 pub fn of_paths<'a>(root: &Path, paths: impl IntoIterator<Item = &'a str>) -> Vec<Row> {
     let mut seen = HashSet::new();
     let mut entries: Vec<(PathBuf, bool)> = Vec::new();
@@ -89,7 +86,6 @@ pub fn of_paths<'a>(root: &Path, paths: impl IntoIterator<Item = &'a str>) -> Ve
         .collect()
 }
 
-/// Direct children of `dir`, gitignore-aware, directories first.
 fn list_dir(dir: &Path) -> Vec<(PathBuf, bool)> {
     let mut entries: Vec<(PathBuf, bool)> = WalkBuilder::new(dir)
         .max_depth(Some(1))

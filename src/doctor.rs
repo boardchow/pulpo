@@ -1,13 +1,8 @@
-//! `pulpo doctor`: whether the prefix reaches Pulpo, and whether
-//! Claude reports to it.
-
 use std::path::PathBuf;
 use std::process::Command;
 
 use crate::keymap::{self, Key, Keymap};
 
-/// `pulpo keytest`: what Pulpo gets for each key pressed, and whether it's
-/// the prefix; q stops.
 pub fn keytest() -> anyhow::Result<()> {
     use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
     use ratatui::crossterm::{execute, terminal};
@@ -83,8 +78,6 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
-/// The input sources ⌃Space cycles through, when macOS has that shortcut
-/// on and there is more than one.
 fn input_switch_on_ctrl_space() -> Option<usize> {
     let read = |domain: &str, key: &str| {
         Command::new("defaults").args(["read", domain, key]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
@@ -94,8 +87,7 @@ fn input_switch_on_ctrl_space() -> Option<usize> {
     if layouts < 2 {
         return None;
     }
-    // Shortcut 60, "Select the previous input source": on, and ⌃Space
-    // (space is key code 49, control is 262144), unless you changed it.
+    // Shortcut 60, "Select the previous input source": space is key code 49, control 262144.
     let hotkeys = read("com.apple.symbolichotkeys", "AppleSymbolicHotKeys").unwrap_or_default();
     let Some(start) = hotkeys.find("    60 =") else { return Some(layouts) };
     let entry = &hotkeys[start..];
@@ -114,4 +106,3 @@ pub fn ghostty_configs() -> Vec<PathBuf> {
         .filter(|p| p.is_file())
         .collect()
 }
-

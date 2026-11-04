@@ -1,16 +1,4 @@
-//! `pulpo serve`: the background process that owns every terminal, so
-//! agents, dev servers and long jobs keep running when Pulpo quits or is
-//! rebuilt. Pulpo connects to it over a Unix socket, which only this user
-//! can open; the server listens on no network port.
-//!
-//! It starts when Pulpo first needs it and exits by itself once it has had
-//! no terminals and no Pulpo connected for a while.
-//!
-//! When Pulpo finds the server runs an older build than its own, it asks
-//! it to upgrade: the server writes down its terminals, then replaces its
-//! program with the new one (`execve`). The process stays the same, so the
-//! programs in the terminals remain its children and their pseudo-terminals
-//! stay open; nothing in them notices.
+//! Owns every terminal; upgrades in place (`execve`) so their programs and ptys survive.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -36,28 +24,20 @@ use crate::term::{self, Events, SCROLLBACK, nz};
 /// Bumped when `Resume` changes so that an older server can't read it.
 const RESUME: u32 = 1;
 
-/// How long the server stays up with nothing to do.
 const IDLE: Duration = Duration::from_secs(60);
 const TICK: Duration = Duration::from_millis(250);
-/// Frames waiting for a slow Pulpo before it is dropped (it reconnects).
 const BACKLOG: usize = 4096;
-/// Output read but not yet shown, in chunks of up to 16 KB: when it's
-/// full, a program printing faster than that waits, as in any terminal.
+/// Output chunks in flight; when full, a program printing faster waits, as in any terminal.
 const OUTPUT: usize = 64;
-/// Input waiting for a program that doesn't read it; more is dropped.
 const INPUT: usize = 256;
 
 const BUSY_FOR: Duration = Duration::from_millis(1500);
-/// Output this soon after you type, paste, click, scroll or resize is the
-/// program answering you (echo, redraw), not working on its own.
+/// Output this soon after input is the program answering you (echo, redraw), not work.
 const ECHO: Duration = Duration::from_millis(400);
-/// Output shorter than this is a blip (a redraw), not work.
 const BLIP: Duration = Duration::from_millis(300);
-/// Working at least this long counts as a task, with a result to read.
 const TASK: Duration = Duration::from_secs(1);
 
-/// Where the server keeps its socket, lock and log. A Pulpo started inside
-/// a Pulpo terminal gets its own server, so it doesn't show itself.
+/// A Pulpo started inside a Pulpo terminal gets its own server, so it doesn't show itself.
 pub fn dir() -> PathBuf {
     let base = crate::agents::state_dir();
     if std::env::var_os("PULPO_TAB").is_some() { base.join("server-nested") } else { base.join("server") }
@@ -75,20 +55,14 @@ enum Event {
     Eof(u32),
 }
 
-/// A closed terminal's processes, asked to stop more and more firmly:
-/// Ctrl-C to the program in front (what `docker compose up` or a dev
-/// server stop cleanly on), then hang-up to everything in it, as closing a
-/// window does, then terminate, then kill.
+/// Ctrl-C to the front program first (what `docker compose up` stops cleanly on), then hang-up, terminate, kill.
 struct Stopping {
-    /// The process group in front when it was closed, and every group in
-    /// the terminal; taken at once, since its processes move to launchd
-    /// when the shell exits.
+    /// Taken at once: the processes move to launchd when the shell exits.
     front: Option<i32>,
     groups: Vec<i32>,
     stage: Stage,
     since: Instant,
-    /// Claude: when it was last sent ctrl-c. It quits on the second, as
-    /// when you press it, instead of waiting out the grace.
+    /// Claude quits on a second ctrl-c instead of waiting out the grace.
     agent: Option<Instant>,
 }
 
@@ -101,7 +75,6 @@ enum Stage {
 }
 
 impl Stopping {
-    /// Signal what is still running; false once nothing is.
     fn advance(&mut self) -> bool {
         let alive: Vec<i32> = self.groups.iter().copied().filter(|&g| unsafe { libc::kill(-g, 0) } == 0).collect();
         self.groups = alive;
@@ -118,7 +91,6 @@ impl Stopping {
             self.agent = Some(Instant::now());
         }
         let next = match self.stage {
-            // Give the program its time to clean up (containers stopping).
             Stage::Interrupt if front_alive && self.since.elapsed() < Duration::from_secs(10) => return true,
             Stage::Interrupt => Stage::HangUp,
             Stage::HangUp if self.since.elapsed() < Duration::from_secs(3) => return true,
@@ -150,15 +122,12 @@ impl Stopping {
     }
 }
 
-/// A connected Pulpo.
 struct Client {
     id: u64,
     frames: SyncSender<Vec<u8>>,
     stream: UnixStream,
 }
 
-/// One terminal: the program on its pseudo-terminal, and what Pulpo shows
-/// of it.
 struct Terminal {
     id: u32,
     tag: String,
@@ -168,19 +137,14 @@ struct Terminal {
     running: Option<String>,
     unread: bool,
     pty: Pty,
-    /// What's typed, written by a thread of its own: a program that doesn't
-    /// read would otherwise hold up every terminal.
+    /// Written by its own thread: a program that doesn't read would otherwise block every terminal.
     input: SyncSender<Vec<u8>>,
     parser: vt100::Parser<Events>,
-    /// Last output the program made on its own, since when it has been
-    /// working without a pause, and the last thing sent to it.
     last_activity: Instant,
     working_since: Option<Instant>,
     last_input: Instant,
-    /// Its output ended, or its program exited (and when).
     eof: bool,
     exited: Option<Instant>,
-    /// The info Pulpo last got, to send only changes.
     sent: Option<Info>,
 }
 
@@ -226,7 +190,6 @@ impl Terminal {
         if !replies.is_empty() {
             let _ = self.input.try_send(replies);
         }
-        // It reports that it waits for you, failed or finished.
         if let Some((now, _)) = self.parser.callbacks().status.summary()
             && Some(now) != before
             && matches!(now, crate::status::Status::Blocked | crate::status::Status::Error | crate::status::Status::Done)
@@ -246,7 +209,6 @@ impl Terminal {
         self.parser.set_size(nz(rows), nz(cols));
     }
 
-    /// The program is printing on its own: an agent at work, a build, a server.
     fn working(&self) -> bool {
         self.active() && self.working_since.is_some_and(|since| self.last_activity - since >= BLIP)
     }
@@ -255,8 +217,6 @@ impl Terminal {
         self.last_activity.elapsed() < BUSY_FOR
     }
 
-    /// When the program stops working, a run long enough to be a task leaves
-    /// something to read.
     fn settle(&mut self) {
         if !self.active()
             && let Some(since) = self.working_since.take()
@@ -284,19 +244,15 @@ struct Server {
     idle: Duration,
     /// Its own build, from when it started (the file may since be newer).
     built: u64,
-    /// Held as long as the server runs; with the listener, handed on when
-    /// it upgrades.
+    /// Held while the server runs; handed on with the listener on upgrade.
     lock: File,
     listener: RawFd,
-    /// The terminal readers, and the pipe that stops them.
     readers: Vec<JoinHandle<()>>,
     wake: (OwnedFd, OwnedFd),
-    /// A client asked to upgrade to this program.
     upgrade: Option<(u64, PathBuf)>,
     stopping: Vec<Stopping>,
 }
 
-/// What a server writes down for the program that replaces it.
 #[derive(Serialize, Deserialize)]
 struct Resume {
     version: u32,
@@ -322,8 +278,6 @@ struct Saved {
     status: Records,
 }
 
-/// `pulpo serve [--resume FILE | --check-resume FILE]`. Returns at once if
-/// a server already runs.
 pub fn serve(args: &[String]) -> Result<()> {
     match args {
         [flag, file] if flag == "--check-resume" => read_resume(Path::new(file)).map(drop),
@@ -352,7 +306,6 @@ fn start() -> Result<()> {
     Ok(())
 }
 
-/// Carry on as the server another build of Pulpo handed its terminals to.
 fn resume(file: &Path) -> Result<()> {
     let saved = read_resume(file)?;
     let _ = fs::remove_file(file);
@@ -402,8 +355,6 @@ fn read_resume(file: &Path) -> Result<Resume> {
     Ok(saved)
 }
 
-/// Pass a terminal's output to the main loop until it ends, or until the
-/// server stops its readers to upgrade.
 fn reader(id: u32, master: &File, wake: RawFd, tx: SyncSender<Event>) -> io::Result<JoinHandle<()>> {
     let mut master = master.try_clone()?;
     Ok(std::thread::spawn(move || {
@@ -420,8 +371,6 @@ fn reader(id: u32, master: &File, wake: RawFd, tx: SyncSender<Event>) -> io::Res
     }))
 }
 
-/// Write what's typed to a terminal, for as long as it takes its program to
-/// read it.
 fn writer(master: &File) -> io::Result<SyncSender<Vec<u8>>> {
     let mut master = master.try_clone()?;
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(INPUT);
@@ -435,7 +384,6 @@ fn writer(master: &File) -> io::Result<SyncSender<Vec<u8>>> {
     Ok(tx)
 }
 
-/// Wait until `fd` has something to read: true, or `wake` does: false.
 /// `select`, because macOS doesn't support `poll` or kqueue on terminals.
 fn readable(fd: RawFd, wake: RawFd) -> bool {
     loop {
@@ -496,7 +444,6 @@ impl Server {
         Ok((server, rx))
     }
 
-    /// Serve until idle, then let go of the socket.
     fn serve(&mut self, rx: &Receiver<Event>) {
         self.run(rx);
         let _ = fs::remove_file(socket());
@@ -669,11 +616,9 @@ impl Server {
         Ok(())
     }
 
-    /// Replace this program with `exe`, keeping every terminal. Returns
-    /// only when that fails, with the server as it was.
+    /// Returns only if the upgrade fails, with the server as it was.
     fn upgrade(&mut self, exe: &Path, rx: &Receiver<Event>) -> anyhow::Error {
-        // Stop the readers, then take in what they read, so no output is
-        // lost between this program and the next.
+        // Stop the readers, then take in what they read, so no output is lost across the exec.
         let _ = File::from(self.wake.1.try_clone().expect("a duplicate")).write_all(b"x");
         // A reader may be waiting for room in the channel: keep taking.
         let mut later = Vec::new();
@@ -694,7 +639,6 @@ impl Server {
             let _ = reader.join();
         }
         let Err(error) = self.hand_over(exe);
-        // Still here: read on.
         self.wake = pipe().expect("a pipe");
         for terminal in &self.terminals {
             if let Ok(reader) = reader(terminal.id, &terminal.pty.master, self.wake.0.as_raw_fd(), self.events.clone()) {
@@ -707,8 +651,6 @@ impl Server {
         error
     }
 
-    /// Write the terminals down, check that `exe` can read them, and become
-    /// `exe`.
     fn hand_over(&mut self, exe: &Path) -> Result<std::convert::Infallible> {
         let saved = Resume {
             version: RESUME,
@@ -770,7 +712,6 @@ impl Server {
         Err(error.into())
     }
 
-    /// Show terminal `i` to a client: its info and size, then its screen.
     fn attach(&mut self, client: u64, i: usize, token: Option<u64>) {
         let terminal = &mut self.terminals[i];
         let info = terminal.info();
@@ -782,9 +723,7 @@ impl Server {
         self.send_frame(client, proto::output(id, &snapshot));
     }
 
-    /// Terminals whose program exited are gone. Waiting on the process,
-    /// not only for the end of output: a background job can keep the
-    /// terminal open after its shell exits.
+    /// Waits on the process, not only for EOF: a background job can keep the terminal open after its shell exits.
     fn reap(&mut self) {
         let mut ended = Vec::new();
         for terminal in &mut self.terminals {
@@ -860,8 +799,7 @@ impl Server {
         }
     }
 
-    /// A Pulpo too slow to keep up is let go rather than holding up the
-    /// terminals; it reconnects and gets their screens afresh.
+    /// A Pulpo too slow to keep up is dropped rather than holding up the terminals; it reconnects.
     fn deliver(&mut self, i: usize, frame: Vec<u8>) {
         if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) = self.clients[i].frames.try_send(frame) {
             let client = self.clients.remove(i);
@@ -870,7 +808,6 @@ impl Server {
     }
 }
 
-/// When the program at `exe` was built: its modification time.
 pub fn built(exe: &Path) -> u64 {
     fs::metadata(exe)
         .and_then(|m| m.modified())

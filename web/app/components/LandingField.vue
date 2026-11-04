@@ -1,6 +1,4 @@
 <script setup>
-// The field of drifting characters the pulpo swims through, behind the
-// landing page. Drawn on a canvas, only in the browser.
 const field = ref(null);
 let stop = () => {};
 
@@ -15,13 +13,11 @@ onMounted(() => {
   const FONT = 12;
   const LINE = 15;
   const BG = [0x09, 0x09, 0x09];
-  // Faint greys for the field, around the theme's BORDER and DIM.
   const GREYS = ["#141416", "#19191c", "#1f2024", "#26272c", "#303136"];
-  // The pulpo: from a dim ACCENT up to BLUE, then a touch brighter for the shimmer.
   const BLUES = ramp([[0x5E, 0x6A, 0xD2, 0.22], [0x5E, 0x6A, 0xD2, 0.6], [0x8F, 0xA4, 0xFF, 0.85], [0x8F, 0xA4, 0xFF, 1], [0xC4, 0xCF, 0xFF, 1]], 14);
   const COLORS = [...GREYS, ...BLUES];
 
-  // The mascot from assets/pulpo.svg, one span [from, to) per row, in its 16×10 pixels.
+  // assets/pulpo.svg: one span [from, to) per row of its 16×10 pixels.
   const BODY = [
     [[5, 11]],
     [[3, 13]],
@@ -49,7 +45,6 @@ onMounted(() => {
     return out;
   }
 
-  // Every glyph in every color, drawn once; frames only copy from it.
   function buildAtlas() {
     atlas = document.createElement("canvas");
     atlas.width = Math.ceil(cw * dpr) * GLYPHS.length;
@@ -74,15 +69,12 @@ onMounted(() => {
     cw = Math.ceil(ctx.measureText("M").width * dpr) / dpr;
     cols = Math.ceil(innerWidth / cw);
     rows = Math.ceil(innerHeight / LINE);
-    // A quarter of the field stays blank, like the reference.
     glyph = Int16Array.from({ length: cols * rows }, () => (Math.random() < 0.25 ? -1 : (Math.random() * GLYPHS.length) | 0));
     heat = new Float32Array(cols * rows);
     buildAtlas();
     measure();
   }
 
-  // Where the header ends, which the pulpo stays below, and where the hero
-  // text sits, so the pulpo can swim behind it without drowning it.
   function measure() {
     ceiling = document.querySelector(".landing header").getBoundingClientRect().bottom;
     const boxes = [...document.querySelectorAll(".landing main > *")].map((el) => el.getBoundingClientRect());
@@ -94,7 +86,6 @@ onMounted(() => {
     };
   }
 
-  // How much of the pixel at (u, v) the pulpo covers, tentacles swaying with time.
   function inside(u, v, t, blinking) {
     if (v < 0 || v >= 10) return false;
     const row = Math.floor(v);
@@ -112,7 +103,6 @@ onMounted(() => {
     const t = ms / 1000;
     const W = innerWidth, H = innerHeight;
     const P = Math.max(15, Math.min(W / 40, H / 22));
-    // A slow figure eight across the screen, bobbing and tilting as it swims.
     // Its head, tilted and bobbing, reaches 6.1 of its pixels above its center: keep that under the header.
     const top = ceiling + 6.5 * P, bottom = Math.max(top, H * 0.78);
     const cx = W * (0.5 + 0.36 * Math.sin(t * 0.11));
@@ -150,12 +140,10 @@ onMounted(() => {
         const i = r * cols + c;
         const h = heat[i];
         let g = glyph[i];
-        // The pulpo shimmers; the field churns slowly.
         if (Math.random() < (h > 0.3 ? 0.18 : 0.006)) g = glyph[i] = h > 0.05 || Math.random() > 0.25 ? (Math.random() * GLYPHS.length) | 0 : -1;
         let color;
         if (h > 0.05) {
           if (g < 0) g = glyph[i] = (Math.random() * GLYPHS.length) | 0;
-          // Dimmer behind the text, fading back within 60px of it.
           const x = (c + 0.5) * cw, y = (r + 0.5) * LINE;
           const away = Math.hypot(Math.max(text.x0 - x, 0, x - text.x1), Math.max(text.y0 - y, 0, y - text.y1));
           const level = h * (0.3 + 0.7 * Math.min(1, away / 60));
@@ -163,7 +151,6 @@ onMounted(() => {
         } else {
           if (g < 0) continue;
           const x = c * cw, y = r * LINE;
-          // Slow swells of brightness, and a little glow around the cursor.
           const swell = Math.sin(x * 0.006 + t * 0.4) * Math.sin(y * 0.009 - t * 0.3) + Math.sin((x + y) * 0.003 + t * 0.25);
           const near = Math.max(0, 1 - Math.hypot(x - mouseX, y - mouseY) / 140);
           color = Math.min(GREYS.length - 1, Math.max(0, Math.floor(1 + swell + near * 3)));
@@ -175,7 +162,6 @@ onMounted(() => {
 
   let last = 0;
   function loop(ms) {
-    // About 30 frames a second is plenty for drifting characters.
     if (ms - last > 33) {
       last = ms;
       frame(ms);
@@ -223,7 +209,6 @@ canvas {
   height: 100%;
   display: block;
 }
-/* Darkens the field behind the text so it stays readable when the pulpo swims by. */
 .veil {
   position: fixed;
   inset: 0;

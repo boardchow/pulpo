@@ -1,16 +1,10 @@
-//! Pulpo's keys: a prefix (⌘p or ⌃b, as in Herdr and tmux) from
-//! anywhere, terminals included, then one key: w s t f c to go to a
-//! panel, n and x to make and close, and the rest in `app.rs`. Every other
-//! key goes to what has the focus. `~/.config/pulpo/keys.toml` can change
-//! the prefix.
-
 use std::fmt;
 use std::path::PathBuf;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
 
-/// A key as Pulpo compares them: the character says whether shift was down.
+/// The character says whether shift was down.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Key {
     pub code: KeyCode,
@@ -39,7 +33,6 @@ impl Key {
         Key { code, mods }
     }
 
-    /// `cmd-p`, `ctrl-space`, `ctrl-]`, `alt-1`, `N`, `?`, `tab`…
     pub fn parse(text: &str) -> Option<Key> {
         let mut mods = KeyModifiers::NONE;
         let mut rest = text;
@@ -86,7 +79,6 @@ impl fmt::Display for Key {
                 f.write_str(glyph)?;
             }
         }
-        // Letters as they are typed: ⌘p, and a capital only with shift (Q).
         match self.code {
             KeyCode::Char(' ') => f.write_str("␣"),
             KeyCode::Char(c) => write!(f, "{c}"),
@@ -100,21 +92,16 @@ impl fmt::Display for Key {
 }
 
 pub struct Keymap {
-    /// The prefix: what comes after it is Pulpo's.
     pub prefix: Vec<Key>,
 }
 
 impl Default for Keymap {
     fn default() -> Self {
-        // ⌘p: P for Pulpo, free in Ghostty (its palette is ⌘⇧P), in macOS
-        // and in every program, since none gets ⌘. ⌃b as Herdr and tmux
-        // have it, for terminals that keep ⌘ to themselves; ⌃b twice sends
-        // one to the program (Claude backgrounds a command with it).
+        // ⌘p is free in Ghostty, macOS and every program; ⌃b for terminals that keep ⌘ to themselves.
         Keymap { prefix: ["cmd-p", "ctrl-b"].iter().filter_map(|k| Key::parse(k)).collect() }
     }
 }
 
-/// One key or several, in keys.toml.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Keys {
@@ -128,7 +115,7 @@ struct File {
     prefix: Option<Keys>,
     /// What the prefix was called before.
     pulpo: Option<Keys>,
-    /// Tables of earlier versions, read and left alone so the prefix still
+    /// Tables of earlier versions, accepted so an old file still loads.
     /// loads from an old file.
     #[serde(rename = "after_prefix")]
     _after_prefix: Option<toml::Value>,
@@ -146,7 +133,6 @@ pub fn path() -> PathBuf {
 }
 
 impl Keymap {
-    /// The defaults, with keys.toml on top, and what was wrong in it.
     pub fn load() -> (Keymap, Option<String>) {
         let path = path();
         match std::fs::read_to_string(&path) {
@@ -177,7 +163,6 @@ impl Keymap {
         self.prefix.contains(&key) || legacy.is_some_and(|k| self.prefix.contains(&k))
     }
 
-    /// `⌘p`: the prefix, as Pulpo shows it.
     pub fn label(&self) -> String {
         self.prefix.first().map(Key::to_string).unwrap_or_default()
     }
@@ -198,7 +183,6 @@ mod tests {
         assert_eq!(key("cmd-p").to_string(), "⌘p");
         assert_eq!(key("cmd-p"), Key::of(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::SUPER)));
         assert_eq!(key("ctrl-]").to_string(), "⌃]");
-        // Shift is in the character, however the terminal reports it.
         assert_eq!(key("N"), Key::of(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::SHIFT)));
         assert_eq!(key("shift-tab").code, KeyCode::BackTab);
         assert!(Key::parse("ctrl-nope").is_none());
@@ -208,12 +192,10 @@ mod tests {
     fn keys_toml_sets_the_prefix() {
         let keymap = Keymap::from_toml("prefix = \"ctrl-a\"").unwrap();
         assert_eq!(keymap.prefix, vec![key("ctrl-a")]);
-        // Its old name still works.
         assert_eq!(Keymap::from_toml("pulpo = [\"cmd-j\"]").unwrap().prefix, vec![key("cmd-j")]);
         assert_eq!(Keymap::default().label(), "⌘p");
         assert!(Keymap::default().is_prefix(key("ctrl-b")));
         assert!(Keymap::from_toml("leader = \"ctrl-b\"").is_err());
-        // An old file: its prefix, the rest left alone.
         let old = "prefix = \"ctrl-a\"\nlegacy_ctrl_keys = true\n[after_prefix]\nn = \"new\"\n[chords]\nx = \"alt-1\"\n";
         assert_eq!(Keymap::from_toml(old).unwrap().prefix, vec![key("ctrl-a")]);
     }
