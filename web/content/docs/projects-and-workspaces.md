@@ -17,11 +17,11 @@ Selecting a project opens the project itself, the repository folder you added: i
 
 A workspace is an isolated copy of a project, a git worktree on its own branch, with its own ports and Docker containers. Selecting one shows its terminals, files and changes.
 
-Workspaces lists every project's workspaces, each with its project's name on the right, so you can go from one to another without going through Projects. The ones waiting for you come first, then the ones working, then the rest. Selecting a workspace in another project makes that project the current one.
+Workspaces lists every project's workspaces, each with its project's name on the right, so you can go from one to another without going through Projects. A workspace moves to the top when it starts waiting for you, and above the quiet ones when it starts working. It stays where it is once you've read it: rows only move up. Selecting a workspace in another project makes that project the current one.
 
 A new project has no workspaces. Worktrees made outside Pulpo, by agents or by hand, don't show.
 
-Each row shows its number, the workspace's state, name, uncommitted changes (`±3`) and project. The prefix then the number goes straight to that workspace's terminal: with two workspaces waiting for you, :kp[1] is the first and :kp[2] the second. The numbers follow the order, so they change when a workspace's state does.
+Each row shows its number, the workspace's state, name, uncommitted changes (`±3`) and project. The prefix then the number goes straight to that workspace's terminal: with two workspaces waiting for you, :kp[1] is the first and :kp[2] the second. The numbers follow the order, so they change when a workspace moves up.
 
 ## Create a workspace
 
