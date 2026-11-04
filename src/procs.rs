@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::process::Command;
 
 pub struct Proc {
@@ -20,15 +19,6 @@ fn parse_ps(text: &str) -> Vec<Proc> {
             Some(Proc { pid: number()?, ppid: number()?, pgid: number()? })
         })
         .collect()
-}
-
-/// Every process's working directory; None if `lsof` can't say.
-pub fn cwds() -> Option<Vec<PathBuf>> {
-    let out = Command::new("lsof").args(["-n", "-w", "-d", "cwd", "-Fn"]).output().ok()?;
-    // Exits 1 when some processes can't be read: the rest is still there.
-    let text = String::from_utf8_lossy(&out.stdout);
-    let found: Vec<PathBuf> = text.lines().filter_map(|line| line.strip_prefix('n')).map(PathBuf::from).collect();
-    (!found.is_empty()).then_some(found)
 }
 
 pub fn tree(table: &[Proc], root: i32) -> Vec<&Proc> {

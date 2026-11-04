@@ -193,14 +193,11 @@ fn set_hooks(settings: &mut Value, command: Option<&str>) -> Vec<(&'static str, 
     changes
 }
 
-pub fn claude_dir() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".claude"))
-}
-
 fn claude_settings() -> PathBuf {
-    claude_dir().join("settings.json")
+    let dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".claude"));
+    dir.join("settings.json")
 }
 
 pub fn shorten(path: &std::path::Path) -> String {
