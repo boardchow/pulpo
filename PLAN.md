@@ -243,7 +243,11 @@ neither git nor ssh can ask on Pulpo's raw-mode terminal:
    own, refused.
 3. `git worktree add --lock` into `~/.pulpo/sessions/<repo>/<name>` (out of
    the folder the repository is in, the way Cursor and Codex keep theirs).
-   Sessions made before sit in `<repo>.sessions/<name>`. The lock keeps
+   Sessions made before, in `<repo>.sessions/<name>`, move there when Pulpo
+   connects to its server and nothing runs in them (no terminal of Pulpo's,
+   no process with its working directory inside, per `lsof`): `git worktree
+   move`, the registry, the layout, and Claude's conversations
+   (`~/.claude/projects/<path, dashed>`), before terminals reopen in them. The lock keeps
    `git worktree prune` and other tools' cleanups off it. Hooks
    (post-checkout, LFS) run; what they say goes to the setup log.
 4. Includes, the Compose override, then the registry entry
