@@ -455,7 +455,7 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
     } else if let Some(prompt) = &app.prompt {
         match &prompt.ask {
-            Ask::Session => input("new session", &prompt.text, "a copy of the repository from its last commit · ⏎ make it · esc cancel"),
+            Ask::Session => input("new session", &prompt.text, "a worktree on its own branch, from the remote's main · ⏎ make it · esc cancel"),
             Ask::File(dir) => {
                 let dir = dir.strip_prefix(&app.ws().root).unwrap_or(dir).display().to_string();
                 let at = if dir.is_empty() { String::new() } else { format!("in {dir}/ · ") };
