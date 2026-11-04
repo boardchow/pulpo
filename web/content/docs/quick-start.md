@@ -19,11 +19,11 @@ order: 3
 
 3. **Learn the prefix.** Press :k[⌘p], release, then a key. :kp[?] lists every key.
 
-4. **Start a second task in a new session.** :kp[s], then :kp[n], then a name. It's a worktree on its own branch, and a shell opens in it. Start `claude` there too.
+4. **Start a second task in a new workspace.** :kp[w], then :kp[n], then a name. It's a worktree on its own branch, and a shell opens in it. Start `claude` there too.
 
-5. **See who needs you.** A ◆ marks the session waiting for you. :kp[a] goes to it.
+5. **See who needs you.** A ◆ marks the workspace waiting for you. :kp[a] goes to it.
 
-6. **Review the work.** :kp[c] shows every file the session changed. :k[⏎] opens one, :k[esc] goes back.
+6. **Review the work.** :kp[c] shows every file the workspace changed. :k[⏎] opens one, :k[esc] goes back.
 
 7. **Quit.** :kp[q] quits and leaves the agents working. Run `pulpo` to come back.
 ::

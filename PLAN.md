@@ -4,13 +4,13 @@ How Pulpo is built and what comes next. For using it, see the README.
 
 ## Scope
 
-Pulpo is a VS Code replacement in one Ghostty window: workspaces (your
+Pulpo is a VS Code replacement in one Ghostty window: projects (your
 repositories), terminals (shells and Claude Code), changes, files, search.
 Terminals run in a background server, so quitting or rebuilding Pulpo
 leaves them running (see "Terminals that keep running"). Git is the
 agents' job; the one place Pulpo does git is making and removing
-sessions (git worktrees, see "Sessions Pulpo makes"). Worktrees made otherwise
-(agents', tools', yours) don't show: only the repository and the sessions
+workspaces (git worktrees, see "Workspaces Pulpo makes"). Worktrees made otherwise
+(agents', tools', yours) don't show: only the repository and the workspaces
 Pulpo made, as in Conductor.
 
 ## Architecture
@@ -18,13 +18,14 @@ Pulpo made, as in Conductor.
 ```
 pulpo (one binary)
 ├── main.rs     terminal setup + event loop (one mpsc channel for everything)
-├── app.rs      state: focus, the prefix and its keys, the terminals' tabs, files, mouse, sessions
-├── ui.rs       ratatui rendering: workspaces and sessions | terminal tabs | files over changes
+├── app.rs      state: focus, the prefix and its keys, the terminals' tabs, files, mouse, workspaces
+├── ui.rs       ratatui rendering: projects and workspaces | terminal tabs | files over changes
 ├── keymap.rs   the prefix (cmd-p, ctrl-b), from keys.toml; `pulpo keytest` and the doctor read it
 ├── input.rs    typing on the bottom line, with readline keys (ctrl-u, ctrl-w, alt-backspace)
-├── review.rs   Changes: what the session changed, as a tree, the selected file's diff
+├── review.rs   Changes: what the workspace changed, as a tree, the selected file's diff
 ├── doctor.rs   `pulpo doctor` (the prefix, the hooks) and `pulpo keytest` (what a key sends)
-├── workspace.rs  repo registry + per-repository state (status, tree)
+├── project.rs  the project list, `~/.config/pulpo/projects`
+├── workspace.rs  per-checkout state (status, tree)
 ├── search.rs   the search popup: the files as a tree filtered as you type (nucleo), or lines in files; the repositories to add
 ├── term.rs     the terminal as Pulpo shows it: a vt100 mirror; snapshots, key and mouse encoding, selections
 ├── server.rs   `pulpo serve`: owns every terminal (PTY + emulator + state), upgrades in place
@@ -32,7 +33,7 @@ pulpo (one binary)
 ├── proto.rs    the frames and messages between the two
 ├── pty.rs      pseudo-terminals with libc: a master fd and a pid, nothing to rebuild
 ├── procs.rs    process trees (`ps`), to hang up what a terminal started
-├── session.rs  the sessions Pulpo makes: worktree, includes, registry, ports, compose guess and override, setup and removal scripts
+├── worktree.rs the workspaces Pulpo makes: worktree, includes, registry, ports, compose guess and override, setup and removal scripts
 ├── layout.rs   where you were, and what was open, across restarts and reboots
 ├── viewer.rs   read-only file view (syntect), and the inline diffs Changes shows
 ├── editor.rs   editing a file, highlighted by the viewer's own code (identical by construction)
@@ -53,28 +54,28 @@ Event sources feeding the loop:
 | agents         | `notify` watcher on the event log          | agent status refresh        |
 | search         | background thread per query                | search results              |
 
-### Sessions
+### Workspaces
 
-The sidebar has repositories (Workspaces) and every repository's checkouts
-(Sessions, each with its repository's name, the ones waiting for you first):
-`main` and its git worktrees, each a `Workspace`. Selecting a checkout of another repository makes it the
+The sidebar has repositories (Projects) and every repository's checkouts
+(Workspaces, each with its project's name, the ones waiting for you first):
+`main` and its git worktrees, each a `Workspace`. Selecting a checkout of another project makes that project the
 current one.
-The current session decides what the right side and the panels show: its
+The current workspace decides what the right side and the panels show: its
 terminals, files and changes. A terminal belongs to the checkout it
 was started in (`info.cwd`), so terminals that kept running fall back into
-their session on their own; one started outside every checkout goes to
-the session on screen. The app keeps the active terminal by id, remembered
-per session, and the session last used in each repository. A session's and
-a repository's mark is the most urgent state of their terminals.
+their workspace on their own; one started outside every checkout goes to
+the workspace on screen. The app keeps the active terminal by id, remembered
+per workspace, and the workspace last used in each project. A workspace's and
+a project's mark is the most urgent state of their terminals.
 
 ### The screen
 
 Three columns and a bottom line, nothing else. Left: the pulpo, then two
-panels as tall as their rows: the workspaces, and every workspace's
-sessions, waiting ones first. A workspace's and a session's mark come first on their row. Middle: the session's
+panels as tall as their rows: the projects, and every project's
+workspaces, waiting ones first. A project's and a workspace's mark come first on their row. Middle: the workspace's
 terminals as tabs, drawn on the top of its frame (in the order of `terms`,
 which is the order they came in; the one on screen is kept by tag per
-session). Right: Files over Changes, each a tree and the selected file; in
+workspace). Right: Files over Changes, each a tree and the selected file; in
 one of them, ⏎ (or a double click), or editing, gives that panel
 everything right of the sidebar, the terminal included, and esc takes it
 back. Only a click moves the focus; hovering or scrolling a panel doesn't.
@@ -83,7 +84,7 @@ width they were dragged to while Pulpo runs. The bottom line is where you type a
 question (y), or read a message.
 
 Keys go to what has the focus. The prefix (⌘p or ⌃b, then one key) is
-taken from anywhere first: w s t f c move the focus, n and x make and
+taken from anywhere first: p w t f c move the focus, n and x make and
 close what has it, [ ] change tabs, a goes to who waits, / opens the search
 popup (over everything; a file found opens full screen), d e r
 act on files, q and Q quit. < and > hide or show a side; ? shows the keybinds in a popup (any key closes it). The prefix waits 3 s for its key; a click cancels it. ⌃b twice sends one to the program. The editor
@@ -108,16 +109,16 @@ error leave something to read. A new shell prompt (OSC 133 A) ends its runs.
 
 ### Changes
 
-Changes compares the session with where it started: a session Pulpo made with the
+Changes compares the workspace with where it started: a workspace Pulpo made with the
 commit it was copied at (`base`, recorded when it is made), so the
 agents' commits are included; a checkout on another branch with where it
 left the main one; the main branch itself with its last commit, so a
-commit takes its changes away. Only the base of a session Pulpo made is kept: every
+commit takes its changes away. Only the base of a workspace Pulpo made is kept: every
 other read finds it again, so a commit or a push moves it. The list of files comes from `git diff --name-status`
 and `ls-files --others`; only the selected file's diff is read, as the whole
 file (`--unified=1000000`) with its changes inline, both sides highlighted
 (reloads run on a thread: `Request::read`, then `Changes::apply`, dropping
-a read that was overtaken or is another session's),
+a read that was overtaken or is another workspace's),
 and an overview ruler down its right edge (added, removed, both; the part in
 view lighter).
 
@@ -127,8 +128,8 @@ view lighter).
 - [x] **v1** — agent status via `pulpo emit` + Claude Code hooks.
 - [x] **v2** — everything in the app: embedded terminal tabs (Claude, shells),
       read-only file viewer, mouse support.
-- [x] **v3** — workspaces from anywhere: every repo Pulpo was opened in is kept in
-      `~/.config/pulpo/workspaces`.
+- [x] **v3** — projects from anywhere: every repo Pulpo was opened in is kept in
+      `~/.config/pulpo/projects`.
 - [x] **v4** — navigation: go to file, search in files, find in file.
 - [x] **v5** — mnemonic keys, full-height viewer, inline and side-by-side
       diffs with added and removed counts, full-height terminal, Pulpo Dark
@@ -137,8 +138,8 @@ view lighter).
       commit unfolds into its files, read like Changes), terminal states
       (working, to read, quiet).
 - [x] Terminals that keep running after quitting and across rebuilds (see below).
-- [x] Sessions: a repository's checkouts, each with its terminals, files, changes and graph.
-- [x] New sessions (`n s`): a copy of the checkout with its own Docker project, ports and database (see below).
+- [x] Workspaces: a project's checkouts, each with its terminals, files, changes and graph.
+- [x] New workspaces (`n s`): a copy of the checkout with its own Docker project, ports and database (see below).
 - [x] Reopen where you were; after a reboot, reopen the terminals and resume their Claude sessions.
 - [x] A built-in editor that looks exactly like the viewer (micro and `$PULPO_EDITOR` are gone).
 - [x] `pulpo hooks install | status | remove` instead of pasting the hooks config.
@@ -147,13 +148,13 @@ view lighter).
 - [x] The review layout: the file pane follows the file the tab's agents last edited (the hooks record `tool_input.file_path`), unless you're reading or editing.
 - [x] Notification (OSC 9 to Ghostty) when an agent waits for input or finishes, at most one per terminal every 10 s.
 - [x] Two modes, one key (Zellij's unlock-first): in a terminal every key is the program's but ⌘p (Ghostty leaves it free, and sends it with the kitty keyboard protocol); in Pulpo, plain keys, `space` for everything (one palette), `r` to review every change in one scroll. Replaced a first try with a prefix, chords and over a hundred bindings.
-- [x] Tabs and panes: each session's tabs, each a tree of splits of terminals and the file pane, kept across restarts. The sidebar in one box: the pulpo with who waits and works, the lists, and the session's tabs with the modes on (BOARD, SCROLL). A top bar came and went: the sidebar already said it all.
+- [x] Tabs and panes: each workspace's tabs, each a tree of splits of terminals and the file pane, kept across restarts. The sidebar in one box: the pulpo with who waits and works, the lists, and the workspace's tabs with the modes on (BOARD, SCROLL). A top bar came and went: the sidebar already said it all.
 - [x] Go to (every terminal of every repo, by state, with what its agent asks), the next one to read, back to the last place, and a menu of every action (`picker.rs`).
 - [x] Themes: following Ghostty's by default, any Ghostty theme, Omarchy's first, tried live in a picker. A Ghostty theme's background, foreground and ANSI colors give the rest (greys faded from the foreground, blue as the accent, syntax from the ANSI colors as Pulpo Dark's are).
-- [x] Layouts (`L`: main pane left, side by side, stacked, grid), the board (every terminal of the repository, tiled), swarms (N sessions, Claude started on a task in each once set up), scrolling back and finding in a terminal, readline keys in every prompt (`input.rs`), right-click menus, dragging pane borders.
-- [x] Start again from Herdr's layout, keeping what's under it: workspaces and sessions | terminal tabs | files over changes, a prefix from anywhere, the mouse for all of it. The palette, splits, layouts, the board, swarms, the graph, the review scroll, scrollback search and the theme picker are gone. A new session is yours at once, set up in the background.
-- [x] Sessions as git worktrees, the industry's pattern (Conductor, Claude Code, Cursor): a branch from the remote's default branch, main's ignored files it needs, a block of ten ports, git in containers (see "Sessions Pulpo makes").
-- [x] Session recipes: Conductor's settings read, an install guessed from lockfiles, a trust prompt for committed scripts (see "Sessions Pulpo makes").
+- [x] Layouts (`L`: main pane left, side by side, stacked, grid), the board (every terminal of the repository, tiled), swarms (N workspaces, Claude started on a task in each once set up), scrolling back and finding in a terminal, readline keys in every prompt (`input.rs`), right-click menus, dragging pane borders.
+- [x] Start again from Herdr's layout, keeping what's under it: projects and workspaces | terminal tabs | files over changes, a prefix from anywhere, the mouse for all of it. The palette, splits, layouts, the board, swarms, the graph, the review scroll, scrollback search and the theme picker are gone. A new workspace is yours at once, set up in the background.
+- [x] Workspaces as git worktrees, the industry's pattern (Conductor, Claude Code, Cursor): a branch from the remote's default branch, main's ignored files it needs, a block of ten ports, git in containers (see "Workspaces Pulpo makes").
+- [x] Workspace recipes: Conductor's settings read, an install guessed from lockfiles, a trust prompt for committed scripts (see "Workspaces Pulpo makes").
 - [ ] Codex support.
 
 ## Terminals that keep running
@@ -200,8 +201,8 @@ for drawing and for encoding keys and the mouse.
 
 - **Where you were** is kept in `server/layout.json`, written whenever it
   changes but only after the server has listed its terminals, so a slow
-  start never overwrites it: the session on screen, the session last used
-  in each repository, the terminal last on screen in each session (by its
+  start never overwrites it: the workspace on screen, the workspace last used
+  in each project, the terminal last on screen in each workspace (by its
   `PULPO_TAB` tag, unique for the server's life), and every open terminal
   with the Claude session alive in it (from the hooks' log).
 - **After a reboot** (or the server dying), the server comes back empty
@@ -211,25 +212,25 @@ for drawing and for encoding keys and the mouse.
   and dashes), else a shell, and points the remembered tags at them. `Q`
   writes an empty list, so stopping everything on purpose stays stopped.
 
-## Sessions Pulpo makes
+## Workspaces Pulpo makes
 
-A session is three things, each with one job:
+A workspace is three things, each with one job:
 
 ```
-Session = checkout (git worktree, own branch)     agents can't touch each other's files or branch
-        + runtime  (own ports, Compose project)   processes, containers, databases can't collide
-        + recipe   (includes, setup, teardown)    no manual step, the same every time
+Workspace = checkout (git worktree, own branch)     agents can't touch each other's files or branch
+          + runtime  (own ports, Compose project)   processes, containers, databases can't collide
+          + recipe   (includes, setup, teardown)    no manual step, the same every time
 ```
 
 This is the pattern Conductor, Orca, Claude Code (`--worktree`) and Cursor
 share: a worktree on its own branch, the ignored files it needs copied, a
-setup script, per-session ports. None of them isolates Docker; Pulpo does.
-Sessions were APFS copies of the whole checkout before (`Kind::Copy` in the
+setup script, per-workspace ports. None of them isolates Docker; Pulpo does.
+Workspaces were APFS copies of the whole checkout before (`Kind::Copy` in the
 registry): no setup again, but commits stayed trapped in the copy until
 pushed, and nobody else works that way. Those are still removed the way
 they were made.
 
-**Checkout.** `session::create`, in a background thread, every git call
+**Checkout.** `worktree::create`, in a background thread, every git call
 with `GIT_TERMINAL_PROMPT=0` and in its own Unix session (`setsid`), so
 neither git nor ssh can ask on Pulpo's raw-mode terminal:
 
@@ -244,21 +245,21 @@ neither git nor ssh can ask on Pulpo's raw-mode terminal:
    in the prompt), as is if `git check-ref-format --branch` takes it. An
    existing one is reused only if it sits at the base; with commits of its
    own, refused.
-3. `git worktree add --lock` into `~/.pulpo/sessions/<repo>/<name>` (out of
+3. `git worktree add --lock` into `~/.pulpo/workspaces/<repo>/<name>` (out of
    the folder the repository is in, the way Cursor and Codex keep theirs).
    The lock keeps
    `git worktree prune` and other tools' cleanups off it. Hooks
    (post-checkout, LFS) run; what they say goes to the setup log.
 4. Includes, the Compose override, then the registry entry
-   (`~/.local/state/pulpo/sessions.json`, under a `flock`) with its ports.
+   (`~/.local/state/pulpo/workspaces.json`, under a `flock`) with its ports.
    A failure undoes what this call made: the worktree, and the branch if it
    made it (git won't delete a branch checked out elsewhere).
 
 Changes compares with the merge-base with the default branch (`base` is
 None for worktrees), so a rebase doesn't show main's commits as the
-session's. The file watcher sends `.git/worktrees/<id>/{HEAD,index}` to
-that worktree only; refs concern everyone. The sidebar lists a session's
-worktree once, as the session. A registry entry whose folder is gone
+workspace's. The file watcher sends `.git/worktrees/<id>/{HEAD,index}` to
+that worktree only; refs concern everyone. The sidebar lists a workspace's
+worktree once, as the workspace. A registry entry whose folder is gone
 (deleted by hand) is forgotten, freeing its ports.
 
 **Includes.** A worktree has only tracked files. Main's ignored files that
@@ -275,25 +276,25 @@ ignored whole is looked into only when a pattern starts with it. Only
 ignored files, never out of the repository. Dependencies aren't copied by
 default: a `.venv` copied elsewhere still runs main's interpreter.
 
-**Runtime.** Each session holds a block of ten ports from 20000:
+**Runtime.** Each workspace holds a block of ten ports from 20000:
 `PULPO_PORT` to `PULPO_PORT+9` for the user (`PORT` too without a compose
 file), the compose file's port variables after the block. All of it counts
 as taken. The terminals' environment also has `COMPOSE_PROJECT_NAME`
-(`<main project>-<name>`), `PULPO_SESSION`, `PULPO_ROOT_PATH`,
+(`<main project>-<name>`), `PULPO_WORKSPACE_NAME`, `PULPO_ROOT_PATH`,
 `PULPO_WORKSPACE_PATH`; `Spawn` carries it to the server. The compose file
-is read with a line scan (`session::guess`): port variables, services built
-locally (their images are tagged for the session instead of rebuilt), the
+is read with a line scan (`worktree::guess`): port variables, services built
+locally (their images are tagged for the workspace instead of rebuilt), the
 database service and engine, and what can't be isolated. That's the first
 layer of the settings (see "Recipes").
 
 **Git in containers.** A worktree's `.git` is a file pointing at
 `<repo>/.git/worktrees/<id>`, absent in a container that mounts the
-session's folder. `docker compose --profile '*' config --format json`
+workspace's folder. `docker compose --profile '*' config --format json`
 (Compose's own resolution: `extends`, every profile, `COMPOSE_FILE` from
 `.env`) finds the services bind-mounting the folder; an override in
 `~/.local/state/pulpo/compose/<project>-<hash of the repository's path>.yaml`
 mounts main's `.git` at the same path, read-only, in each, and the
-session's `COMPOSE_FILE` is its files then the override, read again each
+workspace's `COMPOSE_FILE` is its files then the override, read again each
 time a terminal starts (a compose file added since counts; a missing
 override is left out rather than failing Compose). Read-only plus the lock: a container can read
 history (`merge-base`, `diff`, `log`) but can't prune or rewrite the shared
@@ -306,8 +307,8 @@ override; the setup log says so.
 **Setup and removal** are shell scripts run in the background in their own
 process group, so they survive Pulpo quitting (Q stops a setup still
 running); their output goes to a log in `~/.local/state/pulpo/logs`, which
-starts with what creation noted, and the session shows "setting up"
-meanwhile, then "setup failed" if it did, until the session goes. Setup:
+starts with what creation noted, and the workspace shows "setting up"
+meanwhile, then "setup failed" if it did, until the workspace goes. Setup:
 submodules (a failure is said and the setup goes on), main's images tagged, main's database copied by streaming a
 dump between the two containers (`mysqldump` or `pg_dumpall`, consistent
 without stopping main), `docker compose up -d`, the `setup` command.
@@ -316,27 +317,27 @@ down -v` (by project, so it works without the folder), untagging, `git
 worktree remove --force --force` (it's locked), the branch
 Pulpo made only if still at its start commit (else kept: squash merges
 never look merged to `git branch -d`), the override, then `pulpo
-forget-session`. Only a registered worktree of the repository in
-`~/.pulpo/sessions` is ever removed. If Docker fails, nothing more is
+forget-workspace`. Only a registered worktree of the repository in
+`~/.pulpo/workspaces` is ever removed. If Docker fails, nothing more is
 deleted and Pulpo points at the log. Before, Pulpo says what would be
 lost (uncommitted changes, commits on a detached HEAD) and which branch
-stays. A session whose folder was deleted by hand is removed the same way,
+stays. A workspace whose folder was deleted by hand is removed the same way,
 once, as soon as the watcher sees it gone (its locked worktree would
 otherwise block the name, and its containers stay).
 
 **Known limits**, shared by every worktree tool: one `git stash` per
 repository; concurrent fetches can fail with "cannot lock ref" (retry); a
-branch checked out elsewhere can't be a session's; an agent's `git branch
--D` or `gc` affects every session; `COMPOSE_PROJECT_NAME` and
-`COMPOSE_FILE` follow a `cd` to another project in a session's terminal;
-cookies aren't port-scoped, so localhost logins clash between sessions.
+branch checked out elsewhere can't be a workspace's; an agent's `git branch
+-D` or `gc` affects every workspace; `COMPOSE_PROJECT_NAME` and
+`COMPOSE_FILE` follow a `cd` to another project in a workspace's terminal;
+cookies aren't port-scoped, so localhost logins clash between workspaces.
 
-**Recipes.** `session::config(repo, checkout)` stacks layers, a later one
+**Recipes.** `worktree::config(repo, checkout)` stacks layers, a later one
 winning where it says something: the guess (compose
 file; without one, the install the lockfiles call for: `npm ci`, `pnpm`,
 `yarn`, `bun`, `bundle install`, `uv sync`; with one, installing is the
 containers' business), Conductor's `.conductor/settings.toml` as the
-session's checkout has it, `.conductor/settings.local.toml` in main, then
+workspace's checkout has it, `.conductor/settings.local.toml` in main, then
 Pulpo's file. Of Conductor's: `scripts.setup`, `scripts.archive` (as
 `teardown`), `file_include_globs` (one string, comma or line separated),
 `git.branch_prefix`. Its scripts run with `CONDUCTOR_PORT`,
@@ -350,11 +351,11 @@ no database copy). A file written by the first worktree release (every
 line set, its header "Guessed from its compose file") keeps its meaning:
 its empty values say nothing. Includes add up across layers (`!pattern` takes one
 away). `create` reads main's settings (includes, branch prefix: the
-checkout doesn't exist yet); setup reads the session's checkout. Scripts
+checkout doesn't exist yet); setup reads the workspace's checkout. Scripts
 run under `set -e -o pipefail`, stricter than Conductor's shell.
 
 **Trust.** A setup or teardown script whose winning layer is the
-repository's file is run only once trusted: the session starts from the
+repository's file is run only once trusted: the workspace starts from the
 remote, so anyone who can push could otherwise run code here. A file is
 yours only when it's there by exactly that name, a real folder and file
 (on a case-insensitive disk a committed `.Conductor/Settings.toml` opens
@@ -362,12 +363,12 @@ as `.conductor/settings.toml`; a committed link leads to a committed file;
 git, asked about the name, sees nothing in either case), and `git status
 --porcelain --ignored` answers `??` or `!!` for it (it says nothing for a
 submodule's file); anything unsure is the repository's. Making the
-session asks (each script, how it starts, how many lines); the question carries the exact scripts
+workspace asks (each script, how it starts, how many lines); the question carries the exact scripts
 shown, so yes trusts and runs those, recorded as (repository, exact text)
 in `~/.local/state/pulpo/trusted-scripts.json` (no hash to forge), and
 anything else (another key, a click elsewhere, the prefix, a newer
 question) sets up without them, said in the log. The question comes on
-its own, while you may be typing in the new session's shell, so keys go on
+its own, while you may be typing in the new workspace's shell, so keys go on
 to the terminal instead of answering it until a second passes without
 typing. A changed
 script is asked again. Removal skips an untrusted one the same way. `git
@@ -383,9 +384,10 @@ Compose builds run code from the remote without asking, as in Conductor
 and as after any `git pull && npm i`: asking about the text `npm ci` would
 say nothing about what it runs.
 
-### Sessions: next
+### Workspaces: next
 
-- **A session from an existing branch or pull request**, like Conductor's
+- **A workspace from an existing branch or pull request**
+, like Conductor's
   ⌘⇧N.
 - Dropped: a "setting up" marker for agents. A terminal's environment is
   fixed when it starts, and an agent wouldn't know to look for a file; the

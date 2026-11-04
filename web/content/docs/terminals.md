@@ -1,6 +1,6 @@
 ---
 title: Terminals
-description: Each session has its own terminals, as tabs, run by a background server.
+description: Each workspace has its own terminals, as tabs, run by a background server.
 section: Using Pulpo
 order: 5
 ---

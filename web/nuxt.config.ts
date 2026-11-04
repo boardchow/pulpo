@@ -24,8 +24,11 @@ export default defineNuxtConfig({
       },
     },
   },
+  routeRules: {
+    "/docs/workspaces-and-sessions": { redirect: "/docs/projects-and-workspaces" },
+  },
   nitro: {
-    prerender: { crawlLinks: true, routes: ["/", "/docs", "/sitemap.xml", "/robots.txt", "/search.json"], failOnError: true },
+    prerender: { crawlLinks: true, routes: ["/", "/docs", "/sitemap.xml", "/robots.txt", "/search.json", "/docs/workspaces-and-sessions"], failOnError: true },
   },
   devtools: { enabled: false },
 });

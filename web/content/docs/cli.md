@@ -7,7 +7,7 @@ order: 10
 
 | Command | Does |
 | --- | --- |
-| `pulpo [path]` | Open Pulpo, adding the repository at `path` (default: `.`) |
+| `pulpo [path]` | Open Pulpo, adding the repository at `path` as a project (default: `.`) |
 | `pulpo hooks install` | Add Pulpo's hooks to Claude Code |
 | `pulpo hooks status` | Show which hooks are installed |
 | `pulpo hooks remove` | Remove them |
