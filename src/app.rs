@@ -161,7 +161,10 @@ pub struct App {
     ready: bool,
     reopening: HashMap<u64, String>,
     link: Link,
-    spawning: HashMap<u64, bool>,
+    /// Terminals asked for and not attached yet: whether to focus them, and where.
+    spawning: HashMap<u64, (bool, PathBuf)>,
+    /// When each folder last got a shell of its own, so one that exits at once isn't started again and again.
+    kept: HashMap<PathBuf, Instant>,
     next_token: u64,
     upgrade_asked: bool,
     reconnected: Option<usize>,
@@ -243,6 +246,7 @@ impl App {
             reopening: HashMap::new(),
             link,
             spawning: HashMap::new(),
+            kept: HashMap::new(),
             // Far above any terminal id, so the two never mix.
             next_token: 1 << 40,
             upgrade_asked: false,
@@ -367,6 +371,7 @@ impl App {
             self.changes = Some(Changes::new(&self.workspaces[i].root, base));
             self.reload_changes();
             self.restore_term();
+            self.keep_a_terminal();
             self.preview();
             if let Some(log) = self.setup_failed.get(&self.workspaces[i].root) {
                 self.message = Some(format!("this workspace's setup stopped: see {}", log.display()));
@@ -549,14 +554,25 @@ impl App {
         self.next_token += 1;
         let (rows, cols) = self.term_size;
         let env = self.worktrees.iter().find(|s| s.root == cwd).map(worktree::env).unwrap_or_default();
+        self.spawning.insert(token, (focus, cwd.clone()));
         self.link.send(&ToServer::Spawn { token, program: program.into(), args: args.to_vec(), cwd, rows, cols, env });
-        self.spawning.insert(token, focus);
         token
     }
 
     fn new_terminal(&mut self, focus: bool) {
         let cwd = self.ws().root.clone();
         self.spawn_in(cwd, &shell(), &[], focus);
+    }
+
+    /// The project or workspace on screen always has a terminal: a shell when its last one goes.
+    fn keep_a_terminal(&mut self) {
+        let root = self.ws().root.clone();
+        let opening = self.spawning.values().any(|(_, cwd)| *cwd == root);
+        let just_kept = self.kept.get(&root).is_some_and(|at| at.elapsed() < Duration::from_secs(1));
+        if self.ready && root.is_dir() && !self.removing.contains(&root) && !opening && !just_kept && self.workspace_terms().is_empty() {
+            self.kept.insert(root, Instant::now());
+            self.new_terminal(false);
+        }
     }
 
     fn reopen(&mut self) {
@@ -611,7 +627,7 @@ impl App {
                     }
                     return;
                 }
-                let Some(focus) = token.and_then(|t| self.spawning.remove(&t)) else {
+                let Some((focus, _)) = token.and_then(|t| self.spawning.remove(&t)) else {
                     if self.ready && self.active.is_none() && wt.is_none_or(|s| s == self.current) {
                         self.restore_term();
                     }
@@ -640,10 +656,8 @@ impl App {
                     let reopened = self.message.take().map(|m| format!("; {m}")).unwrap_or_default();
                     self.message = Some(format!("the Pulpo server stopped (see {}){reopened}", log.display()));
                 }
-                if self.workspace_terms().is_empty() && self.spawning.is_empty() {
-                    self.new_terminal(false);
-                }
                 self.ready = true;
+                self.keep_a_terminal();
                 self.restore_term();
             }
             ToClient::Info { info } => {
@@ -857,6 +871,7 @@ impl App {
                 self.select_term(next);
             }
         }
+        self.keep_a_terminal();
     }
 
     fn cycle_tab(&mut self, dir: isize) {
@@ -1080,9 +1095,7 @@ impl App {
         match focus {
             Focus::Terminal => {
                 self.retry_server();
-                if self.active.is_none() && self.ready {
-                    self.new_terminal(true);
-                }
+                self.keep_a_terminal();
             }
             Focus::Files => self.preview(),
             Focus::Changes => {
@@ -2065,10 +2078,11 @@ impl App {
         };
         self.load_workspaces();
         let Some(wt) = self.worktrees.iter().find(|s| s.root == root).cloned() else { return };
+        // Asked for first, so it is the workspace's terminal rather than one more.
+        self.spawn_in(root.clone(), &shell(), &[], true);
         if let Some(i) = self.workspaces.iter().position(|w| w.root == root) {
             self.set_current(i);
         }
-        self.spawn_in(root.clone(), &shell(), &[], true);
         let config = match worktree::config(&wt.repo, &root) {
             Ok((config, warnings)) => {
                 notes.extend(warnings.iter().map(|w| format!("! {w}")));
@@ -2155,10 +2169,6 @@ impl App {
         let skipped = config.without(&untrusted);
         let skipped: String = skipped.iter().map(|n| format!("echo {}\n", worktree::quote(n))).collect();
         let script = skipped + &worktree::teardown_script(&wt, &config, &exe);
-        let ids: Vec<usize> = self.terms.iter().filter(|t| t.info.cwd == wt.root).map(|t| t.id).collect();
-        for id in ids {
-            self.close_terminal(id);
-        }
         let log = logs().join(format!("remove-{}.log", wt.project));
         let mut child = match run_in_background(&script, &wt.repo, &wt, &log) {
             Ok(child) => child,
@@ -2176,6 +2186,10 @@ impl App {
             self.set_current(main);
         }
         self.removing.insert(wt.root.clone());
+        let ids: Vec<usize> = self.terms.iter().filter(|t| t.info.cwd == wt.root).map(|t| t.id).collect();
+        for id in ids {
+            self.close_terminal(id);
+        }
         self.load_workspaces();
         self.message = Some(if asked {
             format!("workspace {} deleted", wt.name)
