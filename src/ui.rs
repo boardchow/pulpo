@@ -400,6 +400,7 @@ fn draw_changes(frame: &mut Frame, app: &mut App, area: Rect) {
     let [file, ruler] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1)]).areas(file);
     app.areas.changes_file = file;
     app.areas.changes_ruler = ruler;
+    changes.set_split(file.width >= SPLIT_WIDTH);
     changes.height = file.height as usize;
     changes.scroll_by(0);
     for (i, (color, in_view)) in changes.ruler(ruler.height as usize).into_iter().enumerate() {
@@ -408,12 +409,42 @@ fn draw_changes(frame: &mut Frame, app: &mut App, area: Rect) {
             cell.set_style(Style::new().fg(color.unwrap_or(theme::editor_bg())).bg(if in_view { theme::border() } else { theme::editor_bg() }));
         }
     }
-    let (scroll, hscroll) = (changes.scroll, changes.hscroll);
-    let lines: Vec<Line> = changes.diff.as_ref().map_or_else(Vec::new, |(_, diff)| {
-        diff.lines.iter().skip(scroll).take(file.height as usize).map(|l| crate::viewer::shift(l.clone(), diff.gutter, hscroll)).collect()
-    });
-    frame.render_widget(Paragraph::new(lines).style(Style::new().bg(theme::editor_bg())), file);
+    let bg = Style::new().bg(theme::editor_bg());
+    let Some((_, diff)) = &changes.diff else {
+        frame.render_widget(Paragraph::new("").style(bg), file);
+        return;
+    };
+    let (scroll, height) = (changes.scroll, file.height as usize);
+    let shown = |i: usize| crate::viewer::shift(diff.lines[i].clone(), diff.gutter, changes.hscroll);
+    if !changes.split {
+        let lines: Vec<Line> = (scroll..diff.lines.len()).take(height).map(shown).collect();
+        frame.render_widget(Paragraph::new(lines).style(bg), file);
+        return;
+    }
+    let [old, line, new] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1), Constraint::Fill(1)]).areas(file);
+    let (mut left, mut right) = (Vec::new(), Vec::new());
+    for &(o, n) in diff.pairs.iter().skip(scroll).take(height) {
+        left.push(o.map_or_else(Line::default, |i| {
+            let mut line = shown(i);
+            if diff.kinds[i] == crate::viewer::Kind::Same {
+                line.spans[0] = Span::from(format!("{:>w$}   ", diff.old_numbers[i], w = diff.gutter - 3)).fg(theme::dim());
+            }
+            line
+        }));
+        right.push(n.map_or_else(Line::default, shown));
+    }
+    frame.render_widget(Paragraph::new(left).style(bg), old);
+    frame.render_widget(Paragraph::new(right).style(bg), new);
+    for y in line.top()..line.bottom() {
+        if let Some(cell) = frame.buffer_mut().cell_mut((line.x, y)) {
+            cell.set_symbol("│").set_style(bg.fg(theme::border()));
+        }
+    }
 }
+
+/// Old and new side by side from here: about 65 columns of code each, so a
+/// diff opened wide splits on screens bigger than a 14" laptop.
+const SPLIT_WIDTH: u16 = 140;
 
 fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Files && !app.prefixed;

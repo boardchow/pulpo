@@ -37,6 +37,8 @@ pub struct Changes {
     pub scroll: usize,
     pub hscroll: usize,
     pub height: usize,
+    /// Old and new side by side; `scroll` and the ruler count its rows then.
+    pub split: bool,
     pub history: History,
     pub history_state: ListState,
 }
@@ -59,6 +61,7 @@ impl Changes {
             scroll: 0,
             hscroll: 0,
             height: 20,
+            split: false,
             history: History::default(),
             history_state: ListState::default().with_selected(Some(0)),
         }
@@ -112,7 +115,7 @@ impl Changes {
         (self.since, self.files, self.history) = (read.since, read.files, read.history);
         self.layout(selected);
         if let Some((path, diff)) = read.diff {
-            self.scroll = if was.as_ref() == Some(&path) { scroll } else { diff.changes.first().map_or(0, |&c| c.saturating_sub(3)) };
+            self.scroll = if was.as_ref() == Some(&path) { scroll } else { first_change(&diff, self.split) };
             self.diff = Some((path, diff));
             self.scroll_by(0);
         }
@@ -151,7 +154,7 @@ impl Changes {
         }
         let untracked = self.files.iter().any(|f| self.root.join(&f.path) == path && f.status == '?');
         let diff = viewer::review_diff(&self.root, &self.against, path, untracked);
-        self.scroll = diff.changes.first().map_or(0, |&c| c.saturating_sub(3));
+        self.scroll = first_change(&diff, self.split);
         self.hscroll = 0;
         self.diff = Some((path.to_path_buf(), diff));
     }
@@ -189,14 +192,36 @@ impl Changes {
         self.hscroll = if columns == 0 { 0 } else { self.hscroll.saturating_add_signed(columns).min(widest) };
     }
 
+    /// Keeps the same lines in view when the layout changes.
+    pub fn set_split(&mut self, split: bool) {
+        if split == self.split {
+            return;
+        }
+        if let Some((_, diff)) = &self.diff {
+            let line = if split { self.scroll } else { diff.pairs.get(self.scroll).and_then(|&(old, new)| old.or(new)).unwrap_or(0) };
+            self.scroll = if split { row_of(diff, true, line) } else { line };
+        }
+        self.split = split;
+        self.scroll_by(0);
+    }
+
+    fn rows_len(&self) -> usize {
+        self.diff.as_ref().map_or(0, |(_, d)| if self.split { d.pairs.len() } else { d.lines.len() })
+    }
+
     pub fn ruler(&self, cells: usize) -> Vec<(Option<Color>, bool)> {
         let Some((_, diff)) = &self.diff else { return Vec::new() };
-        let lines = diff.kinds.len();
+        let rows = self.rows_len();
         (0..cells)
             .map(|cell| {
-                let (start, end) = cell_lines(cell, cells, lines);
+                let (start, end) = cell_lines(cell, cells, rows);
                 let in_view = start < self.scroll + self.height && end > self.scroll;
-                let kinds = diff.kinds.get(start..end).unwrap_or_default();
+                let kinds: Vec<Kind> = if self.split {
+                    let pairs = diff.pairs.get(start..end).unwrap_or_default();
+                    pairs.iter().flat_map(|&(old, new)| [old, new]).flatten().map(|i| diff.kinds[i]).collect()
+                } else {
+                    diff.kinds.get(start..end).unwrap_or_default().to_vec()
+                };
                 let color = match (kinds.contains(&Kind::Added), kinds.contains(&Kind::Removed)) {
                     (true, true) => Some(theme::blue()),
                     (true, false) => Some(theme::green()),
@@ -209,15 +234,13 @@ impl Changes {
     }
 
     pub fn jump_to(&mut self, cell: usize, cells: usize) {
-        let lines = self.diff.as_ref().map_or(0, |(_, d)| d.kinds.len());
-        let (start, _) = cell_lines(cell, cells, lines);
+        let (start, _) = cell_lines(cell, cells, self.rows_len());
         self.scroll = start.saturating_sub(self.height / 3);
         self.scroll_by(0);
     }
 
     pub fn scroll_by(&mut self, rows: isize) {
-        let len = self.diff.as_ref().map_or(0, |(_, d)| d.lines.len());
-        self.scroll = self.scroll.saturating_add_signed(rows).min(len.saturating_sub(self.height.max(1)));
+        self.scroll = self.scroll.saturating_add_signed(rows).min(self.rows_len().saturating_sub(self.height.max(1)));
     }
 }
 
@@ -260,6 +283,17 @@ impl Request {
         };
         Read { root: self.root, against: self.against, since, files, diff, history, generation: self.generation }
     }
+}
+
+fn row_of(diff: &ReviewDiff, split: bool, line: usize) -> usize {
+    if !split {
+        return line;
+    }
+    diff.pairs.iter().position(|&(old, new)| old == Some(line) || new == Some(line)).unwrap_or(0)
+}
+
+fn first_change(diff: &ReviewDiff, split: bool) -> usize {
+    diff.changes.first().map_or(0, |&line| row_of(diff, split, line).saturating_sub(3))
 }
 
 fn cell_lines(cell: usize, cells: usize, lines: usize) -> (usize, usize) {

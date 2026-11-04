@@ -35,7 +35,7 @@ pulpo (one binary)
 ├── procs.rs    process trees (`ps`), to hang up what a terminal started
 ├── worktree.rs the workspaces Pulpo makes: worktree, includes, registry, ports, compose guess and override, setup and removal scripts
 ├── layout.rs   where you were, and what was open, across restarts and reboots
-├── viewer.rs   read-only file view (syntect), and the inline diffs Changes shows
+├── viewer.rs   read-only file view (syntect), and the diffs Changes shows (inline, or side by side)
 ├── editor.rs   editing a file, highlighted by the viewer's own code (identical by construction)
 ├── theme.rs    the colors on screen (UI, syntax, terminal palette): Pulpo Dark, or Ghostty's theme
 ├── tree.rs     lazy file tree, gitignore-aware (ignore crate), and the tree of a list of paths
@@ -116,7 +116,9 @@ file (`--unified=1000000`) with its changes inline, both sides highlighted
 (reloads run on a thread: `Request::read`, then `Changes::apply`, dropping
 a read that was overtaken or is another workspace's),
 and an overview ruler down its right edge (added, removed, both; the part in
-view lighter).
+view lighter). With 140 columns for the diff (opened wide on a screen bigger
+than a 14" laptop), old and new sit side by side: removed lines beside the
+added ones after them.
 
 ### History
 
