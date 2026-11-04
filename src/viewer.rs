@@ -141,6 +141,7 @@ struct Content {
     changes: Vec<usize>,
     counts: Option<(usize, usize)>,
     kinds: Vec<Kind>,
+    old_numbers: Vec<usize>,
 }
 
 impl Content {
@@ -196,6 +197,10 @@ pub struct ReviewDiff {
     pub gutter: usize,
     pub widest: usize,
     pub kinds: Vec<Kind>,
+    /// The side-by-side rows: the line shown on each side, by its index in `lines`.
+    pub pairs: Vec<(Option<usize>, Option<usize>)>,
+    /// Each line's number in the old file, for the left side of an unchanged line.
+    pub old_numbers: Vec<usize>,
 }
 
 pub(crate) fn review_diff(root: &Path, base: &str, path: &Path, untracked: bool) -> ReviewDiff {
@@ -210,7 +215,39 @@ pub(crate) fn review_diff(root: &Path, base: &str, path: &Path, untracked: bool)
     let content = diff_content(&text, path);
     let (added, removed) = content.counts.unwrap_or_default();
     let widest = content.lines.iter().map(|l| plain(l, content.gutter).trim_end().chars().count()).max().unwrap_or(0);
-    ReviewDiff { gutter: content.gutter, widest, lines: content.lines, changes: content.changes, added, removed, kinds: content.kinds }
+    let pairs = pairs(&content.kinds);
+    ReviewDiff {
+        gutter: content.gutter,
+        widest,
+        lines: content.lines,
+        changes: content.changes,
+        added,
+        removed,
+        kinds: content.kinds,
+        pairs,
+        old_numbers: content.old_numbers,
+    }
+}
+
+/// Unchanged lines on both sides; removed lines beside the added ones that follow them.
+fn pairs(kinds: &[Kind]) -> Vec<(Option<usize>, Option<usize>)> {
+    let mut pairs = Vec::new();
+    let mut i = 0;
+    while i < kinds.len() {
+        if matches!(kinds[i], Kind::Same | Kind::Gap) {
+            pairs.push((Some(i), Some(i)));
+            i += 1;
+            continue;
+        }
+        let run = |from: usize, kind: Kind| (from..kinds.len()).find(|&j| kinds[j] != kind).unwrap_or(kinds.len());
+        let middle = run(i, Kind::Removed);
+        let (removed, added) = (i..middle, middle..run(middle, Kind::Added));
+        for k in 0..removed.len().max(added.len()) {
+            pairs.push((removed.clone().nth(k), added.clone().nth(k)));
+        }
+        i = added.end;
+    }
+    pairs
 }
 
 fn diff_content(text: &str, path: &Path) -> Content {
@@ -268,6 +305,7 @@ fn diff_content(text: &str, path: &Path) -> Content {
         if kind == Kind::Gap {
             content.lines.push(note("⋯"));
             content.kinds.push(Kind::Gap);
+            content.old_numbers.push(0);
             continue;
         }
         let number = if kind == Kind::Removed { old_number } else { new_number };
@@ -305,6 +343,7 @@ fn diff_content(text: &str, path: &Path) -> Content {
         }
         content.lines.push(line);
         content.kinds.push(kind);
+        content.old_numbers.push(old_number);
     }
     content.counts = Some((added, removed));
     content
@@ -457,6 +496,13 @@ mod tests {
         assert_eq!(content.kinds, [Kind::Same, Kind::Removed, Kind::Added, Kind::Same]);
         let text: Vec<String> = content.lines.iter().map(|l| plain(l, 0).trim_end().to_string()).collect();
         assert_eq!(text, ["1   one", "2 - two", "2 + TWO", "3   three"]);
+        assert_eq!(pairs(&content.kinds), [(Some(0), Some(0)), (Some(1), Some(2)), (Some(3), Some(3))]);
+        use Kind::*;
+        let kinds = [Added, Same, Removed, Removed, Added, Gap, Removed];
+        assert_eq!(
+            pairs(&kinds),
+            [(None, Some(0)), (Some(1), Some(1)), (Some(2), Some(4)), (Some(3), None), (Some(5), Some(5)), (Some(6), None)]
+        );
     }
 
     #[test]

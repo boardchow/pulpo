@@ -19,7 +19,7 @@ order: 6
 
 ## Changes
 
-Every file not committed yet, shown whole with its changes in place. Marks on the right edge show where it changed. A commit takes its files out of Changes and into History.
+Every file not committed yet, shown whole with its changes in place. Marks on the right edge show where it changed. Opened full screen on a big screen, old and new sit side by side. A commit takes its files out of Changes and into History.
 
 Pulpo never runs git for you. Agents, or you in a terminal, commit and push.
 
