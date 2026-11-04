@@ -55,8 +55,10 @@ Event sources feeding the loop:
 
 ### Sessions
 
-The sidebar has repositories (Workspaces) and, under the selected one, its
-checkouts (Sessions): `main` and its git worktrees, each a `Workspace`.
+The sidebar has repositories (Workspaces) and every repository's checkouts
+(Sessions, each with its repository's name, the ones waiting for you first):
+`main` and its git worktrees, each a `Workspace`. Selecting a checkout of another repository makes it the
+current one.
 The current session decides what the right side and the panels show: its
 terminals, files and changes. A terminal belongs to the checkout it
 was started in (`info.cwd`), so terminals that kept running fall back into
@@ -68,8 +70,8 @@ a repository's mark is the most urgent state of their terminals.
 ### The screen
 
 Three columns and a bottom line, nothing else. Left: the pulpo, then two
-panels as tall as their rows: the workspaces, and the sessions of the
-current one (two rows each: the name, then the branch). Middle: the session's
+panels as tall as their rows: the workspaces, and every workspace's
+sessions, waiting ones first. A workspace's and a session's mark come first on their row. Middle: the session's
 terminals as tabs, drawn on the top of its frame (in the order of `terms`,
 which is the order they came in; the one on screen is kept by tag per
 session). Right: Files over Changes, each a tree and the selected file; in
