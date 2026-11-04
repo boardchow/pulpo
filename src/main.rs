@@ -50,6 +50,10 @@ const USAGE: &str = "usage:
 
 /// So a build writing thousands of files doesn't run `git status` thousands of times.
 const FS_THROTTLE: Duration = Duration::from_millis(300);
+/// Output streaming in is drawn at most this often; keys and clicks are drawn at once.
+const FRAME: Duration = Duration::from_millis(16);
+/// So is what a key brings back soon after: its echo, the program's redraw.
+const ECHO: Duration = Duration::from_millis(100);
 
 pub enum Msg {
     Input(Event),
@@ -64,6 +68,8 @@ pub enum Msg {
     Copied((PathBuf, String), Result<(PathBuf, Vec<String>), String>),
     SetUp(PathBuf, PathBuf, bool),
     Changes(Box<review::Read>),
+    Status(PathBuf, Box<git::Status>),
+    Viewed(Box<viewer::Loaded>),
 }
 
 fn main() -> Result<()> {
@@ -134,17 +140,32 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
     }
 
     let mut last_fs_refresh = Instant::now();
+    let (mut drawn, mut typed) = (Instant::now(), Instant::now());
+    // Output from a terminal that isn't on screen changes nothing there.
+    let mut changed = true;
     loop {
         app.tick();
-        terminal.draw(|frame| ui::draw(frame, app))?;
-
         let wake = Duration::from_millis(if app.animating() { 100 } else { 500 });
-        let first = match rx.recv_timeout(wake) {
+        if (changed && (typed.elapsed() < ECHO || drawn.elapsed() >= FRAME)) || drawn.elapsed() >= wake {
+            terminal.draw(|frame| ui::draw(frame, app))?;
+            drawn = Instant::now();
+            changed = false;
+        }
+
+        let wait = if changed { FRAME } else { wake }.saturating_sub(drawn.elapsed());
+        let first = match rx.recv_timeout(wait) {
             Ok(msg) => Some(msg),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         };
         for msg in first.into_iter().chain(rx.try_iter()) {
+            match &msg {
+                Msg::Input(_) => (changed, typed) = (true, Instant::now()),
+                Msg::Output(id, _) => changed |= app.shows(*id),
+                Msg::Server(proto::ToClient::Info { info }) => changed |= app.changes_view(info),
+                Msg::Fs(_) => {}
+                _ => changed = true,
+            }
             match msg {
                 Msg::Input(Event::Key(key)) if key.kind == KeyEventKind::Press => {
                     if app.on_key(key) {
@@ -170,11 +191,14 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
                 Msg::Copied(copy, made) => app.on_copied(copy, made),
                 Msg::SetUp(root, log, ok) => app.on_set_up(root, log, ok),
                 Msg::Changes(read) => app.on_changes(*read),
+                Msg::Status(root, status) => app.on_status(root, *status),
+                Msg::Viewed(loaded) => app.on_viewed(*loaded),
             }
         }
         if app.fs_pending() && last_fs_refresh.elapsed() >= FS_THROTTLE {
             app.flush_fs();
             last_fs_refresh = Instant::now();
+            changed = true;
         }
     }
 }

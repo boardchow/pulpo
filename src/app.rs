@@ -16,7 +16,7 @@ use crate::git;
 use crate::input;
 use crate::keymap::{Key, Keymap};
 use crate::layout::{self, Layout};
-use crate::proto::{PROTOCOL, ToClient, ToServer};
+use crate::proto::{Info, PROTOCOL, ToClient, ToServer};
 use crate::review::Changes;
 use crate::search::{Mode, Search};
 use crate::session;
@@ -275,6 +275,7 @@ impl App {
     fn load_workspaces(&mut self) {
         let (current, repo) = self.workspaces.get(self.current).map(|w| (w.root.clone(), w.repo.clone())).unzip();
         let mut old = std::mem::take(&mut self.workspaces);
+        let known: HashSet<PathBuf> = old.iter().map(|w| w.root.clone()).collect();
         let mut reuse = |root: PathBuf, repo: &Path| match old.iter().position(|w| w.root == root) {
             Some(i) => old.swap_remove(i),
             None => Workspace::new(root, repo.to_path_buf()),
@@ -299,6 +300,11 @@ impl App {
         if self.workspaces.is_empty() {
             let scratch = self.scratch.clone();
             self.workspaces.push(reuse(scratch.clone(), &scratch));
+        }
+        for i in 0..self.workspaces.len() {
+            if !known.contains(&self.workspaces[i].root) {
+                self.read_status(i);
+            }
         }
         match current.as_ref().map(|c| self.workspaces.iter().position(|w| &w.root == c)) {
             None => self.current = self.current.min(self.workspaces.len() - 1),
@@ -347,6 +353,9 @@ impl App {
             self.changes_expanded = false;
             self.selecting = None;
             self.workspaces[i].refresh();
+            if !self.workspaces[i].reading_status() {
+                self.read_status(i);
+            }
             let base = self.isolated.iter().find(|s| s.root == self.workspaces[i].root).and_then(|s| s.base.clone());
             self.changes = Some(Changes::new(&self.workspaces[i].root, base));
             self.reload_changes();
@@ -403,7 +412,8 @@ impl App {
     pub fn on_fs(&mut self, paths: &[PathBuf]) {
         for path in paths {
             for w in &self.workspaces {
-                if w.is_affected(path) {
+                // A build writes thousands of files: once a session is marked, skip matching its .gitignore.
+                if !self.fs_dirty.contains(&w.root) && w.is_affected(path) {
                     self.fs_dirty.insert(w.root.clone());
                 }
             }
@@ -424,14 +434,17 @@ impl App {
             self.load_workspaces();
         }
         let dirty = std::mem::take(&mut self.fs_dirty);
-        for w in &mut self.workspaces {
-            if dirty.contains(&w.root) {
-                w.refresh();
+        for i in 0..self.workspaces.len() {
+            if dirty.contains(&self.workspaces[i].root) {
+                self.read_status(i);
             }
         }
         if dirty.contains(&self.ws().root) {
-            let root = self.ws().root.clone();
-            self.viewer.reload(&root);
+            // Only the current session's tree shows; another's is rebuilt when it becomes current.
+            self.ws_mut().refresh();
+            if let Some(next) = self.viewer.reload() {
+                self.load_preview(next);
+            }
             self.reload_changes();
             if let Some(search) = &mut self.search {
                 search.rescan(&self.tx);
@@ -441,6 +454,37 @@ impl App {
             {
                 self.message = Some(format!("{} changed on disk: reloaded", editor.path.display()));
             }
+        }
+    }
+
+    fn read_status(&mut self, i: usize) {
+        if !self.workspaces[i].begin_status() {
+            return;
+        }
+        let (root, tx) = (self.workspaces[i].root.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let status = git::status(&root);
+            let _ = tx.send(Msg::Status(root, Box::new(status)));
+        });
+    }
+
+    pub fn on_status(&mut self, root: PathBuf, status: git::Status) {
+        let Some(i) = self.workspaces.iter().position(|w| w.root == root) else { return };
+        if self.workspaces[i].end_status(status) {
+            self.read_status(i);
+        }
+    }
+
+    fn load_preview(&self, (path, stamp): (PathBuf, crate::viewer::Stamp)) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Viewed(Box::new(crate::viewer::load(path, stamp))));
+        });
+    }
+
+    pub fn on_viewed(&mut self, loaded: crate::viewer::Loaded) {
+        if let Some(next) = self.viewer.loaded(loaded) {
+            self.load_preview(next);
         }
     }
 
@@ -634,6 +678,16 @@ impl App {
             ToClient::Exit { id } => self.remove_term(id as usize),
             ToClient::Error { message } => self.message = Some(message),
         }
+    }
+
+    pub fn shows(&self, id: u32) -> bool {
+        self.active == Some(id as usize)
+    }
+
+    /// The title isn't shown, and programs change it all the time.
+    pub fn changes_view(&self, info: &Info) -> bool {
+        let Some(term) = self.terms.iter().find(|t| t.id == info.id as usize) else { return true };
+        Info { title: term.info.title.clone(), ..info.clone() } != term.info
     }
 
     pub fn on_output(&mut self, id: u32, bytes: &[u8]) {
@@ -1192,9 +1246,8 @@ impl App {
         if self.editor.is_some() {
             return;
         }
-        let root = self.ws().root.clone();
         match self.ws().selected_row().filter(|r| !r.is_dir).map(|r| r.path.clone()) {
-            Some(path) => self.viewer.open(Source::File(path), &root),
+            Some(path) => self.viewer.open(Source::File(path)),
             None => self.viewer.close(),
         }
     }
@@ -1392,9 +1445,8 @@ impl App {
 
     fn close_editor(&mut self) {
         let Some(editor) = self.editor.take() else { return };
-        let root = self.ws().root.clone();
         self.viewer.close();
-        self.viewer.open_at(editor.path.clone(), None, &root);
+        self.viewer.open_at(editor.path.clone(), None);
         self.viewer.scroll = editor.scroll;
         self.files_expanded = true;
         self.reading = false;
@@ -1594,8 +1646,7 @@ impl App {
 
     fn show_file(&mut self, path: PathBuf, line: Option<usize>) {
         self.ws_mut().reveal(&path);
-        let root = self.ws().root.clone();
-        self.viewer.open_at(path, line, &root);
+        self.viewer.open_at(path, line);
     }
 
     fn repos_key(&mut self, key: KeyEvent) {
