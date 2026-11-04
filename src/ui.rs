@@ -409,7 +409,8 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
     } else if let Some(prompt) = &app.prompt {
         match &prompt.ask {
-            Ask::Session => input("new session", &prompt.text, "a worktree on its own branch, from the remote's main · ⏎ make it · esc cancel"),
+            Ask::Session(branch) => session_input(&prompt.text, branch, false),
+            Ask::Branch(name) => session_input(name, &prompt.text, true),
             Ask::File(dir) => {
                 let dir = dir.strip_prefix(&app.ws().root).unwrap_or(dir).display().to_string();
                 let at = if dir.is_empty() { String::new() } else { format!("in {dir}/ · ") };
@@ -435,6 +436,26 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         Line::default()
     };
     frame.render_widget(line, area);
+}
+
+fn session_input(name: &str, branch: &str, on_branch: bool) -> Line<'static> {
+    let cursor = |here: bool| Span::from(if here { "█" } else { "" }).fg(theme::blue());
+    let branch = if branch.is_empty() && !on_branch {
+        Span::from("from the name").fg(theme::muted())
+    } else {
+        Span::from(branch.to_string())
+    };
+    Line::from(vec![
+        Span::from(" new session ").fg(theme::on_accent()).bg(theme::accent()).bold(),
+        Span::from(" › ").fg(theme::blue()).bold(),
+        Span::from(name.to_string()),
+        cursor(!on_branch),
+        Span::from("   branch").fg(theme::blue()).bold(),
+        Span::from(" › ").fg(theme::blue()).bold(),
+        branch,
+        cursor(on_branch),
+        Span::from("   tab switches · ⏎ make it · esc cancel").fg(theme::muted()),
+    ])
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {

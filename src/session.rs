@@ -230,6 +230,15 @@ fn project_name(name: &str) -> String {
 #[cfg(test)]
 thread_local! {
     static TEST_CONFIG: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static TEST_SESSIONS: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+fn sessions_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(dir) = TEST_SESSIONS.with_borrow(Clone::clone) {
+        return dir;
+    }
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".pulpo/sessions")
 }
 
 fn config_dir() -> PathBuf {
@@ -508,7 +517,7 @@ fn port_free(port: u16) -> bool {
     std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-pub fn create(repo: &Path, name: &str, config: &Config) -> Result<(Session, Vec<String>)> {
+pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) -> Result<(Session, Vec<String>)> {
     // Lowercase: Compose project names are, and two sessions mustn't share one.
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
         bail!("a session name is lowercase letters, digits, - and _");
@@ -517,14 +526,16 @@ pub fn create(repo: &Path, name: &str, config: &Config) -> Result<(Session, Vec<
         bail!("the repository has no commit yet: make one first");
     }
     let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let parent = repo.parent().context("the repository has no parent folder")?;
-    let root = parent.join(format!("{repo_name}.sessions")).join(name);
+    let root = sessions_dir().join(&repo_name).join(name);
     if root.exists() {
         bail!("{} already exists", root.display());
     }
     let (from, mut notes) = base(repo);
     let start = git(repo, &["rev-parse", "--verify", &format!("{from}^{{commit}}")], None)?;
-    let branch = branch_name(repo, name, &config.branch_prefix);
+    let branch = match branch {
+        Some(branch) => git(repo, &["check-ref-format", "--branch", branch], None).map_err(|_| anyhow::anyhow!("{branch} isn't a valid branch name"))?,
+        None => branch_name(repo, name, &config.branch_prefix),
+    };
     let made_branch = match git(repo, &["rev-parse", "-q", "--verify", &format!("refs/heads/{branch}")], None) {
         Ok(tip) if tip == start => false,
         Ok(_) => bail!("branch {branch} exists already, with commits of its own: pick another name"),
@@ -898,9 +909,61 @@ pub fn kept_branch(session: &Session) -> Option<String> {
     (!untouched).then_some(current)
 }
 
-fn in_sessions_folder(root: &Path) -> bool {
+/// Made before sessions moved to `~/.pulpo/sessions`: beside the repository, in `<repo>.sessions`.
+pub fn in_old_folder(root: &Path) -> bool {
     root.parent().and_then(Path::file_name).is_some_and(|dir| dir.to_string_lossy().ends_with(".sessions"))
-        && root.file_name().is_some_and(|name| !name.is_empty() && name != "..")
+}
+
+/// Moves a session out of its old folder, with its Claude conversations. Only once nothing runs in it.
+pub fn move_out(old: &Path) -> Result<PathBuf> {
+    update(|sessions| {
+        let s = sessions.iter_mut().find(|s| s.root == old).context("no longer a session")?;
+        let to = sessions_dir().join(s.repo.file_name().unwrap_or_default()).join(&s.name);
+        if to.exists() {
+            bail!("{} already exists", to.display());
+        }
+        fs::create_dir_all(to.parent().expect("has a parent"))?;
+        let (from, path) = (old.to_string_lossy().into_owned(), to.to_string_lossy().into_owned());
+        match s.kind {
+            // Forced twice: it's locked.
+            Kind::Worktree => {
+                git(&s.repo, &["worktree", "move", "--force", "--force", &from, &path], None)?;
+            }
+            Kind::Copy => fs::rename(old, &to)?,
+        }
+        // Until the registry says where it went: a session whose folder is gone gets removed.
+        let bridge = std::os::unix::fs::symlink(&to, old).is_ok();
+        let claude = crate::agents::claude_dir().join("projects");
+        let (was, now) = (claude.join(claude_project(old)), claude.join(claude_project(&to)));
+        if was.is_dir() && !now.exists() {
+            let _ = fs::rename(&was, &now);
+        }
+        s.compose_file = s.compose_file.as_ref().map(|files| {
+            files.split(':').map(|f| Path::new(f).strip_prefix(old).map_or(f.to_string(), |rel| to.join(rel).to_string_lossy().into_owned())).collect::<Vec<_>>().join(":")
+        });
+        s.root = to.clone();
+        Ok((to, bridge))
+    })
+    .map(|(to, bridge)| {
+        if bridge {
+            let _ = fs::remove_file(old);
+        }
+        let _ = fs::remove_dir(old.parent().expect("has a parent"));
+        to
+    })
+}
+
+/// Claude keeps a folder's conversations under its path, each character not a letter or digit a dash.
+fn claude_project(dir: &Path) -> String {
+    dir.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+fn in_sessions_folder(root: &Path) -> bool {
+    let parent = root.parent();
+    let legacy = in_old_folder(root);
+    let ours = parent.and_then(Path::parent).is_some_and(|dir| same_path(dir, &sessions_dir()))
+        && parent.and_then(Path::file_name).is_some_and(|repo| repo != "..");
+    (ours || legacy) && root.file_name().is_some_and(|name| !name.is_empty() && name != "..")
 }
 
 pub fn same_path(a: &Path, b: &Path) -> bool {
@@ -996,7 +1059,7 @@ fn conductor_exports(session: &Session) -> String {
 }
 
 pub fn teardown_script(session: &Session, config: &Config, exe: &Path) -> String {
-    // Only ever what Pulpo made: a folder in `<repo>.sessions`, and for a
+    // Only ever what Pulpo made: a folder in `~/.pulpo/sessions/<repo>`, and for a
     // worktree, one of the repository's.
     let safe = match session.kind {
         Kind::Copy => in_sessions_folder(&session.root),
@@ -1136,7 +1199,7 @@ mod tests {
     #[test]
     fn removal_stops_when_a_step_fails() {
         let t = Scratch::new("teardown");
-        let root = t.join("r.sessions").join("a");
+        let root = t.join("sessions/r/a");
         let session = Session {
             name: "a".into(),
             repo: t.join("r"),
@@ -1180,6 +1243,7 @@ mod tests {
             fs::create_dir_all(&t).unwrap();
             crate::agents::TEST_STATE.set(Some(t.join("state")));
             TEST_CONFIG.set(Some(t.join("config")));
+            TEST_SESSIONS.set(Some(t.join("sessions")));
             Scratch(t)
         }
     }
@@ -1201,6 +1265,7 @@ mod tests {
         fn drop(&mut self) {
             crate::agents::TEST_STATE.set(None);
             TEST_CONFIG.set(None);
+            TEST_SESSIONS.set(None);
             let _ = fs::remove_dir_all(&self.0);
         }
     }
@@ -1346,6 +1411,37 @@ mod tests {
     }
 
     #[test]
+    fn moves_a_session_out_of_its_old_folder() {
+        let t = Scratch::new("move");
+        let repo = t.join("app");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]);
+        run_git(&repo, &["commit", "-q", "--allow-empty", "-m", "a"]);
+        let old = t.join("app.sessions/fix");
+        run_git(&repo, &["worktree", "add", "-q", "--lock", "-b", "u/fix", &old.to_string_lossy()]);
+        let compose = format!("{}/compose.yaml:/state/o.yaml", old.display());
+        let session = Session { name: "fix".into(), repo: repo.clone(), root: old.clone(), kind: Kind::Worktree, compose_file: Some(compose), ..Session::default() };
+        update(|sessions| {
+            sessions.push(session);
+            Ok(())
+        })
+        .unwrap();
+
+        let to = move_out(&old).unwrap();
+        assert_eq!(to, t.join("sessions/app/fix"));
+        assert!(!t.join("app.sessions").exists());
+        assert_eq!(run_git(&to, &["branch", "--show-current"]), "u/fix");
+        assert!(crate::git::worktrees(&repo).iter().any(|w| same_path(w, &to)));
+        assert!(run_git(&repo, &["worktree", "list", "--porcelain"]).contains("locked"));
+        let moved = all().pop().unwrap();
+        assert_eq!(moved.root, to);
+        assert_eq!(moved.compose_file.as_deref(), Some(format!("{}/compose.yaml:/state/o.yaml", to.display()).as_str()));
+        assert!(teardown_script(&moved, &Config::default(), Path::new("/bin/pulpo")).contains("worktree remove"));
+        assert!(move_out(&old).is_err());
+        assert_eq!(claude_project(Path::new("/Users/a.b/.pulpo/sessions/app/fix")), "-Users-a-b--pulpo-sessions-app-fix");
+    }
+
+    #[test]
     fn makes_a_worktree_from_the_remote_and_removes_it() {
         let t = Scratch::new("worktree");
         fs::create_dir_all(t.join("upstream")).unwrap();
@@ -1370,8 +1466,8 @@ mod tests {
         }
 
         let config = Config { ports: vec!["APP_PORT".into()], include: vec![".env".into(), "secret.key".into()], ..Config::default() };
-        let (s, notes) = create(&main, "fix", &config).unwrap();
-        let root = t.join("app.sessions/fix");
+        let (s, notes) = create(&main, "fix", None, &config).unwrap();
+        let root = t.join("sessions/app/fix");
         assert_eq!(s.root, root);
         assert_eq!((s.kind, s.branch.as_deref(), s.made_branch), (Kind::Worktree, Some("test-user/fix"), true));
         assert_eq!(run_git(&root, &["branch", "--show-current"]), "test-user/fix");
@@ -1383,11 +1479,14 @@ mod tests {
         assert!(run_git(&main, &["worktree", "list", "--porcelain"]).contains("locked"));
         let port = s.port.unwrap();
         assert!(s.ports[0].1 >= port + BLOCK);
-        let other = create(&main, "other", &Config::default()).unwrap().0;
+        let other = create(&main, "other", None, &Config::default()).unwrap().0;
         let p = other.port.unwrap();
         assert!((p..p + BLOCK).all(|q| !(port..port + BLOCK).contains(&q) && q != s.ports[0].1));
         assert!(env(&s).contains(&("PULPO_PORT".into(), port.to_string())) && env(&s).contains(&("PORT".into(), port.to_string())));
-        assert!(create(&main, "fix", &config).is_err());
+        assert!(create(&main, "fix", None, &config).is_err());
+        assert!(create(&main, "bad", Some("no..dots"), &Config::default()).is_err());
+        let ticket = create(&main, "ticket", Some("team/FND-12-login"), &Config::default()).unwrap().0;
+        assert_eq!(run_git(&ticket.root, &["branch", "--show-current"]), "team/FND-12-login");
 
         assert!(unsaved(&other).is_empty() && kept_branch(&other).is_none());
         fs::write(root.join("c.txt"), "work").unwrap();
@@ -1395,7 +1494,7 @@ mod tests {
         run_git(&root, &["add", "c.txt"]);
         run_git(&root, &["commit", "-q", "-m", "c"]);
         assert_eq!(kept_branch(&s).as_deref(), Some("test-user/fix"));
-        for session in [&s, &other] {
+        for session in [&s, &other, &ticket] {
             let script = teardown_script(session, &Config::default(), Path::new("/usr/bin/true"));
             let out = std::process::Command::new("sh").args(["-c", &script]).current_dir(&main).output().unwrap();
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
@@ -1404,14 +1503,14 @@ mod tests {
         let branches = run_git(&main, &["branch", "--list"]);
         assert!(branches.contains("test-user/fix") && !branches.contains("test-user/other"), "{branches}");
         assert!(!run_git(&main, &["worktree", "list"]).contains("sessions"));
-        let gone = create(&main, "gone", &Config::default()).unwrap().0;
+        let gone = create(&main, "gone", None, &Config::default()).unwrap().0;
         fs::remove_dir_all(&gone.root).unwrap();
         let script = teardown_script(&gone, &Config::default(), Path::new("/usr/bin/true"));
         let out = std::process::Command::new("sh").args(["-c", &script]).current_dir(&main).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
         assert!(!run_git(&main, &["worktree", "list"]).contains("gone"));
         assert!(!run_git(&main, &["branch", "--list"]).contains("test-user/gone"));
-        assert!(create(&main, "gone", &Config::default()).is_ok());
+        assert!(create(&main, "gone", None, &Config::default()).is_ok());
         let main_as_session = Session { root: main.clone(), ..s.clone() };
         assert!(!teardown_script(&main_as_session, &Config::default(), Path::new("/usr/bin/true")).contains("worktree remove"));
     }
