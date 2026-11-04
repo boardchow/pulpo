@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::SystemTime;
 
 use ratatui::style::{Color, Modifier, Style, Stylize};
 
@@ -30,6 +31,27 @@ pub struct Viewer {
     gutter: usize,
     hscroll: usize,
     widest: usize,
+    stamp: Stamp,
+    loading: bool,
+}
+
+/// The size too: some disks keep times to the second only.
+pub type Stamp = Option<(SystemTime, u64)>;
+
+fn stamp(path: &Path) -> Stamp {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Read off the UI thread: highlighting a long file takes a while.
+pub struct Loaded {
+    path: PathBuf,
+    stamp: Stamp,
+    content: Content,
+}
+
+pub fn load(path: PathBuf, stamp: Stamp) -> Loaded {
+    Loaded { content: load_file(&path), path, stamp }
 }
 
 impl Viewer {
@@ -41,18 +63,21 @@ impl Viewer {
         *self = Viewer { height: self.height, ..Viewer::default() };
     }
 
-    pub fn open(&mut self, source: Source, root: &Path) {
+    pub fn open(&mut self, source: Source) {
         if self.source.as_ref() != Some(&source) {
+            let Source::File(path) = &source;
+            self.stamp = stamp(path);
+            let content = load_file(path);
             self.source = Some(source);
             self.scroll = 0;
             self.mark = None;
             self.hscroll = 0;
-            self.reload(root);
+            self.show(content);
         }
     }
 
-    pub fn open_at(&mut self, path: PathBuf, line: Option<usize>, root: &Path) {
-        self.open(Source::File(path), root);
+    pub fn open_at(&mut self, path: PathBuf, line: Option<usize>) {
+        self.open(Source::File(path));
         self.mark = line;
         self.goto = line;
         if line.is_none() {
@@ -60,9 +85,28 @@ impl Viewer {
         }
     }
 
-    pub fn reload(&mut self, _root: &Path) {
-        let Some(Source::File(path)) = &self.source else { return };
-        let content = load_file(path);
+    /// The file to read again with `load`, if it changed since; one read at a time.
+    pub fn reload(&mut self) -> Option<(PathBuf, Stamp)> {
+        let Some(Source::File(path)) = &self.source else { return None };
+        let now = stamp(path);
+        if self.loading || now == self.stamp {
+            return None;
+        }
+        self.stamp = now;
+        self.loading = true;
+        Some((path.clone(), now))
+    }
+
+    /// Only the latest read, then the next one if the file changed meanwhile.
+    pub fn loaded(&mut self, loaded: Loaded) -> Option<(PathBuf, Stamp)> {
+        self.loading = false;
+        if self.source.as_ref() == Some(&Source::File(loaded.path)) && loaded.stamp == self.stamp {
+            self.show(loaded.content);
+        }
+        self.reload()
+    }
+
+    fn show(&mut self, content: Content) {
         self.lines = content.lines;
         self.gutter = content.gutter;
         let gutter = self.gutter;
@@ -413,6 +457,32 @@ mod tests {
         assert_eq!(content.kinds, [Kind::Same, Kind::Removed, Kind::Added, Kind::Same]);
         let text: Vec<String> = content.lines.iter().map(|l| plain(l, 0).trim_end().to_string()).collect();
         assert_eq!(text, ["1   one", "2 - two", "2 + TWO", "3   three"]);
+    }
+
+    #[test]
+    fn reads_again_only_when_the_open_file_changed() {
+        let dir = std::env::temp_dir().join(format!("pulpo-viewer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, "one\n").unwrap();
+        let mut viewer = Viewer::default();
+        viewer.open(Source::File(path.clone()));
+        assert!(viewer.reload().is_none());
+
+        let (time, _) = viewer.stamp.unwrap();
+        std::fs::write(&path, "one\ntwo\n").unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(time).unwrap();
+        let (again, stamp) = viewer.reload().unwrap();
+        assert!(viewer.reload().is_none());
+        let read = load(again, stamp);
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let (again, stamp) = viewer.loaded(read).unwrap();
+        assert_eq!(viewer.row_count(), 2);
+        assert!(viewer.loaded(load(path.clone(), None)).is_none());
+        assert_eq!(viewer.row_count(), 2);
+        assert!(viewer.loaded(load(again, stamp)).is_none());
+        assert_eq!(viewer.row_count(), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
