@@ -1711,7 +1711,7 @@ impl App {
             }
         } else if down && areas.sessions.contains(pos) {
             self.set_focus(Focus::Sessions);
-            let i = (pos.y - areas.sessions.y) as usize / 2 + self.sessions_state.offset();
+            let i = (pos.y - areas.sessions.y) as usize + self.sessions_state.offset();
             if i < self.sessions().len() {
                 self.sessions_state.select(Some(i));
                 self.on_select();

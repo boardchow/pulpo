@@ -21,7 +21,7 @@ The current workspace's sessions:
 | A git worktree | Shown if the repository has worktrees (an agent's, say). Pulpo leaves them to git. |
 | A task session | A worktree Pulpo made for one task, with its own ports and containers. See [Task sessions](/docs/task-sessions). |
 
-Each row shows the session's state, its name, its number of uncommitted changes (`±3`), the web port of a task session (`:20000`), and under the name its branch, or *setting up* / *setup failed*.
+Each row shows the session's state, its name, its number of uncommitted changes (`±3`), and *setting up* / *setup failed* while its setup runs or after it fails.
 
 Selecting a session (click, or arrows in Sessions) puts its terminals, files and changes on screen. Pulpo remembers the last session of each workspace.
 
