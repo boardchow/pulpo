@@ -25,7 +25,7 @@ Pulpo never runs git for you. Agents, or you in a terminal, commit and push.
 
 ## History
 
-Under Changes, :k[h] after the prefix: the workspace's commits since it started, newest first. A workspace you created starts at the commit it was made from, any other branch where it left `main`; `main` shows its last 20 commits.
+Under Changes, :k[h] after the prefix: the workspace's commits since it started, newest first. A workspace you created starts at the commit it was made from, any other branch where it left `main`; `main` shows all of its commits, loading more as you scroll down.
 
 `↑` marks a commit not pushed yet, to the branch of the same name on origin. The title says where the branch stands: `pushed`, `2 unpushed`, `not pushed`, and `1 to pull` when origin has commits you don't.
 

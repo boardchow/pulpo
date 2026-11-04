@@ -128,8 +128,9 @@ added ones after them.
 Under Changes (the right column in thirds): the commits since the workspace
 started, newest first. A workspace Pulpo made starts at the commit it was
 copied at (`base`, recorded when it is made), a checkout on another branch
-where it left the main one; the main branch shows its last 20. A commit is
-pushed when `origin/<branch>` has it; the title says pushed, how many aren't,
+where it left the main one; the main branch shows all of it. It reads 100,
+then 100 more each time the selection comes within 20 of the end (the title
+says `100+`). A commit is pushed when `origin/<branch>` has it; the title says pushed, how many aren't,
 or not pushed, and how many origin has that HEAD doesn't. Read with Changes,
 on the same thread, so a commit or a push (refs move) updates both.
 

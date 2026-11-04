@@ -76,18 +76,22 @@ pub struct History {
     pub remote: Option<String>,
     /// Its commits not here yet.
     pub behind: usize,
+    /// More commits than the ones read.
+    pub more: bool,
 }
 
-/// The commits since `base`; on the main branch (`base` is HEAD), its last 20.
-pub fn history(root: &Path, base: &str) -> History {
+/// The commits since `base` (on the main branch, HEAD: all of them), at most `limit`.
+pub fn history(root: &Path, base: &str, limit: usize) -> History {
     let run = |args: &[&str]| git(root, &[&["--no-optional-locks"], args].concat()).unwrap_or_default();
     let branch = run(&["rev-parse", "--abbrev-ref", "HEAD"]);
     let remote = Some(format!("origin/{}", branch.trim())).filter(|r| !run(&["rev-parse", "--verify", "--quiet", r]).is_empty());
-    let range = if base == "HEAD" { "-20".to_string() } else { format!("{base}..HEAD") };
-    let log = run(&["log", "--format=%H%x00%h%x00%an%x00%ar%x00%s", &range, "HEAD"]);
+    let range = if base == "HEAD" { "HEAD".to_string() } else { format!("{base}..HEAD") };
+    let log = run(&["log", "--format=%H%x00%h%x00%an%x00%ar%x00%s", &format!("--max-count={}", limit + 1), &range]);
     let unpushed = remote.as_ref().map(|r| run(&["rev-list", "HEAD", &format!("^{r}")]));
+    let more = log.lines().count() > limit;
     let commits = log
         .lines()
+        .take(limit)
         .filter_map(|line| {
             let mut fields = line.splitn(5, '\0');
             let (full, hash, author, when, subject) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?, fields.next()?);
@@ -96,7 +100,7 @@ pub fn history(root: &Path, base: &str) -> History {
         })
         .collect();
     let behind = remote.as_ref().map_or(0, |r| run(&["rev-list", "--count", &format!("HEAD..{r}")]).trim().parse().unwrap_or(0));
-    History { commits, remote, behind }
+    History { commits, remote, behind, more }
 }
 
 pub fn status(root: &Path) -> Status {
