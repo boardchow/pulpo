@@ -8,9 +8,10 @@ Pulpo is a VS Code replacement in one Ghostty window: workspaces (your
 repositories), terminals (shells and Claude Code), changes, files, search.
 Terminals run in a background server, so quitting or rebuilding Pulpo
 leaves them running (see "Terminals that keep running"). Git is the
-agents' job; the one place Pulpo does git is making and removing task
+agents' job; the one place Pulpo does git is making and removing
 sessions (git worktrees, see "Sessions Pulpo makes"). Worktrees made otherwise
-show as sessions, read only.
+(agents', tools', yours) don't show: only the repository and the sessions
+Pulpo made, as in Conductor.
 
 ## Architecture
 
