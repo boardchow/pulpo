@@ -76,7 +76,9 @@ panels as tall as their rows: the projects, and every project's
 workspaces, waiting ones first, then working ones. A project's and a workspace's mark come first on their row. Middle: the workspace's
 terminals as tabs, drawn on the top of its frame (in the order of `terms`,
 which is the order they came in; the one on screen is kept by tag per
-workspace). Right: Files over Changes, each a tree and the selected file, over History; in
+workspace). There is always one: a shell opens in a checkout on screen without
+any, at most once a second for each, so a shell that exits at once isn't started
+again and again. Right: Files over Changes, each a tree and the selected file, over History; in
 one of them, ⏎ (or a double click), or editing, gives that panel
 everything right of the sidebar, the terminal included, and esc takes it
 back. Only a click moves the focus; hovering or scrolling a panel doesn't.

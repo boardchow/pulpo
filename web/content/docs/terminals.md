@@ -13,6 +13,8 @@ order: 5
 | Previous, next | :kp{k="["}, :kp{k="]"} | Click the tab |
 | Close | :kp[x] | |
 
+A project or workspace always has a terminal: a shell opens when you go to one without any, and when you close or exit the last one.
+
 Every key goes to the program, except the prefix. To send :k[⌃b], press it twice.
 
 ## Mouse
