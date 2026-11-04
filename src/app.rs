@@ -272,6 +272,7 @@ impl App {
     fn load_workspaces(&mut self) {
         let (current, repo) = self.workspaces.get(self.current).map(|w| (w.root.clone(), w.repo.clone())).unzip();
         let mut old = std::mem::take(&mut self.workspaces);
+        let known: HashSet<PathBuf> = old.iter().map(|w| w.root.clone()).collect();
         let mut reuse = |root: PathBuf, repo: &Path| match old.iter().position(|w| w.root == root) {
             Some(i) => old.swap_remove(i),
             None => Workspace::new(root, repo.to_path_buf()),
@@ -302,6 +303,11 @@ impl App {
         if self.workspaces.is_empty() {
             let scratch = self.scratch.clone();
             self.workspaces.push(reuse(scratch.clone(), &scratch));
+        }
+        for i in 0..self.workspaces.len() {
+            if !known.contains(&self.workspaces[i].root) {
+                self.read_status(i);
+            }
         }
         match current.as_ref().map(|c| self.workspaces.iter().position(|w| &w.root == c)) {
             None => self.current = self.current.min(self.workspaces.len() - 1),
@@ -350,6 +356,9 @@ impl App {
             self.changes_expanded = false;
             self.selecting = None;
             self.workspaces[i].refresh();
+            if !self.workspaces[i].reading_status() {
+                self.read_status(i);
+            }
             let base = self.isolated.iter().find(|s| s.root == self.workspaces[i].root).and_then(|s| s.base.clone());
             self.changes = Some(Changes::new(&self.workspaces[i].root, base));
             self.reload_changes();
@@ -427,12 +436,14 @@ impl App {
             self.load_workspaces();
         }
         let dirty = std::mem::take(&mut self.fs_dirty);
-        for w in &mut self.workspaces {
-            if dirty.contains(&w.root) {
-                w.refresh();
+        for i in 0..self.workspaces.len() {
+            if dirty.contains(&self.workspaces[i].root) {
+                self.read_status(i);
             }
         }
         if dirty.contains(&self.ws().root) {
+            // Only the current session's tree shows; another's is rebuilt when it becomes current.
+            self.ws_mut().refresh();
             let root = self.ws().root.clone();
             self.viewer.reload(&root);
             self.reload_changes();
@@ -444,6 +455,24 @@ impl App {
             {
                 self.message = Some(format!("{} changed on disk: reloaded", editor.path.display()));
             }
+        }
+    }
+
+    fn read_status(&mut self, i: usize) {
+        if !self.workspaces[i].begin_status() {
+            return;
+        }
+        let (root, tx) = (self.workspaces[i].root.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let status = git::status(&root);
+            let _ = tx.send(Msg::Status(root, Box::new(status)));
+        });
+    }
+
+    pub fn on_status(&mut self, root: PathBuf, status: git::Status) {
+        let Some(i) = self.workspaces.iter().position(|w| w.root == root) else { return };
+        if self.workspaces[i].end_status(status) {
+            self.read_status(i);
         }
     }
 
