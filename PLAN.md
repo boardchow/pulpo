@@ -150,7 +150,7 @@ view lighter).
 - [x] Layouts (`L`: main pane left, side by side, stacked, grid), the board (every terminal of the repository, tiled), swarms (N task sessions, Claude started on a task in each once set up), scrolling back and finding in a terminal, readline keys in every prompt (`input.rs`), right-click menus, dragging pane borders.
 - [x] Start again from Herdr's layout, keeping what's under it: workspaces and sessions | terminal tabs | files over changes, a prefix from anywhere, the mouse for all of it. The palette, splits, layouts, the board, swarms, the graph, the review scroll, scrollback search and the theme picker are gone. A new session is yours at once, set up in the background.
 - [x] Task sessions as git worktrees, the industry's pattern (Conductor, Claude Code, Cursor): a branch from the remote's default branch, main's ignored files it needs, a block of ten ports, git in containers (see "Task sessions").
-- [ ] Task session recipes: Conductor's settings read, an install guessed from lockfiles, a trust prompt for committed scripts (see "Task sessions: next").
+- [x] Task session recipes: Conductor's settings read, an install guessed from lockfiles, a trust prompt for committed scripts (see "Task sessions").
 - [ ] Codex support.
 
 ## Terminals that keep running
@@ -260,7 +260,7 @@ worktree once, as the session. A registry entry whose folder is gone
 repository's `include` setting name are cloned in (`clonefile`, links as
 links, `cp -RP` where it can't clone), on top of `.env` and `.env.*` but
 `.example`, `.sample`, `.template`, always (a `!pattern` takes one away).
-A Rails app's first settings add `config/master.key` and
+For a Rails app the guess adds `config/master.key` and
 `config/credentials/*.key`, and `bin/rails db:prepare` as `setup`: the
 copied database is at main's migrations, the code at the default
 branch's. Candidates come from `git ls-files
@@ -277,8 +277,8 @@ as taken. The terminals' environment also has `COMPOSE_PROJECT_NAME`
 `PULPO_WORKSPACE_PATH`; `Spawn` carries it to the server. The compose file
 is read with a line scan (`session::guess`): port variables, services built
 locally (their images are tagged for the session instead of rebuilt), the
-database service and engine, and what can't be isolated. The result is
-written once to `~/.config/pulpo/repos/<repo>.toml` for you to adjust.
+database service and engine, and what can't be isolated. That's the first
+layer of the settings (see "Recipes").
 
 **Git in containers.** A worktree's `.git` is a file pointing at
 `<repo>/.git/worktrees/<id>`, absent in a container that mounts the
@@ -325,22 +325,62 @@ branch checked out elsewhere can't be a session's; an agent's `git branch
 `COMPOSE_FILE` follow a `cd` to another project in a session's terminal;
 cookies aren't port-scoped, so localhost logins clash between sessions.
 
+**Recipes.** `session::config(repo, checkout)` stacks layers, a later one
+winning where it says something: the guess (compose
+file; without one, the install the lockfiles call for: `npm ci`, `pnpm`,
+`yarn`, `bun`, `bundle install`, `uv sync`; with one, installing is the
+containers' business), Conductor's `.conductor/settings.toml` as the
+session's checkout has it, `.conductor/settings.local.toml` in main, then
+Pulpo's file. Of Conductor's: `scripts.setup`, `scripts.archive` (as
+`teardown`), `file_include_globs` (one string, comma or line separated),
+`git.branch_prefix`. Its scripts run with `CONDUCTOR_PORT`,
+`_ROOT_PATH`, `_WORKSPACE_NAME`, `_WORKSPACE_PATH` exported, in Pulpo's
+scripts only (in terminals, tools would think they run in Conductor).
+An empty Conductor value says nothing. Pulpo's file is written the first
+time with every setting commented out as found, so it never freezes a
+guess or hides a later Conductor change; it's read as a `Layer` of
+`Option`s, so an uncommented empty value turns a setting off (`db = ""`:
+no database copy). A file written by the first worktree release (every
+line set, its header "Guessed from its compose file") keeps its meaning:
+its empty values say nothing. Includes add up across layers (`!pattern` takes one
+away). `create` reads main's settings (includes, branch prefix: the
+checkout doesn't exist yet); setup reads the session's checkout. Scripts
+run under `set -e -o pipefail`, stricter than Conductor's shell.
+
+**Trust.** A setup or teardown script whose winning layer is the
+repository's file is run only once trusted: the session starts from the
+remote, so anyone who can push could otherwise run code here. A file is
+yours only when it's there by exactly that name, a real folder and file
+(on a case-insensitive disk a committed `.Conductor/Settings.toml` opens
+as `.conductor/settings.toml`; a committed link leads to a committed file;
+git, asked about the name, sees nothing in either case), and `git status
+--porcelain --ignored` answers `??` or `!!` for it (it says nothing for a
+submodule's file); anything unsure is the repository's. Making the
+session asks (each script, how it starts, how many lines); the question carries the exact scripts
+shown, so yes trusts and runs those, recorded as (repository, exact text)
+in `~/.local/state/pulpo/trusted-scripts.json` (no hash to forge), and
+anything else (another key, a click elsewhere, the prefix, a newer
+question) sets up without them, said in the log. The question comes on
+its own, while you may be typing in the new session's shell, so keys go on
+to the terminal instead of answering it until a second passes without
+typing. A changed
+script is asked again. Removal skips an untrusted one the same way. `git
+status` runs with `core.ignorecase=true`, as the disk is: with it off, a
+committed `.Conductor/settings.local.toml` pulled over your ignored file
+would leave that file looking ignored. One gap remains, by your own hand:
+untracking a committed settings file (`git rm --cached`, committed) makes
+it yours.
+
+Consent covers explicit scripts only. A guessed install (`npm ci` runs
+`package.json`'s scripts, `bundle install` reads the `Gemfile`) and
+Compose builds run code from the remote without asking, as in Conductor
+and as after any `git pull && npm i`: asking about the text `npm ci` would
+say nothing about what it runs.
+
 ### Task sessions: next
 
-- **Recipes.** Settings read in order, later overriding earlier: the guess,
-  `.conductor/settings.toml`, `.conductor/settings.local.toml` (its
-  `file_include_globs`, `[scripts] setup` and `archive`), then Pulpo's local
-  file. That file written only when opened, not on first use (today it is,
-  which would hide later Conductor changes). Conductor's variables
-  (`CONDUCTOR_PORT`, `_ROOT_PATH`, `_WORKSPACE_NAME`, `_WORKSPACE_PATH`) only
-  in the environment of a Conductor script Pulpo runs.
-- **An install guessed from lockfiles**: `npm ci`, `pnpm i
-  --frozen-lockfile`, `yarn --frozen-lockfile`, `bun i`, `bundle install`,
-  `uv sync`.
-- **Trust.** A setup or teardown script from a committed file is shown and
-  asked once per (repository, script hash) before it runs: a session is
-  based on a fresh `origin`, so anyone who can push could otherwise run code
-  here.
-- **Setting up, for agents.** A marker an agent can check while setup still
-  runs (the terminal's environment is fixed when it starts).
-- **Later.** A session from an existing branch or pull request.
+- **A session from an existing branch or pull request**, like Conductor's
+  ⌘⇧N.
+- Dropped: a "setting up" marker for agents. A terminal's environment is
+  fixed when it starts, and an agent wouldn't know to look for a file; the
+  sidebar already says it.
