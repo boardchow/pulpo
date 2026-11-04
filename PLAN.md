@@ -9,7 +9,7 @@ repositories), terminals (shells and Claude Code), changes, files, search.
 Terminals run in a background server, so quitting or rebuilding Pulpo
 leaves them running (see "Terminals that keep running"). Git is the
 agents' job; the one place Pulpo does git is making and removing task
-sessions (git worktrees, see "Task sessions"). Worktrees made otherwise
+sessions (git worktrees, see "Sessions Pulpo makes"). Worktrees made otherwise
 show as sessions, read only.
 
 ## Architecture
@@ -31,7 +31,7 @@ pulpo (one binary)
 ├── proto.rs    the frames and messages between the two
 ├── pty.rs      pseudo-terminals with libc: a master fd and a pid, nothing to rebuild
 ├── procs.rs    process trees (`ps`), to hang up what a terminal started
-├── session.rs  task sessions: worktree, includes, registry, ports, compose guess and override, setup and removal scripts
+├── session.rs  the sessions Pulpo makes: worktree, includes, registry, ports, compose guess and override, setup and removal scripts
 ├── layout.rs   where you were, and what was open, across restarts and reboots
 ├── viewer.rs   read-only file view (syntect), and the inline diffs Changes shows
 ├── editor.rs   editing a file, highlighted by the viewer's own code (identical by construction)
@@ -105,11 +105,11 @@ error leave something to read. A new shell prompt (OSC 133 A) ends its runs.
 
 ### Changes
 
-Changes compares the session with where it started: a task session with the
+Changes compares the session with where it started: a session Pulpo made with the
 commit it was copied at (`base`, recorded when it is made), so the
 agents' commits are included; a checkout on another branch with where it
 left the main one; the main branch itself with its last commit, so a
-commit takes its changes away. Only a task session's base is kept: every
+commit takes its changes away. Only the base of a session Pulpo made is kept: every
 other read finds it again, so a commit or a push moves it. The list of files comes from `git diff --name-status`
 and `ls-files --others`; only the selected file's diff is read, as the whole
 file (`--unified=1000000`) with its changes inline, both sides highlighted
@@ -135,7 +135,7 @@ view lighter).
       (working, to read, quiet).
 - [x] Terminals that keep running after quitting and across rebuilds (see below).
 - [x] Sessions: a repository's checkouts, each with its terminals, files, changes and graph.
-- [x] Task sessions (`n s`): a copy of the checkout with its own Docker project, ports and database (see below).
+- [x] New sessions (`n s`): a copy of the checkout with its own Docker project, ports and database (see below).
 - [x] Reopen where you were; after a reboot, reopen the terminals and resume their Claude sessions.
 - [x] A built-in editor that looks exactly like the viewer (micro and `$PULPO_EDITOR` are gone).
 - [x] `pulpo hooks install | status | remove` instead of pasting the hooks config.
@@ -147,10 +147,10 @@ view lighter).
 - [x] Tabs and panes: each session's tabs, each a tree of splits of terminals and the file pane, kept across restarts. The sidebar in one box: the pulpo with who waits and works, the lists, and the session's tabs with the modes on (BOARD, SCROLL). A top bar came and went: the sidebar already said it all.
 - [x] Go to (every terminal of every repo, by state, with what its agent asks), the next one to read, back to the last place, and a menu of every action (`picker.rs`).
 - [x] Themes: following Ghostty's by default, any Ghostty theme, Omarchy's first, tried live in a picker. A Ghostty theme's background, foreground and ANSI colors give the rest (greys faded from the foreground, blue as the accent, syntax from the ANSI colors as Linear Dark's are).
-- [x] Layouts (`L`: main pane left, side by side, stacked, grid), the board (every terminal of the repository, tiled), swarms (N task sessions, Claude started on a task in each once set up), scrolling back and finding in a terminal, readline keys in every prompt (`input.rs`), right-click menus, dragging pane borders.
+- [x] Layouts (`L`: main pane left, side by side, stacked, grid), the board (every terminal of the repository, tiled), swarms (N sessions, Claude started on a task in each once set up), scrolling back and finding in a terminal, readline keys in every prompt (`input.rs`), right-click menus, dragging pane borders.
 - [x] Start again from Herdr's layout, keeping what's under it: workspaces and sessions | terminal tabs | files over changes, a prefix from anywhere, the mouse for all of it. The palette, splits, layouts, the board, swarms, the graph, the review scroll, scrollback search and the theme picker are gone. A new session is yours at once, set up in the background.
-- [x] Task sessions as git worktrees, the industry's pattern (Conductor, Claude Code, Cursor): a branch from the remote's default branch, main's ignored files it needs, a block of ten ports, git in containers (see "Task sessions").
-- [x] Task session recipes: Conductor's settings read, an install guessed from lockfiles, a trust prompt for committed scripts (see "Task sessions").
+- [x] Sessions as git worktrees, the industry's pattern (Conductor, Claude Code, Cursor): a branch from the remote's default branch, main's ignored files it needs, a block of ten ports, git in containers (see "Sessions Pulpo makes").
+- [x] Session recipes: Conductor's settings read, an install guessed from lockfiles, a trust prompt for committed scripts (see "Sessions Pulpo makes").
 - [ ] Codex support.
 
 ## Terminals that keep running
@@ -208,7 +208,7 @@ for drawing and for encoding keys and the mouse.
   and dashes), else a shell, and points the remembered tags at them. `Q`
   writes an empty list, so stopping everything on purpose stays stopped.
 
-## Task sessions
+## Sessions Pulpo makes
 
 A session is three things, each with one job:
 
@@ -377,7 +377,7 @@ Compose builds run code from the remote without asking, as in Conductor
 and as after any `git pull && npm i`: asking about the text `npm ci` would
 say nothing about what it runs.
 
-### Task sessions: next
+### Sessions: next
 
 - **A session from an existing branch or pull request**, like Conductor's
   ⌘⇧N.

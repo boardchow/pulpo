@@ -1,4 +1,4 @@
-//! Isolated sessions: a checkout of a repository to work on one task, with
+//! The sessions Pulpo makes: a checkout of a repository to work on one task, with
 //! its own branch, ports, Docker containers and database, so several tasks
 //! (and their agents) run side by side without touching each other.
 //!
