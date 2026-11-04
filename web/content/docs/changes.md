@@ -11,7 +11,7 @@ order: 8
 | --- | --- |
 | On `main` itself | What isn't committed. A commit takes it away. |
 | On another branch | What the branch changed since it left `main`, commits included. |
-| A task session | Everything since it was copied, commits included, so you see all an agent did. |
+| A task session | Everything since it left the default branch, commits included, so you see all an agent did. |
 
 New files git doesn't know yet are included. The list follows what agents do as they do it.
 

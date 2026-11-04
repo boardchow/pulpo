@@ -24,9 +24,10 @@ order: 15
 | `~/.local/state/pulpo/sessions.json` | The task sessions |
 | `~/.local/state/pulpo/events.jsonl` | What the Claude hooks reported |
 | `~/.local/state/pulpo/logs/` | Task session setup and removal logs |
+| `~/.local/state/pulpo/compose/` | The Compose files that mount `main`'s `.git` in task sessions |
 
 A Pulpo started inside a Pulpo terminal uses `server-nested/` instead, so it doesn't show itself.
 
 ## Task sessions
 
-`<repo>.sessions/<name>`, next to the repository.
+`<repo>.sessions/<name>`, next to the repository: a git worktree, on the branch `<you>/<name>`.

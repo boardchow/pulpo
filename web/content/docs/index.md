@@ -1,6 +1,6 @@
 ---
 title: Introduction
-description: A terminal for running several coding agents side by side on a Mac. Each task gets its own copy of the repository, you see which agent needs you, and the files and what changed sit next to the terminals.
+description: A terminal for running several coding agents side by side on a Mac. Each task gets its own checkout of the repository, you see which agent needs you, and the files and what changed sit next to the terminals.
 section: Get started
 order: 1
 ---
@@ -24,7 +24,7 @@ Everything is one prefix away, from anywhere, terminals included: :kp then a key
   :::
 
   :::card{title="Task sessions" to="/docs/task-sessions"}
-  A copy of the repository per task, with its own ports and database.
+  A git worktree per task, with its own branch, ports and database.
   :::
 
   :::card{title="Keybinds" to="/docs/keybinds"}

@@ -19,7 +19,7 @@ order: 3
 
 3. **Use the prefix.** Press :k[⌘p], let go, then a key. :kp[?] lists them all. :kp[n] opens another terminal tab (try `make run` there); :kp{k="["} and :kp{k="]"} go between tabs.
 
-4. **Give the next task its own copy.** :kp[s] goes to Sessions, :kp[n] asks for a name. You get a shell in a fresh copy of the repository right away, with its own Docker containers and ports set up in the background. Start `claude` there too.
+4. **Give the next task its own worktree.** :kp[s] goes to Sessions, :kp[n] asks for a name. You get a shell in a fresh worktree on its own branch right away, with its own Docker containers and ports set up in the background. Start `claude` there too.
 
 5. **See who needs you.** A ◆ marks the session and tab waiting for you, and Ghostty sends a notification. :kp[a] goes to the one that has waited longest.
 

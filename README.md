@@ -12,7 +12,7 @@
 
 A terminal for running several coding agents side by side on a Mac.
 
-- **A copy of the repo per task.** Each task session gets its own files, ports, containers and database, in about a second. [Task sessions →](https://pulpo.sh/docs/task-sessions/)
+- **A worktree per task.** Each task session gets its own branch, files, ports, containers and database. [Task sessions →](https://pulpo.sh/docs/task-sessions/)
 - **See who needs you.** Every session and tab shows whether its agent works or waits for you, and you get a notification. [Agents →](https://pulpo.sh/docs/agents/)
 - **Review next to the work.** The session's files and what it changed sit beside its terminals. [Changes →](https://pulpo.sh/docs/changes/)
 - **Quit, reboot, update.** Terminals keep running, and Claude sessions resume after a reboot. [Terminals →](https://pulpo.sh/docs/terminals/)

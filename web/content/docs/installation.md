@@ -7,7 +7,7 @@ order: 2
 
 ## Requirements
 
-- **macOS.** Task sessions also need the repository on an APFS disk (the default).
+- **macOS**, with git. On an APFS disk (the default), the files task sessions get from `main` are copied in an instant.
 - **[Ghostty](https://ghostty.org).** Pulpo is built and tested in it. Other terminals may work; Apple's Terminal can't draw the pulpo.
 - **[Claude Code](https://claude.com/claude-code)**, to see what each agent is doing. Any other program runs fine, but its state only shows if it reports it (see [Agents](/docs/agents)).
 
