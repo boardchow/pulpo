@@ -1,7 +1,4 @@
-//! Agent status from Claude Code hooks.
-//!
-//! Hooks run `pulpo emit`, which appends one JSON line per event to
-//! `events.jsonl`. The TUI replays the file on start and tails it afterwards.
+//! Agent status from Claude Code hooks: `pulpo emit` appends one JSON line per event to `events.jsonl`.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -16,9 +13,7 @@ const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
 #[cfg(test)]
 thread_local! {
-    /// A test's own state folder, instead of `XDG_STATE_HOME` (setting the
-    /// environment while other test threads read it isn't safe). Per test:
-    /// each runs on its thread, and goes with its folder.
+    /// Per test thread: setting `XDG_STATE_HOME` while other test threads read it isn't safe.
     pub static TEST_STATE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -41,7 +36,6 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// `pulpo emit`: read a hook payload from stdin and append it to the log.
 /// Never fails loudly, since a failing hook would get in the agent's way.
 pub fn emit() {
     let mut input = String::new();
@@ -55,7 +49,6 @@ pub fn emit() {
         "event": field("hook_event_name"),
         "tool": field("tool_name"),
         "message": field("message"),
-        // The file it edits or writes, so a review pane can follow it.
         "file": payload.pointer("/tool_input/file_path").or_else(|| payload.pointer("/tool_input/notebook_path")).and_then(Value::as_str).unwrap_or(""),
         "tab": std::env::var("PULPO_TAB").unwrap_or_default(),
     });
@@ -70,7 +63,6 @@ pub fn emit() {
     }
 }
 
-/// The Claude Code hook events Pulpo listens to, with their tool matcher.
 const HOOKS: [(&str, Option<&str>); 7] = [
     ("SessionStart", None),
     ("UserPromptSubmit", None),
@@ -85,7 +77,7 @@ fn emit_command() -> anyhow::Result<String> {
     Ok(format!("{} emit", std::env::current_exe()?.display()))
 }
 
-/// A hook command Pulpo installed, from whichever build: `.../pulpo emit`.
+/// Any build's `.../pulpo emit`, not only this one's.
 fn is_ours(handler: &Value) -> bool {
     handler.get("command").and_then(Value::as_str).is_some_and(|c| c.trim_end().ends_with("pulpo emit"))
 }
@@ -98,7 +90,6 @@ fn hook_entry(command: &str, matcher: Option<&str>) -> Value {
     entry
 }
 
-/// `pulpo hooks [install|status|remove] [--dry-run]`.
 pub fn hooks(args: &[String]) -> anyhow::Result<()> {
     let dry_run = args.iter().any(|a| a == "--dry-run");
     let path = claude_settings();
@@ -137,7 +128,6 @@ pub fn hooks(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Pulpo's hooks are in Claude's settings, from this build or another.
 pub fn hooks_installed() -> bool {
     let Ok(command) = emit_command() else { return false };
     read_settings(&claude_settings()).is_ok_and(|(_, s)| hook_status(&s, &command).iter().all(|(_, state)| *state != "missing"))
@@ -159,8 +149,6 @@ fn hook_status(settings: &Value, command: &str) -> Vec<(&'static str, &'static s
         .collect()
 }
 
-/// Put Pulpo's hooks in `settings` (or take them out, with no command), and
-/// leave every other hook as it was. Says what changed for each event.
 fn set_hooks(settings: &mut Value, command: Option<&str>) -> Vec<(&'static str, &'static str)> {
     let mut changes = Vec::new();
     if !settings.is_object() {
@@ -205,7 +193,6 @@ fn set_hooks(settings: &mut Value, command: Option<&str>) -> Vec<(&'static str, 
     changes
 }
 
-/// `$CLAUDE_CONFIG_DIR/settings.json`, or `~/.claude/settings.json`.
 fn claude_settings() -> PathBuf {
     let dir = std::env::var_os("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
@@ -221,7 +208,6 @@ pub fn shorten(path: &std::path::Path) -> String {
     }
 }
 
-/// The file's text and its JSON; a missing file is empty settings.
 fn read_settings(path: &std::path::Path) -> anyhow::Result<(String, Value)> {
     match fs::read_to_string(path) {
         Ok(text) => {
@@ -233,9 +219,7 @@ fn read_settings(path: &std::path::Path) -> anyhow::Result<(String, Value)> {
     }
 }
 
-/// Write the settings back with the file's own indentation, through a
-/// temporary file so an interrupted write never leaves half a file. A
-/// symlinked settings file (dotfiles) is written where it points.
+/// Atomic through a temp file; a symlinked settings file (dotfiles) is written where it points.
 fn write_settings(path: &std::path::Path, old_text: &str, settings: &Value) -> anyhow::Result<()> {
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     if let Some(dir) = target.parent() {
@@ -248,7 +232,6 @@ fn write_settings(path: &std::path::Path, old_text: &str, settings: &Value) -> a
     Ok(())
 }
 
-/// The indentation of the first indented line, two spaces if none.
 fn indent_of(text: &str) -> String {
     text.lines()
         .map(|line| &line[..line.len() - line.trim_start().len()])
@@ -275,8 +258,6 @@ pub enum State {
 }
 
 impl State {
-    /// Which state shows when several terminals are summed up: one that
-    /// waits for you, then one at work.
     pub fn urgency(self) -> u8 {
         match self {
             State::Waiting | State::Done => 2,
@@ -287,12 +268,11 @@ impl State {
 }
 
 pub struct Agent {
-    /// The Pulpo terminal running this session (`PULPO_TAB`), if any.
     pub tab: String,
     pub state: State,
     pub detail: String,
     pub ts: u64,
-    /// The file it last edited, and when, in the order of all edits.
+    /// The file it last edited, numbered in the order of all edits.
     pub edited: Option<(u64, PathBuf)>,
 }
 
@@ -312,12 +292,10 @@ struct Record {
 pub struct Agents {
     offset: u64,
     sessions: HashMap<String, Agent>,
-    /// Edits seen so far, to order them.
     edits: u64,
 }
 
 impl Agents {
-    /// Read any lines appended since the last call.
     pub fn load(&mut self) {
         let Ok(mut file) = File::open(log_path()) else { return };
         let len = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -370,12 +348,10 @@ impl Agents {
         agent.detail = detail;
     }
 
-    /// The Claude session alive in a Pulpo terminal, to resume it there.
     pub fn session_for_tab(&self, tab: &str) -> Option<&str> {
         self.sessions.iter().filter(|(_, a)| a.tab == tab).max_by_key(|(_, a)| a.ts).map(|(id, _)| id.as_str())
     }
 
-    /// The latest session reported from a Pulpo terminal.
     pub fn for_tab(&self, tab: &str) -> Option<&Agent> {
         self.sessions.values().filter(|a| a.tab == tab).max_by_key(|a| a.ts)
     }
@@ -435,7 +411,6 @@ mod tests {
         let mut settings: Value = serde_json::from_str(original).unwrap();
         let changes = set_hooks(&mut settings, Some("/old/pulpo emit"));
         assert!(changes.iter().all(|(_, c)| *c == "added"));
-        // Again from a new build: updated in place, then unchanged.
         let changes = set_hooks(&mut settings, Some("/new/pulpo emit"));
         assert!(changes.iter().all(|(_, c)| *c == "updated"));
         assert!(set_hooks(&mut settings, Some("/new/pulpo emit")).iter().all(|(_, c)| *c == "unchanged"));
@@ -443,7 +418,6 @@ mod tests {
         assert_eq!(settings["hooks"]["Stop"][1]["hooks"][0]["command"], "/new/pulpo emit");
         assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "*");
 
-        // Removing puts the file back as it was, key order and indentation included.
         assert!(set_hooks(&mut settings, None).iter().all(|(_, c)| *c == "removed"));
         assert_eq!(format_json(&settings, &indent_of(original)).unwrap(), original);
         assert!(set_hooks(&mut settings, None).iter().all(|(_, c)| *c == "not installed"));

@@ -1,14 +1,10 @@
-//! Program status (OSC 7501): a program tells its terminal what it is doing,
-//! such as working, blocked on you, done or failed. Spec:
-//! https://mitchellh.com/writing/program-status-osc7501
-//!
-//! `ESC ] 7501 ; state=blocked:kind=permission:app=terraform:msg=<base64> ST`
+//! Program status, OSC 7501: https://mitchellh.com/writing/program-status-osc7501
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Records kept per terminal. The spec asks for at least 64.
+/// The spec asks for at least 64.
 const MAX_RECORDS: usize = 64;
 /// Limits from the spec; a report that breaks one is discarded whole.
 const MAX_REPORT: usize = 4096;
@@ -30,7 +26,6 @@ pub enum Status {
 }
 
 impl Status {
-    /// Which record a terminal shows first: the one that needs you most.
     fn urgency(self) -> u8 {
         match self {
             Status::Blocked => 4,
@@ -45,25 +40,19 @@ impl Status {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Record {
     pub status: Status,
-    /// What a blocked program waits for: permission, question or auth.
     pub kind: Option<String>,
     pub app: Option<String>,
     pub title: Option<String>,
     pub msg: Option<String>,
-    /// When it was last reported, to show the latest of equal records and
-    /// to evict the stalest.
     seq: u64,
 }
 
 #[derive(PartialEq, Debug)]
 pub enum Report {
     Set { id: String, record: Record },
-    /// Remove the record and the ones beneath it; the root (empty id)
-    /// removes every record.
     Clear { id: String },
 }
 
-/// Parse the body of an OSC 7501 report, after `7501;`.
 pub fn parse(body: &[u8]) -> Option<Report> {
     if body.len() > MAX_REPORT {
         return None;
@@ -116,18 +105,15 @@ fn valid_name(segment: &str) -> bool {
     (1..=MAX_NAME).contains(&segment.len()) && segment.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.+-".contains(&b))
 }
 
-/// Empty is the root record; otherwise segments joined by `/`.
 fn valid_id(id: &str) -> bool {
     id.is_empty() || (id.len() <= MAX_ID && id.split('/').count() <= MAX_DEPTH && id.split('/').all(valid_name))
 }
 
-/// Base64 text, refused if it doesn't decode or holds control characters.
 fn text(encoded: &str) -> Option<String> {
     let text = String::from_utf8(base64(encoded)?).ok()?;
     (!text.chars().any(char::is_control)).then_some(text)
 }
 
-/// Standard base64; padding is optional.
 fn base64(encoded: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(encoded.len() * 3 / 4);
     let (mut bits, mut count) = (0u32, 0);
@@ -150,7 +136,6 @@ fn base64(encoded: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// What the programs in one terminal reported, one record per id.
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Records {
     records: HashMap<String, Record>,
@@ -177,14 +162,10 @@ impl Records {
         }
     }
 
-    /// The program exited or the shell shows a new prompt: whatever was
-    /// working or waiting is over. Results (done, error) stay to be read.
     pub fn end_runs(&mut self) {
         self.records.retain(|_, r| !matches!(r.status, Status::Working | Status::Blocked));
     }
 
-    /// The record that needs you most (the latest of equals), and a line
-    /// that says why.
     pub fn summary(&self) -> Option<(Status, String)> {
         let record = self.records.values().max_by_key(|r| (r.status.urgency(), r.seq))?;
         let detail = record.msg.clone().or_else(|| record.kind.clone()).or_else(|| record.title.clone()).unwrap_or_default();
@@ -205,16 +186,13 @@ mod tests {
 
     #[test]
     fn parses_reports() {
-        // "Apply 3 to add, 1 to change, 0 to destroy?"
         let r = set("state=blocked:kind=permission:app=terraform:msg=QXBwbHkgMyB0byBhZGQsIDEgdG8gY2hhbmdlLCAwIHRvIGRlc3Ryb3k/");
         assert_eq!(r.status, Status::Blocked);
         assert_eq!(r.kind.as_deref(), Some("permission"));
         assert_eq!(r.app.as_deref(), Some("terraform"));
         assert_eq!(r.msg.as_deref(), Some("Apply 3 to add, 1 to change, 0 to destroy?"));
-        // Padding is optional, whitespace is trimmed, a kind only goes with blocked.
         assert_eq!(set(" state = working : kind=auth : msg=SGk ").msg.as_deref(), Some("Hi"));
         assert_eq!(set("state=working:kind=auth").kind, None);
-        // Malformed pairs and unknown keys are skipped.
         assert_eq!(set("state=done:junk:Upper=x:future=1").status, Status::Done);
         assert_eq!(parse(b"state=clear:id=build/test"), Some(Report::Clear { id: "build/test".into() }));
     }
@@ -245,7 +223,6 @@ mod tests {
         assert_eq!(records.summary(), Some((Status::Blocked, "permission".into())));
         records.apply(parse(b"state=clear:id=eu-west").unwrap());
         assert_eq!(records.summary().unwrap().0, Status::Working);
-        // A new prompt ends runs; a result stays.
         records.apply(parse(b"state=done:id=us-east:msg=SGVhbHRoeQ").unwrap());
         records.end_runs();
         assert_eq!(records.summary(), Some((Status::Done, "Healthy".into())));

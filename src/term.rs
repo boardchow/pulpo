@@ -1,7 +1,3 @@
-//! An embedded terminal as Pulpo shows it: a mirror of one that the server
-//! (`server.rs`) runs, fed with its screen and then its output. Also the
-//! emulator parts both sides share.
-
 use std::io::Write;
 use std::num::NonZeroU16;
 use std::time::Instant;
@@ -17,25 +13,20 @@ use crate::proto::{Info, ToServer};
 use crate::status::{self, Records, Status};
 use crate::theme;
 
-/// History kept by the mirror; the server keeps the same.
 pub const SCROLLBACK: usize = 5000;
 
-/// Things the emulated program asks of its terminal.
 #[derive(Default)]
 pub struct Events {
     pub replies: Vec<u8>,
     pub bell: bool,
     pub title: Option<String>,
-    /// Sequences to pass on to the terminal Pulpo runs in (clipboard).
     pub host: Vec<u8>,
-    /// What the program reports about itself (OSC 7501).
     pub status: Records,
     /// Progress (OSC 9;4) stands in for a status until a real one arrives.
     reports_status: bool,
 }
 
 impl Events {
-    /// Carrying on with what a terminal's programs reported before.
     pub fn with_status(status: Records) -> Events {
         Events { reports_status: true, status, ..Events::default() }
     }
@@ -100,8 +91,7 @@ impl vt100::Callbacks for Events {
     }
 }
 
-/// The mirror only draws: the server answers the program's queries, and
-/// the clipboard goes on to the terminal Pulpo runs in.
+/// The mirror only draws: the server answers the program's queries.
 struct Mirror;
 
 impl vt100::Callbacks for Mirror {
@@ -112,19 +102,13 @@ impl vt100::Callbacks for Mirror {
 
 pub struct Term {
     pub id: usize,
-    /// What the server says about it: its program, title, state.
     pub info: Info,
-    /// Its agent finished or asked something (hooks), not seen yet.
     pub hook_unread: bool,
-    /// The agent state its hooks last reported, to notice when it changes.
     pub reported: State,
-    /// Something that wants you now (an agent asks or finished), to notify
-    /// about once; Pulpo takes it.
     pub notice: Option<String>,
     pub last_notice: Option<Instant>,
     parser: vt100::Parser<Mirror>,
     link: Link,
-    /// The size last asked of the server, so each is asked once.
     asked: (u16, u16),
 }
 
@@ -148,7 +132,6 @@ impl Term {
     }
 
     pub fn set_info(&mut self, info: Info) {
-        // It reports that it waits for you, failed or finished.
         let before = self.info.status.as_ref().map(|(status, _)| *status);
         if let Some((now, detail)) = &info.status
             && Some(*now) != before
@@ -159,12 +142,10 @@ impl Term {
         self.info = info;
     }
 
-    /// The server changed its size; what follows is drawn at that size.
     pub fn set_size(&mut self, rows: u16, cols: u16) {
         self.parser.set_size(nz(rows), nz(cols));
     }
 
-    /// Ask the server for this size.
     pub fn resize(&mut self, rows: u16, cols: u16) {
         if self.asked != (rows, cols) {
             self.asked = (rows, cols);
@@ -172,7 +153,6 @@ impl Term {
         }
     }
 
-    /// You are looking at it: nothing left to read.
     pub fn seen(&mut self) {
         self.hook_unread = false;
         self.notice = None;
@@ -182,22 +162,18 @@ impl Term {
         }
     }
 
-    /// It finished something or asked you something since you last looked.
     pub fn unread(&self) -> bool {
         self.info.unread || self.hook_unread
     }
 
-    /// The program is printing on its own: an agent at work, a build, a server.
     pub fn working(&self) -> bool {
         self.info.working
     }
 
-    /// What the program says it is doing (OSC 7501), if it says.
     pub fn status(&self) -> Option<(Status, String)> {
         self.info.status.clone()
     }
 
-    /// What to call this terminal: the program running in it, or the shell.
     pub fn label(&self) -> &str {
         self.info.running.as_deref().unwrap_or(&self.info.name)
     }
@@ -221,19 +197,14 @@ impl Term {
         self.link.input(self.info.id, bytes);
     }
 
-    /// The program asked to receive mouse events (Claude, vim with mouse on…).
     pub fn wants_mouse(&self) -> bool {
         self.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
     }
 
-    /// The program draws on its own screen (Claude's full-screen views,
-    /// less, vim): there is no history to scroll.
     pub fn alternate_screen(&self) -> bool {
         self.parser.screen().alternate_screen()
     }
 
-    /// Send a mouse event at a 1-based cell, in the encoding the program asked
-    /// for. Returns false if it doesn't take this kind of event.
     pub fn mouse(&mut self, kind: MouseEventKind, col: u16, row: u16, modifiers: KeyModifiers) -> bool {
         let screen = self.parser.screen();
         match encode_mouse(screen.mouse_protocol_mode(), screen.mouse_protocol_encoding(), kind, col, row, modifiers) {
@@ -245,8 +216,6 @@ impl Term {
         }
     }
 
-    /// The word under a cell of the screen as it shows now: a link, a
-    /// path, whatever stands between spaces and brackets.
     pub fn word_at(&self, row: u16, col: u16) -> String {
         let screen = self.parser.screen();
         let line: Vec<char> = screen.rows(0, screen.size().1.get()).nth(row as usize).unwrap_or_default().chars().collect();
@@ -260,21 +229,17 @@ impl Term {
         line[start..end].iter().collect::<String>().trim_end_matches(['.', ',', ';', ':']).to_string()
     }
 
-    /// The text between two cells of the screen as it shows now (row,
-    /// column), both included, in either order: what you selected.
     pub fn selection(&self, a: (u16, u16), b: (u16, u16)) -> String {
         let (start, end) = if a <= b { (a, b) } else { (b, a) };
         let text = self.parser.screen().contents_between(start.0, start.1, end.0, end.1 + 1);
         text.lines().map(str::trim_end).collect::<Vec<_>>().join("\n")
     }
 
-    /// Scroll through history; positive goes back in time.
     pub fn scroll(&mut self, rows: isize) {
         let screen = self.parser.screen_mut();
         screen.set_scrollback(screen.scrollback().saturating_add_signed(rows));
     }
 
-    /// Draw the screen into `area`; returns where the cursor should be shown.
     pub fn render(&self, area: Rect, buf: &mut Buffer) -> Option<(u16, u16)> {
         let screen = self.parser.screen();
         for row in 0..area.height {
@@ -311,10 +276,7 @@ impl Term {
     }
 }
 
-/// Bytes that make a new parser of the same size show what `screen` shows:
-/// its history, then the screen itself with its modes, and the title.
-/// vt100 can't read the screen behind an alternate one (a full-screen
-/// program's); that part and its history are left out.
+/// vt100 can't read the screen behind an alternate one; that part and its history are left out.
 pub fn snapshot(screen: &vt100::Screen, title: &str) -> Vec<u8> {
     let mut screen = screen.clone();
     let (rows, cols) = (screen.size().0.get(), screen.size().1.get());
@@ -348,7 +310,6 @@ pub fn snapshot(screen: &vt100::Screen, title: &str) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// Write to the terminal Pulpo itself runs in (Ghostty), between frames.
 pub fn to_host(bytes: &[u8]) {
     if !bytes.is_empty() {
         let mut out = std::io::stdout();
@@ -368,8 +329,6 @@ pub fn nz(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN)
 }
 
-/// The 16 basic colors and the defaults come from the theme, so terminals
-/// look like VS Code's.
 fn color(c: vt100::Color, default: Color) -> Color {
     match c {
         vt100::Color::Default => default,
@@ -379,7 +338,6 @@ fn color(c: vt100::Color, default: Color) -> Color {
     }
 }
 
-/// Translate a mouse event into the bytes an xterm would send.
 fn encode_mouse(
     mode: vt100::MouseProtocolMode,
     encoding: vt100::MouseProtocolEncoding,
@@ -435,7 +393,6 @@ fn encode_mouse(
     }
 }
 
-/// Translate a key into the bytes an xterm would send.
 fn encode_key(key: KeyEvent, app_cursor: bool) -> Option<Vec<u8>> {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -555,7 +512,6 @@ mod tests {
         assert!(other.bracketed_paste() && other.application_cursor());
         assert_eq!(other.mouse_protocol_mode(), screen.mouse_protocol_mode());
         assert_eq!(other.mouse_protocol_encoding(), screen.mouse_protocol_encoding());
-        // The same history, colors included.
         let history = |s: &vt100::Screen| {
             let mut s = s.clone();
             s.set_scrollback(usize::MAX);
@@ -564,7 +520,6 @@ mod tests {
         assert_eq!(history(other), history(screen));
         assert_eq!(history(other).0, 36);
 
-        // A full-screen program: its screen, without history.
         parser.process(b"\x1b[?1049h\x1b[2J\x1b[Hvim here");
         let mut copy = vt100::Parser::new(nz(10), nz(30), 100);
         copy.process(&snapshot(parser.screen(), ""));
@@ -577,13 +532,11 @@ mod tests {
         let mut parser = vt100::Parser::new_with_callbacks(nz(10), nz(20), 0, Events::default());
         parser.process(b"\x1b]7501;?\x1b\\");
         assert_eq!(parser.callbacks().replies, b"\x1b]7501;?\x1b\\");
-        // Progress counts as working, until the program reports a real status.
         parser.process(b"\x1b]9;4;3\x07");
         assert_eq!(parser.callbacks().status.summary().unwrap().0, Status::Working);
         parser.process(b"\x1b]7501;state=blocked:kind=question:msg=TmFtZT8\x1b\\");
         parser.process(b"\x1b]9;4;0\x07");
         assert_eq!(parser.callbacks().status.summary(), Some((Status::Blocked, "Name?".into())));
-        // The next prompt ends it.
         parser.process(b"\x1b]133;A\x07");
         assert_eq!(parser.callbacks().status.summary(), None);
         parser.process(b"\x1b]52;c;aGk=\x07");

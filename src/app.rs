@@ -25,18 +25,12 @@ use crate::term::Term;
 use crate::viewer::{Source, Viewer};
 use crate::workspace::{self, Workspace};
 
-/// At most one desktop notification per terminal this often.
 const NOTICE_EVERY: Duration = Duration::from_secs(10);
-/// How long a message stays on the bottom line, unless it asks something.
 const MESSAGE_FOR: Duration = Duration::from_secs(5);
-/// Said when unsaved changes in the editor keep you where you are.
 const UNSAVED: &str = "unsaved changes in the editor: ⌘s saves them, esc twice throws them away";
-/// How long the prefix waits for its key.
 const PREFIX_FOR: Duration = Duration::from_secs(3);
-/// Two clicks on the same row this close together open it.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
-/// Where the keys go. The prefix then w s t f c moves it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
     Workspaces,
@@ -46,13 +40,9 @@ pub enum Focus {
     Changes,
 }
 
-/// A name typed on the bottom line.
 pub enum Ask {
-    /// A new task session of the repository.
     Session,
-    /// A new file or folder (ending with /) in this folder.
     File(PathBuf),
-    /// A new name for this file or folder.
     Rename(PathBuf),
 }
 
@@ -61,20 +51,16 @@ pub struct Prompt {
     pub text: String,
 }
 
-/// What y on the bottom line does.
 pub enum Confirm {
     RemoveWorkspace(PathBuf),
     DeleteSession(PathBuf),
     CloseTerminal(usize),
     DeleteFile(PathBuf),
     StopAll,
-    /// Run a new session's setup with the committed scripts it would run
-    /// (yes: trusted from now on; no: without them).
     TrustSetup(Box<PendingSetup>),
 }
 
-/// A setup waiting on the question about its committed scripts: exactly
-/// what was shown is what's trusted and run.
+/// Exactly what was shown is what's trusted and run.
 pub struct PendingSetup {
     root: PathBuf,
     config: session::Config,
@@ -82,49 +68,34 @@ pub struct PendingSetup {
     asked: Vec<(&'static str, String)>,
 }
 
-/// Where each part was drawn, for the mouse.
 #[derive(Default, Clone)]
 pub struct Areas {
-    /// The rows of the two lists.
     pub workspaces: Rect,
     pub sessions: Rect,
-    /// Each tab of the session's terminals, and the + after them.
     pub tabs: Vec<(Option<usize>, Rect)>,
-    /// The terminal on screen, inside its frame.
     pub term: Rect,
     pub files_tree: Rect,
     pub files_file: Rect,
     pub changes_tree: Rect,
     pub changes_file: Rect,
-    /// The marks down the right of the diff: a click goes there.
     pub changes_ruler: Rect,
-    /// The editor's text, without its line numbers' gutter accounted.
     pub editor: Rect,
-    /// The borders to drag: the sidebar's, the right side's, and the line
-    /// between a tree and its file (with where the tree starts).
     pub left_divider: Rect,
     pub divider: Rect,
     pub tree_dividers: Vec<(Rect, u16)>,
-    /// Yes on the bottom line, while it asks.
     pub yes: Rect,
-    /// The search popup or the repository picker, and its list.
     pub popup: Rect,
     pub popup_list: Rect,
-    /// The whole screen's width, to turn a drag into the right side's.
     pub width: u16,
 }
 
-/// A border being dragged.
 #[derive(Clone, Copy)]
 enum Drag {
     Sidebar,
     Right,
-    /// Between a tree and its file; the tree starts at this column.
     Tree(u16),
 }
 
-/// Text selected in a terminal with the mouse: its id, the cells (row,
-/// column) where the drag started and is now, and whether it still goes on.
 pub struct Selecting {
     pub id: usize,
     pub from: (u16, u16),
@@ -134,104 +105,61 @@ pub struct Selecting {
 
 pub struct App {
     pub workspaces: Vec<Workspace>,
-    /// The task sessions among them: copies of a main checkout with their
-    /// own Docker project and ports.
     pub isolated: Vec<session::Session>,
     pub current: usize,
     pub workspaces_state: ListState,
     pub sessions_state: ListState,
-    /// Shown when no repository is registered yet.
     scratch: PathBuf,
     pub focus: Focus,
     pub agents: Agents,
-    /// Every terminal, of every session, in the order of their tabs; each
-    /// belongs to the checkout it was started in.
     pub terms: Vec<Term>,
-    /// The terminal on screen in the current session.
     pub active: Option<usize>,
-    /// The prefix was pressed: the next key is Pulpo's, if it comes soon.
     pub prefixed: bool,
     prefixed_at: Option<Instant>,
-    /// A click said yes to quitting (Q): the loop ends.
     pub quit: bool,
-    /// Every shortcut, in a popup (prefix ?).
     pub help: bool,
-    /// The sidebar or the right side hidden (prefix < and >).
     pub left_hidden: bool,
     pub right_hidden: bool,
     pub prompt: Option<Prompt>,
-    /// A question on the bottom line, and what y does.
     pub asking: Option<(String, Confirm)>,
-    /// Until when keys aren't answers to it: a question that comes on its
-    /// own (a session's trust) mustn't be answered by what you were typing.
     asking_from: Option<Instant>,
     pub message: Option<String>,
     message_since: Option<(String, Instant)>,
-    /// Searching the session's files (names, then lines), in the Files panel.
     pub search: Option<Search>,
-    /// Picking a repository to add as a workspace.
     pub repos: Option<Search>,
-    /// The file selected in Files, and the editor in its place.
     pub viewer: Viewer,
     pub editor: Option<Editor>,
-    /// Esc was pressed once in the editor with unsaved changes.
     discard: bool,
-    /// The file takes the whole right side while you're in that panel.
     pub files_expanded: bool,
     pub changes_expanded: bool,
-    /// In a panel opened wide, the keys go to its file instead of its tree
-    /// (⏎ on a file, or tab).
     pub reading: bool,
-    /// What the current session changed.
     pub changes: Option<Changes>,
-    /// Columns of the sidebar, the right side and the trees in Files and
-    /// Changes, once their border was dragged.
     pub left_width: Option<u16>,
     pub right_width: Option<u16>,
     pub tree_width: Option<u16>,
     dragging: Option<Drag>,
     pub selecting: Option<Selecting>,
-    /// The last click, to tell a double click.
     last_click: Option<(Position, Instant)>,
     pub keymap: Keymap,
     pub areas: Areas,
-    /// Sessions being set up or removed in the background, and those whose
-    /// setup failed (with its log).
-    /// The setups by session, with their process (its own group).
     pub setting_up: HashMap<PathBuf, u32>,
     pub setup_failed: HashMap<PathBuf, PathBuf>,
-    /// Sessions being copied: their repository and name.
     copying: HashSet<(PathBuf, String)>,
     removing: HashSet<PathBuf>,
-    /// Sessions whose folder was deleted by hand, removed once already.
     gone: HashSet<PathBuf>,
-    /// The terminal (its tag) last on screen in each session, and the
-    /// session last used in each repository.
     last_term: HashMap<PathBuf, String>,
     last_session: HashMap<PathBuf, PathBuf>,
-    /// Where you were, as last written to disk (`layout.rs`); written again
-    /// when it changes, once the server has shown what it has.
     saved: Layout,
     ready: bool,
-    /// Terminals being brought back after a restart: token → old tag.
     reopening: HashMap<u64, String>,
     link: Link,
-    /// Terminals asked of the server and not shown yet, and whether to go
-    /// into them. Its token stands in for its id until then.
     spawning: HashMap<u64, bool>,
     next_token: u64,
     upgrade_asked: bool,
-    /// Connected again after the server went away (an upgrade, or it
-    /// stopped), with this many terminals before; and when.
     reconnected: Option<usize>,
     last_reconnect: Option<Instant>,
-    /// The server stopped twice in a row, or couldn't start: tried again
-    /// when you go to the terminal.
     offline: bool,
-    /// Rows and columns available to terminals, set when drawing.
     term_size: (u16, u16),
-    /// Workspaces with file changes not yet refreshed, and whether the
-    /// worktree list itself may have changed.
     fs_dirty: HashSet<PathBuf>,
     reload_list: bool,
     watcher: RecommendedWatcher,
@@ -240,8 +168,6 @@ pub struct App {
 }
 
 impl App {
-    /// `launch` is the checkout Pulpo was started in, if any; `scratch` the
-    /// directory to show when no repository is registered.
     pub fn new(launch: Option<PathBuf>, scratch: PathBuf, tx: Sender<Msg>, link: Link) -> anyhow::Result<Self> {
         let fs_tx = tx.clone();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -322,9 +248,6 @@ impl App {
             tx,
         };
         app.load_workspaces();
-        // Where you were: the session last used in the repository Pulpo was
-        // opened in (or in a session's own folder, that one); opened
-        // elsewhere, the session on screen last time.
         let at = |root: &Path| app.workspaces.iter().position(|w| w.root == root);
         let start = match &launch {
             Some(dir) => at(dir).map(|i| match &app.workspaces[i] {
@@ -346,9 +269,6 @@ impl App {
         &mut self.workspaces[self.current]
     }
 
-    // Workspaces and sessions
-
-    /// Rebuild the list from the registry and git, keeping existing state.
     fn load_workspaces(&mut self) {
         let (current, repo) = self.workspaces.get(self.current).map(|w| (w.root.clone(), w.repo.clone())).unzip();
         let mut old = std::mem::take(&mut self.workspaces);
@@ -357,8 +277,6 @@ impl App {
             None => Workspace::new(root, repo.to_path_buf()),
         };
         let isolated = session::all();
-        // A folder deleted by hand: the rest of its session goes the usual
-        // way (containers, worktree, branch), once.
         let gone: Vec<session::Session> = isolated
             .iter()
             .filter(|s| s.repo.is_dir() && !s.root.exists() && !self.removing.contains(&s.root) && !self.gone.contains(&s.root))
@@ -370,7 +288,6 @@ impl App {
             if roots.is_empty() {
                 roots.push(repo.clone());
             }
-            // A session's worktree is listed once, below, as the session.
             roots.retain(|r| !isolated.iter().any(|s| s.repo == repo && session::same_path(&s.root, r)));
             for root in roots {
                 self.workspaces.push(reuse(root, &repo));
@@ -389,7 +306,6 @@ impl App {
         match current.as_ref().map(|c| self.workspaces.iter().position(|w| &w.root == c)) {
             None => self.current = self.current.min(self.workspaces.len() - 1),
             Some(Some(i)) => self.current = i,
-            // Gone: its repository's main checkout, or the first, as if picked.
             Some(None) => {
                 let i = repo.and_then(|r| self.workspaces.iter().position(|w| w.repo == r)).unwrap_or(0);
                 self.current = usize::MAX;
@@ -415,10 +331,6 @@ impl App {
         self.watched = wanted;
     }
 
-    /// Make session `i` current: its terminals, on the one you last had on
-    /// screen there, its files and its changes. Not with unsaved changes in
-    /// the editor.
-    /// False when it stays where it was (unsaved changes).
     fn set_current(&mut self, i: usize) -> bool {
         if i >= self.workspaces.len() {
             return false;
@@ -453,12 +365,10 @@ impl App {
         true
     }
 
-    /// The editor has changes not saved yet.
     fn editing(&self) -> bool {
         self.editor.as_ref().is_some_and(|e| e.dirty)
     }
 
-    /// The repositories: the first checkout of each (its main one), in order.
     pub fn repos(&self) -> Vec<usize> {
         let mut out: Vec<usize> = Vec::new();
         for (i, w) in self.workspaces.iter().enumerate() {
@@ -469,26 +379,22 @@ impl App {
         out
     }
 
-    /// The sessions of the current repository, its main checkout first.
     pub fn sessions(&self) -> Vec<usize> {
         let repo = &self.ws().repo;
         (0..self.workspaces.len()).filter(|&i| &self.workspaces[i].repo == repo).collect()
     }
 
-    /// The session's name: `main` for the repository itself.
     pub fn session_name(&self, i: usize) -> &str {
         let ws = &self.workspaces[i];
         if ws.is_worktree() { &ws.name } else { "main" }
     }
 
-    /// Where a terminal works, for messages: `backbone`, `backbone/fix-login`.
     pub fn place(&self, dir: &Path) -> Option<String> {
         let ws = self.workspaces.iter().find(|w| w.root == dir)?;
         let repo = self.workspaces.iter().find(|w| w.repo == ws.repo && !w.is_worktree()).map_or(&ws.name, |r| &r.name);
         Some(if ws.is_worktree() { format!("{repo}/{}", ws.name) } else { repo.clone() })
     }
 
-    /// The lists show the current repository and session.
     fn sync_lists(&mut self) {
         let repo = &self.ws().repo;
         let in_repos = self.repos().iter().position(|&i| &self.workspaces[i].repo == repo);
@@ -504,11 +410,9 @@ impl App {
                     self.fs_dirty.insert(w.root.clone());
                 }
             }
-            // A worktree was added or removed (by an agent or with git).
             let added_or_removed = self.workspaces.iter().any(|w| {
                 path.strip_prefix(w.repo.join(".git/worktrees")).is_ok_and(|rel| rel.components().count() == 1)
             });
-            // A session's folder deleted by hand: the rest of it goes now.
             let session_gone = self.isolated.iter().any(|s| path.starts_with(&s.root) && !s.root.exists());
             self.reload_list |= added_or_removed || session_gone;
         }
@@ -531,13 +435,10 @@ impl App {
         if dirty.contains(&self.ws().root) {
             let root = self.ws().root.clone();
             self.viewer.reload(&root);
-            // Changes follow what the agents do.
             self.reload_changes();
             if let Some(search) = &mut self.search {
                 search.rescan(&self.tx);
             }
-            // An agent changed the file being edited: take it, unless you
-            // changed it too.
             if let Some(editor) = &mut self.editor
                 && editor.reload_if_changed()
             {
@@ -546,7 +447,6 @@ impl App {
         }
     }
 
-    /// Read what the session changed again, in the background (`on_changes`).
     fn reload_changes(&mut self) {
         let Some(changes) = &mut self.changes else { return };
         let (request, tx) = (changes.request(), self.tx.clone());
@@ -578,30 +478,21 @@ impl App {
         }
     }
 
-    // Terminals
-
-    /// Start `program` in a new terminal working in `cwd`; its token. The
-    /// server shows it shortly; until then the token stands in for its id.
     fn spawn_in(&mut self, cwd: PathBuf, program: &str, args: &[String], focus: bool) -> u64 {
         let token = self.next_token;
         self.next_token += 1;
         let (rows, cols) = self.term_size;
-        // A task session's terminals get its Compose project and ports.
         let env = self.isolated.iter().find(|s| s.root == cwd).map(session::env).unwrap_or_default();
         self.link.send(&ToServer::Spawn { token, program: program.into(), args: args.to_vec(), cwd, rows, cols, env });
         self.spawning.insert(token, focus);
         token
     }
 
-    /// A shell in a new tab of the current session.
     fn new_terminal(&mut self, focus: bool) {
         let cwd = self.ws().root.clone();
         self.spawn_in(cwd, &shell(), &[], focus);
     }
 
-    /// The server came back with no terminals (a reboot, or it stopped):
-    /// open the ones you had again, each in its session, resuming the
-    /// Claude session that was alive in it.
     fn reopen(&mut self) {
         let open = std::mem::take(&mut self.saved.open);
         let (mut terminals, mut agents) = (0, 0);
@@ -618,7 +509,6 @@ impl App {
         }
     }
 
-    /// Where you are now, to write down.
     fn layout(&self) -> Layout {
         let open = self
             .terms
@@ -644,7 +534,6 @@ impl App {
                 let i = self.terms.len() - 1;
                 self.terms[i].resize(self.term_size.0, self.term_size.1);
                 let session = self.session_of(&self.terms[i]);
-                // Brought back after a restart: it stands for the old one.
                 if let Some(old) = token.and_then(|t| self.reopening.remove(&t)) {
                     let new = self.terms[i].info.tag.clone();
                     for tag in self.last_term.values_mut().filter(|tag| **tag == old) {
@@ -657,14 +546,11 @@ impl App {
                     return;
                 }
                 let Some(focus) = token.and_then(|t| self.spawning.remove(&t)) else {
-                    // One that kept running is shown once all are in (`Ready`).
                     if self.ready && self.active.is_none() && session.is_none_or(|s| s == self.current) {
                         self.restore_term();
                     }
                     return;
                 };
-                // Ours: show it, in its session (you may have moved on since).
-                // Refused (unsaved changes): it waits in its own session.
                 if focus && let Some(session) = session
                     && !self.set_current(session)
                 {
@@ -678,7 +564,6 @@ impl App {
                 }
             }
             ToClient::Hello { protocol, exe, built, .. } => self.check_server_build(protocol, &exe, built),
-            // Everything the server had is shown: start with a shell if it had none.
             ToClient::Ready => {
                 let stopped = self.reconnected.take().is_some_and(|had| had > 0) && self.terms.is_empty();
                 if self.terms.is_empty() && !self.saved.open.is_empty() {
@@ -716,8 +601,6 @@ impl App {
         }
     }
 
-    /// A server runs an older build of this Pulpo: have it become this one.
-    /// It keeps its terminals; the connection drops and comes back.
     fn check_server_build(&mut self, protocol: u32, exe: &Path, built: u64) {
         let Ok(mine) = std::env::current_exe() else { return };
         let same = std::fs::canonicalize(&mine).ok() == std::fs::canonicalize(exe).ok();
@@ -729,8 +612,6 @@ impl App {
         }
     }
 
-    /// The connection to the server dropped: it upgraded, or it stopped and
-    /// the terminals with it. Connect again; what comes back tells which.
     pub fn on_server_gone(&mut self) {
         let had = self.terms.len();
         self.ready = false;
@@ -756,8 +637,7 @@ impl App {
         }
     }
 
-    /// If the server was given up on, try it again. Not on every key:
-    /// starting it can take seconds.
+    /// Not on every key: starting the server can take seconds.
     fn retry_server(&mut self) {
         if std::mem::take(&mut self.offline) {
             self.last_reconnect = None;
@@ -787,14 +667,10 @@ impl App {
         }
     }
 
-    /// The size new terminals start at: the room in the middle.
     pub fn set_term_size(&mut self, rows: u16, cols: u16) {
         self.term_size = (rows.max(1), cols.max(1));
     }
 
-    /// Working while the program prints on its own; then, until you look at
-    /// it, waiting with something to read. A program that reports its
-    /// status (OSC 7501) is taken at its word.
     pub fn term_state(&self, term: &Term) -> State {
         match term.status().map(|(status, _)| status) {
             Some(Status::Working) => State::Running,
@@ -805,15 +681,11 @@ impl App {
         }
     }
 
-    /// Before each draw: runs that ended and agents that stopped or asked
-    /// leave something to read, unless that terminal is on screen.
     pub fn tick(&mut self) {
         if self.prefixed_at.is_some_and(|at| at.elapsed() >= PREFIX_FOR) {
             self.prefixed = false;
             self.prefixed_at = None;
         }
-        // Messages go after a while; a question stays until answered, and
-        // the server being down until it's back.
         match &self.message {
             None => self.message_since = None,
             Some(m) if self.message_since.as_ref().is_none_or(|(shown, _)| shown != m) => self.message_since = Some((m.clone(), Instant::now())),
@@ -856,25 +728,19 @@ impl App {
         }
     }
 
-    /// Something is working, so its spinner needs frequent redraws.
     pub fn animating(&self) -> bool {
         !self.setting_up.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
     }
 
-    /// The session a terminal belongs to: the checkout it started in.
     fn session_of(&self, term: &Term) -> Option<usize> {
         self.workspaces.iter().position(|w| w.root == term.info.cwd)
     }
 
-    /// The current session's terminals, in tab order, as indexes into
-    /// `terms`. One started outside every checkout shows in all of them, so
-    /// it stays reachable.
+    /// One started outside every checkout shows in all of them, so it stays reachable.
     pub fn session_terms(&self) -> Vec<usize> {
         (0..self.terms.len()).filter(|&i| self.session_of(&self.terms[i]).is_none_or(|s| s == self.current)).collect()
     }
 
-    /// How a session (`i`) is doing, from its terminals: waiting beats
-    /// working beats quiet. None without terminals.
     pub fn session_state(&self, i: usize) -> Option<State> {
         let root = &self.workspaces[i].root;
         let states = self.terms.iter().filter(|t| &t.info.cwd == root).map(|t| self.term_state(t));
@@ -889,7 +755,6 @@ impl App {
         self.active.and_then(|id| self.terms.iter_mut().find(|t| t.id == id))
     }
 
-    /// Make terminal `id` the tab on screen.
     fn select_term(&mut self, id: usize) {
         self.active = Some(id);
         self.selecting = None;
@@ -898,7 +763,6 @@ impl App {
         }
     }
 
-    /// Show the terminal this session last had on screen, or its first.
     fn restore_term(&mut self) {
         let root = self.ws().root.clone();
         let terms: Vec<&Term> = self.session_terms().into_iter().map(|i| &self.terms[i]).collect();
@@ -906,7 +770,6 @@ impl App {
         self.active = last.or(terms.first()).map(|t| t.id);
     }
 
-    /// Take a terminal off the list; the tab after it (or before) shows.
     fn remove_term(&mut self, id: usize) {
         let tabs: Vec<usize> = self.session_terms().into_iter().map(|i| self.terms[i].id).collect();
         self.terms.retain(|t| t.id != id);
@@ -920,7 +783,6 @@ impl App {
         }
     }
 
-    /// The next or previous tab, wrapping around, and into it.
     fn cycle_tab(&mut self, dir: isize) {
         let tabs: Vec<usize> = self.session_terms().into_iter().map(|i| self.terms[i].id).collect();
         if tabs.is_empty() {
@@ -932,8 +794,6 @@ impl App {
         self.set_focus(Focus::Terminal);
     }
 
-    /// Into the terminal that has waited longest with something to read:
-    /// those that ask before those that finished.
     fn next_waiting(&mut self) {
         let mut waiting: Vec<(bool, u64, usize)> = self
             .terms
@@ -959,19 +819,13 @@ impl App {
         self.set_focus(Focus::Terminal);
     }
 
-    /// Close a terminal: the program in front gets Ctrl-C, then hung up.
     fn close_terminal(&mut self, id: usize) {
         self.link.send(&ToServer::Close { id: id as u32 });
         self.remove_term(id);
     }
 
-    // Keys
-
-    /// Returns true when the app should quit.
     pub fn on_key(&mut self, key: KeyEvent) -> bool {
         let pressed = Key::of(key);
-        // The prefix works from anywhere: it closes a popup, a prompt or a
-        // question first.
         let open = self.repos.is_some() || self.search.is_some() || self.prompt.is_some() || self.asking.is_some() || self.help;
         if open && !self.prefixed && self.keymap.is_prefix(pressed) {
             if let Some((_, confirm)) = self.asking.take() {
@@ -998,8 +852,8 @@ impl App {
             self.prompt_key(key);
             return false;
         }
-        // A question come on its own lets keys through, still asked, until
-        // a second without typing: what you were typing never answers it.
+        // A question that came on its own ignores keys until a second without typing,
+        // so what you were typing never answers it.
         let settling = self.asking.is_some() && self.asking_from.is_some_and(|from| Instant::now() < from);
         if settling {
             self.asking_from = Some(Instant::now() + Duration::from_secs(1));
@@ -1046,7 +900,6 @@ impl App {
         false
     }
 
-    /// The key after the prefix. True to quit.
     fn command(&mut self, key: Key) -> bool {
         let KeyCode::Char(c) = key.code else { return false };
         match c {
@@ -1094,7 +947,6 @@ impl App {
         false
     }
 
-    /// The question was answered anything but y: most need nothing more.
     fn declined(&mut self, confirm: Confirm) {
         if let Confirm::TrustSetup(pending) = confirm {
             self.trust_setup(*pending, false);
@@ -1102,8 +954,7 @@ impl App {
     }
 
     fn ask(&mut self, question: String, confirm: Confirm) {
-        // A question already waiting is answered no, never dropped (a setup
-        // would never run).
+        // A question already waiting is answered no, never dropped (a setup would never run).
         if let Some((_, waiting)) = self.asking.take() {
             self.declined(waiting);
         }
@@ -1112,7 +963,6 @@ impl App {
         self.asking = Some((question, confirm));
     }
 
-    /// The question was answered y. True to quit.
     fn confirmed(&mut self, confirm: Confirm) -> bool {
         match confirm {
             Confirm::RemoveWorkspace(repo) => {
@@ -1126,7 +976,6 @@ impl App {
             Confirm::DeleteFile(path) => self.delete(&path),
             Confirm::TrustSetup(pending) => self.trust_setup(*pending, true),
             Confirm::StopAll => {
-                // Setups still running stop too: they're what Q means by everything.
                 for &pid in self.setting_up.values() {
                     unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
                 }
@@ -1141,10 +990,8 @@ impl App {
         false
     }
 
-    /// Move the focus; into the terminal, a shell when the session has none.
     fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
-        // Going to a hidden side shows it again.
         match focus {
             Focus::Workspaces | Focus::Sessions => self.left_hidden = false,
             Focus::Files | Focus::Changes => self.right_hidden = false,
@@ -1169,7 +1016,6 @@ impl App {
         }
     }
 
-    /// Prefix n: a new one of what has the focus.
     fn new_here(&mut self) {
         match self.focus {
             Focus::Workspaces => self.open_repo_picker(),
@@ -1188,8 +1034,6 @@ impl App {
         }
     }
 
-    /// Prefix x: close what has the focus, asking first when something
-    /// would be lost.
     fn close_here(&mut self) {
         if matches!(self.focus, Focus::Workspaces | Focus::Sessions) && self.editing() {
             self.message = Some(UNSAVED.into());
@@ -1252,7 +1096,6 @@ impl App {
         }
     }
 
-    /// Keys in Workspaces and Sessions: moving shows what's selected.
     fn list_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => self.step(1),
@@ -1278,8 +1121,6 @@ impl App {
         self.on_select();
     }
 
-    /// Follow the selection: a repository goes back to the session you last
-    /// used in it.
     fn on_select(&mut self) {
         match self.focus {
             Focus::Workspaces => {
@@ -1297,9 +1138,6 @@ impl App {
         }
     }
 
-    // Files
-
-    /// The file selected in the tree, in the file pane.
     fn preview(&mut self) {
         if self.editor.is_some() {
             return;
@@ -1315,12 +1153,9 @@ impl App {
         if self.editor.is_some() {
             return self.editor_key(key);
         }
-        // Opened wide: the tree still moves, tab goes to the file and back,
-        // page up and down scroll it from either.
         if self.files_expanded {
             let half = (self.viewer.height / 2).max(1) as isize;
             match key.code {
-                // Out of the file to the tree, then back to the three columns.
                 KeyCode::Esc if self.reading => self.reading = false,
                 KeyCode::Esc => self.files_expanded = false,
                 KeyCode::Tab | KeyCode::BackTab => self.reading = !self.reading,
@@ -1338,8 +1173,6 @@ impl App {
         self.tree_key(key);
     }
 
-    /// Keys in the Files tree: move, fold, and ⏎ to open a file wide, the
-    /// keys on it (esc goes back to the tree).
     fn tree_key(&mut self, key: KeyEvent) {
         let row = self.ws().selected_row().map(|r| (r.is_dir, r.expanded));
         match key.code {
@@ -1369,8 +1202,6 @@ impl App {
         self.preview();
     }
 
-    /// Unfold or fold the selected folder of the tree; on a folded one (or a
-    /// file), folding goes to its parent.
     fn fold_tree(&mut self, open: bool) {
         let w = self.ws_mut();
         let Some(row) = w.selected_row() else { return };
@@ -1384,7 +1215,6 @@ impl App {
         self.preview();
     }
 
-    /// The file or folder selected in the tree.
     fn selected_path(&self) -> Option<PathBuf> {
         self.ws().selected_row().map(|r| r.path.clone())
     }
@@ -1426,7 +1256,6 @@ impl App {
         self.prompt = Some(Prompt { ask: Ask::Rename(path), text: name });
     }
 
-    /// A path for `name` typed in `dir`, if it stays inside the session.
     fn inside(&mut self, dir: &Path, name: &str) -> Option<PathBuf> {
         let path = dir.join(name.trim_end_matches('/'));
         let inside = path.starts_with(&self.ws().root) && !path.components().any(|c| c == std::path::Component::ParentDir);
@@ -1462,7 +1291,6 @@ impl App {
         }
     }
 
-    /// A new file, opened in the editor; or with a / at the end, a folder.
     fn create(&mut self, dir: &Path, name: &str) {
         let Some(path) = self.inside(dir, name) else { return };
         let rel = self.rel(&path);
@@ -1489,7 +1317,6 @@ impl App {
         }
     }
 
-    /// Prefix e: the selected file in the editor, the whole right side.
     fn edit(&mut self) {
         if self.editor.is_some() {
             return;
@@ -1513,27 +1340,23 @@ impl App {
         }
     }
 
-    /// Back to the file in the viewer, where the cursor was.
     fn close_editor(&mut self) {
         let Some(editor) = self.editor.take() else { return };
         let root = self.ws().root.clone();
         self.viewer.close();
         self.viewer.open_at(editor.path.clone(), None, &root);
         self.viewer.scroll = editor.scroll;
-        // Back to the tree, still wide: esc again for the three columns.
         self.files_expanded = true;
         self.reading = false;
         self.discard = false;
     }
 
-    /// Keys in the editor: the usual ones (VS Code's). Esc closes it.
     fn editor_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let cmd = key.modifiers.contains(KeyModifiers::SUPER);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let Some(editor) = &mut self.editor else { return };
-        // Typing what to find.
         if editor.find_typing {
             match key.code {
                 KeyCode::Esc => editor.find_typing = false,
@@ -1545,7 +1368,6 @@ impl App {
                 }
                 KeyCode::Char(c) if !ctrl && !cmd => {
                     editor.find.get_or_insert_default().push(c);
-                    // Look again from where this match starts.
                     if let Some((start, _)) = editor.selection() {
                         editor.click_at(start);
                     }
@@ -1625,15 +1447,10 @@ impl App {
         editor.follow_cursor();
     }
 
-    // Search
-
-    /// Prefix /: a popup over whatever is on screen: the session's files as
-    /// a tree, filtered as you type; tab searches inside them instead.
     fn start_search(&mut self) {
         self.search = Some(Search::new(Mode::Files, self.ws().root.clone(), &self.tx));
     }
 
-    /// No repository yet: pick one first.
     pub fn open_repo_picker(&mut self) {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         self.repos = Some(Search::new(Mode::Repos, home, &self.tx));
@@ -1654,7 +1471,6 @@ impl App {
     fn search_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let Some(search) = &mut self.search else { return };
-        // With nothing typed, the files are the session's own tree.
         let in_tree = search.mode == Mode::Files && search.query.is_empty();
         match key.code {
             KeyCode::Esc => self.search = None,
@@ -1679,7 +1495,6 @@ impl App {
         }
     }
 
-    /// Move in the popup: in the session's tree, or in the results.
     fn search_step(&mut self, delta: isize) {
         match &mut self.search {
             Some(search) if search.mode == Mode::Files && search.query.is_empty() => {
@@ -1694,8 +1509,6 @@ impl App {
         }
     }
 
-    /// ⏎ in the popup: a folder folds or unfolds (among matches, it shows
-    /// in the tree); a file opens in Files, full screen, on the line found.
     fn open_hit(&mut self) {
         let Some(search) = &self.search else { return };
         let picked = match search.mode {
@@ -1729,7 +1542,6 @@ impl App {
         self.reading = true;
     }
 
-    /// A file in Files, shown in the tree and in the file pane, on `line`.
     fn show_file(&mut self, path: PathBuf, line: Option<usize>) {
         self.ws_mut().reveal(&path);
         let root = self.ws().root.clone();
@@ -1759,11 +1571,7 @@ impl App {
         }
     }
 
-    // Changes
-
     fn changes_key(&mut self, key: KeyEvent) {
-        // As in Files: opened wide, the tree still moves, tab goes to the
-        // diff and back, page up and down scroll it from either.
         if self.changes_expanded {
             let Some(changes) = &mut self.changes else { return };
             let half = (changes.height / 2).max(1) as isize;
@@ -1804,8 +1612,6 @@ impl App {
         }
     }
 
-    // Mouse
-
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
             self.prefixed = false;
@@ -1822,7 +1628,6 @@ impl App {
             if matches!(mouse.kind, MouseEventKind::Down(_)) {
                 let pos = Position::new(mouse.column, mouse.row);
                 self.prompt = None;
-                // Yes on the bottom line answers; a click anywhere else is no.
                 if let Some((_, confirm)) = self.asking.take() {
                     if !self.areas.yes.contains(pos) {
                         self.declined(confirm);
@@ -1838,17 +1643,14 @@ impl App {
         let down = mouse.kind == MouseEventKind::Down(MouseButton::Left);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         let (wheel, sideways): (i32, isize) = match mouse.kind {
-            // Shift + wheel scrolls sideways, like most editors.
             MouseEventKind::ScrollUp if shift => (0, -6),
             MouseEventKind::ScrollDown if shift => (0, 6),
             MouseEventKind::ScrollUp => (-3, 0),
             MouseEventKind::ScrollDown => (3, 0),
-            // Horizontal swipes on a trackpad.
             MouseEventKind::ScrollLeft => (0, -4),
             MouseEventKind::ScrollRight => (0, 4),
             _ => (0, 0),
         };
-        // Dragging a border: the sidebar's, the right side's, a tree's.
         if let Some(drag) = self.dragging {
             match mouse.kind {
                 MouseEventKind::Drag(MouseButton::Left) => match drag {
@@ -1873,7 +1675,6 @@ impl App {
                 return;
             }
         }
-        // Selecting text in a terminal: copied when the button comes up.
         if let Some(selecting) = self.selecting.as_mut().filter(|s| s.dragging)
             && matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left))
         {
@@ -1892,17 +1693,14 @@ impl App {
             }
             return;
         }
-        // A click elsewhere ends what was selected.
         if down {
             self.selecting = None;
         }
-        // At the same place: a column off still counts, another panel doesn't.
         let double = down && self.last_click.is_some_and(|(at, when)| at.y == pos.y && at.x.abs_diff(pos.x) <= 1 && when.elapsed() < DOUBLE_CLICK);
         if down {
             self.last_click = Some((pos, Instant::now()));
         }
         let row = |area: Rect, offset: usize| (pos.y - area.y) as usize + offset;
-        // Only a click moves the focus: hovering or scrolling a panel leaves it.
 
         if down && areas.workspaces.contains(pos) {
             self.set_focus(Focus::Workspaces);
@@ -1913,7 +1711,6 @@ impl App {
             }
         } else if down && areas.sessions.contains(pos) {
             self.set_focus(Focus::Sessions);
-            // Two rows per session.
             let i = (pos.y - areas.sessions.y) as usize / 2 + self.sessions_state.offset();
             if i < self.sessions().len() {
                 self.sessions_state.select(Some(i));
@@ -2027,8 +1824,6 @@ impl App {
         }
     }
 
-    /// In the search popup or the repository picker: a click picks a row
-    /// (twice: opens it), the wheel moves, a click outside closes it.
     fn popup_mouse(&mut self, mouse: MouseEvent) {
         let pos = Position::new(mouse.column, mouse.row);
         let (popup, list) = (self.areas.popup, self.areas.popup_list);
@@ -2037,7 +1832,6 @@ impl App {
             MouseEventKind::ScrollUp => -1,
             MouseEventKind::ScrollDown => 1,
             _ if down && list.contains(pos) => {
-                // From the row selected to the one clicked.
                 let offset_and_at = match (&self.search, &self.repos) {
                     (Some(s), _) if s.mode == Mode::Files && s.query.is_empty() => {
                         let state = &self.ws().files_state;
@@ -2072,9 +1866,6 @@ impl App {
         }
     }
 
-    /// A program that asked for the mouse gets it (unless shift is down);
-    /// else the wheel scrolls back, a drag selects to copy, and ctrl-click
-    /// opens a link or a path.
     fn mouse_in_terminal(&mut self, mouse: MouseEvent, pos: Position, wheel: i32) {
         let area = self.areas.term;
         let Some(id) = self.active else { return };
@@ -2100,8 +1891,6 @@ impl App {
         }
     }
 
-    /// A link opens in the browser; a path (with `:line`, as tools print
-    /// them) shows in Files, there.
     fn open_link(&mut self, word: &str, cwd: &Path) {
         if word.starts_with("http://") || word.starts_with("https://") {
             let opened = std::process::Command::new("open").arg(word).status().is_ok_and(|s| s.success());
@@ -2128,10 +1917,6 @@ impl App {
         self.reading = true;
     }
 
-    // Task sessions
-
-    /// Make a new session of the repository, in the background (`on_copied`
-    /// goes on).
     fn create_session(&mut self, name: &str) {
         let (repo, name, tx) = (self.ws().repo.clone(), name.to_string(), self.tx.clone());
         let place = self.place(&repo).unwrap_or_default();
@@ -2148,9 +1933,6 @@ impl App {
         });
     }
 
-    /// The session is made: show it with a shell in it, yours at once, and
-    /// set it up in the background: main's images, a copy of its database,
-    /// its own containers.
     pub fn on_copied(&mut self, copy: (PathBuf, String), made: Result<(PathBuf, Vec<String>), String>) {
         self.copying.remove(&copy);
         let (root, mut notes) = match made {
@@ -2179,7 +1961,6 @@ impl App {
         // A script from a committed file runs once you've trusted it.
         let asked = session::untrusted(&session.repo, &config);
         if !asked.is_empty() {
-            // Each script, by how it starts.
             let shown: Vec<String> = asked
                 .iter()
                 .map(|(what, script)| {
@@ -2197,8 +1978,6 @@ impl App {
         self.set_up(&session, config, notes);
     }
 
-    /// The setup's answer: with the committed scripts shown, trusted from
-    /// now on, or without them.
     fn trust_setup(&mut self, pending: PendingSetup, yes: bool) {
         let PendingSetup { root, mut config, mut notes, asked } = pending;
         let Some(session) = self.isolated.iter().find(|s| s.root == root).cloned() else { return };
@@ -2212,8 +1991,6 @@ impl App {
         self.set_up(&session, config, notes);
     }
 
-    /// Set a new session up in the background: main's images, a copy of its
-    /// database, its own containers, its setup command.
     fn set_up(&mut self, session: &session::Session, config: session::Config, notes: Vec<String>) {
         let root = session.root.clone();
         let script = session::setup_script(session, &config, &notes);
@@ -2236,22 +2013,16 @@ impl App {
         self.setting_up.remove(&root);
         let name = root.file_name().unwrap_or_default().to_string_lossy().into_owned();
         self.message = Some(if ok { format!("session {name} is set up") } else { format!("the setup of session {name} stopped: see {}", log.display()) });
-        // Marked in Sessions until it's gone, and said again on going there.
         if !ok {
             self.setup_failed.insert(root, log);
         }
     }
 
-    /// Stop the session's terminals, take it off the list, and in the
-    /// background remove its containers and volumes (its database) and the
-    /// copy.
     fn remove_session(&mut self, root: &Path) {
         let Some(session) = self.isolated.iter().find(|s| s.root == root).cloned() else { return };
         self.remove(session, true);
     }
 
-    /// `remove_session`'s work; `asked` when you deleted it, else its folder
-    /// was deleted by hand and you stay where you are.
     fn remove(&mut self, session: session::Session, asked: bool) {
         let Ok(exe) = std::env::current_exe() else { return };
         if self.removing.contains(&session.root) {
@@ -2263,12 +2034,10 @@ impl App {
         let skipped = config.without(&untrusted);
         let skipped: String = skipped.iter().map(|n| format!("echo {}\n", session::quote(n))).collect();
         let script = skipped + &session::teardown_script(&session, &config, &exe);
-        // Its terminals stop the usual way (ctrl-c, then hang up).
         let ids: Vec<usize> = self.terms.iter().filter(|t| t.info.cwd == session.root).map(|t| t.id).collect();
         for id in ids {
             self.close_terminal(id);
         }
-        // From main, with the session's Compose project and ports.
         let log = logs().join(format!("remove-{}.log", session.project));
         let mut child = match run_in_background(&script, &session.repo, &session, &log) {
             Ok(child) => child,
@@ -2282,7 +2051,6 @@ impl App {
             let ok = child.wait().is_ok_and(|status| status.success());
             let _ = tx.send(Msg::Removed(root, log, ok));
         });
-        // Off the list now, as if gone.
         if let Some(main) = self.workspaces.iter().position(|w| w.root == session.repo).filter(|_| asked) {
             self.set_current(main);
         }
@@ -2295,10 +2063,8 @@ impl App {
         });
     }
 
-    /// A session's removal ended: if it failed, the session is back.
     pub fn on_removed(&mut self, root: PathBuf, log: PathBuf, ok: bool) {
         self.removing.remove(&root);
-        // Its name can be a session again, whose folder can go again.
         if ok {
             self.gone.remove(&root);
         }
@@ -2312,16 +2078,14 @@ impl App {
     }
 }
 
-/// Where setup and removal logs go: not in the state folder itself, which
-/// is watched for the agents' events.
+/// Not in the state folder itself, which is watched for the agents' events.
 fn logs() -> PathBuf {
     let dir = crate::agents::state_dir().join("logs");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
 
-/// `script` run by sh in `dir` with the session's environment, its output
-/// in `log`; in its own process group, so it outlives Pulpo.
+/// In its own process group, so it outlives Pulpo.
 fn run_in_background(script: &str, dir: &Path, session: &session::Session, log: &Path) -> std::io::Result<std::process::Child> {
     use std::os::unix::process::CommandExt;
     let out = std::fs::File::create(log)?;
@@ -2341,8 +2105,6 @@ enum Scroll {
     Sideways(isize),
 }
 
-/// Reading keys in a file at full height: down, up, a half page, top,
-/// bottom, sideways.
 fn scroll_keys(key: KeyEvent, height: usize) -> Option<Scroll> {
     let half = (height / 2).max(1) as isize;
     Some(match key.code {
@@ -2359,8 +2121,7 @@ fn scroll_keys(key: KeyEvent, height: usize) -> Option<Scroll> {
     })
 }
 
-/// The wheel over a terminal: its history, or, like Ghostty, arrow keys
-/// for full-screen programs (less, man…).
+/// Like Ghostty, the wheel sends arrow keys to full-screen programs (less, man...).
 fn scroll_term(term: &mut Term, rows: isize) {
     if term.alternate_screen() {
         let arrow = if rows < 0 { KeyCode::Up } else { KeyCode::Down };
@@ -2372,14 +2133,12 @@ fn scroll_term(term: &mut Term, rows: isize) {
     }
 }
 
-/// A desktop notification from the terminal Pulpo runs in (OSC 9, which
-/// Ghostty shows as a macOS notification).
+/// OSC 9, which Ghostty shows as a macOS notification.
 fn notify(text: &str) {
     let text: String = text.chars().filter(|c| !c.is_control()).take(200).collect();
     crate::term::to_host(format!("\x1b]9;{text}\x07").as_bytes());
 }
 
-/// Put `text` on the system clipboard.
 fn set_clipboard(text: &str) -> bool {
     use std::io::Write;
     std::process::Command::new("pbcopy")
@@ -2392,7 +2151,6 @@ fn set_clipboard(text: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// What is on the system clipboard.
 fn clipboard() -> Option<String> {
     let out = std::process::Command::new("pbpaste").output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())

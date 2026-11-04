@@ -1,6 +1,5 @@
 import { defineCollection, defineContentConfig, z } from "@nuxt/content";
 
-// Each page of the docs: its place in the list (a section, then an order).
 export default defineContentConfig({
   collections: {
     docs: defineCollection({

@@ -1,5 +1,4 @@
 <script setup>
-// Code, with a button that copies it.
 const props = defineProps({
   code: { type: String, default: "" },
   language: { type: String, default: null },

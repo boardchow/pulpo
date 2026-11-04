@@ -1,10 +1,3 @@
-//! Where you were, kept across restarts of Pulpo and of the machine: the
-//! session on screen, the session last used in each repository, the
-//! terminal last on screen in each session, and every open terminal with
-//! the Claude session running in it. Pulpo reopens where you were; after a
-//! reboot (the server comes back without terminals), it opens the
-//! terminals again and resumes their Claude sessions.
-//!
 //! Kept next to the server's socket, so a nested Pulpo has its own.
 
 use std::collections::BTreeMap;
@@ -17,15 +10,11 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Layout {
     pub current: Option<PathBuf>,
-    /// Repository → its session last used; session → the tag (`PULPO_TAB`)
-    /// of its terminal last on screen.
     pub sessions: BTreeMap<PathBuf, PathBuf>,
     pub terminals: BTreeMap<PathBuf, String>,
-    /// In the order of their tabs.
     pub open: Vec<Open>,
 }
 
-/// A terminal that was open: where, and the Claude session alive in it.
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Open {
@@ -52,8 +41,6 @@ pub fn save(layout: &Layout) {
     }
 }
 
-/// The command that brings a terminal back: Claude resumed where it was,
-/// then a shell when it exits; or just a shell.
 pub fn reopen(open: &Open, shell: &str) -> Vec<String> {
     match &open.claude {
         // Ids come from Claude's hooks; keep anything else out of the shell.
@@ -73,7 +60,6 @@ mod tests {
         let open = |claude: Option<&str>| Open { cwd: "/code".into(), tag: "1-2".into(), claude: claude.map(String::from) };
         assert_eq!(reopen(&open(Some("0f1e-a2")), "/bin/zsh")[2], "claude --resume 0f1e-a2; exec /bin/zsh -l");
         assert!(reopen(&open(None), "/bin/zsh").is_empty());
-        // Nothing but an id gets into the command.
         assert!(reopen(&open(Some("x; rm -rf ~")), "/bin/zsh").is_empty());
     }
 }

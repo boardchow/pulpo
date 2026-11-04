@@ -1,6 +1,4 @@
-/* pulpo.sh: Linear Dark, the colors of the app (src/theme.rs). The docs'
-   own rules are under .docs: pages on the left, the page in the middle,
-   its sections on the right. */
+/* Linear Dark, the colors of the app (src/theme.rs). */
 :root {
   --bg: #090909;
   --panel: #0e0e10;
@@ -33,7 +31,6 @@ body {
 a { color: var(--blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* Top bar */
 .top {
   position: sticky;
   top: 0;
@@ -47,8 +44,6 @@ a:hover { text-decoration: underline; }
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
 }
-/* As on the landing page: the pulpo, its name in monospace, then the
-   version and DOCS, all on one line. */
 .brand { display: flex; align-items: center; gap: 10px; color: var(--fg); font: 600 15px/1 var(--mono); letter-spacing: 0.02em; }
 .brand:hover { text-decoration: none; }
 .brand img { display: block; width: 32px; height: 20px; }
@@ -73,7 +68,6 @@ a:hover { text-decoration: underline; }
 .top .github { color: var(--muted); font-size: 13px; }
 .menu { display: none; background: none; border: 0; color: var(--fg); font-size: 20px; cursor: pointer; }
 
-/* The three columns */
 .layout {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) 220px;
@@ -123,7 +117,6 @@ a:hover { text-decoration: underline; }
 .toc a.sub { padding-left: 12px; }
 .toc a.on { color: var(--fg); }
 
-/* The page */
 .doc .eyebrow { margin: 0 0 6px; font: 12px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
 .doc h1 { margin: 0 0 12px; font-size: 32px; line-height: 1.2; letter-spacing: -0.01em; }
 .doc .lead { margin: 0 0 32px; font-size: 17px; color: var(--muted); }
@@ -229,7 +222,6 @@ td:first-child { white-space: nowrap; }
   border-radius: 50%;
 }
 
-/* The app, drawn as text */
 .screen {
   margin: 0 0 24px;
   padding: 14px 16px;
@@ -250,7 +242,6 @@ td:first-child { white-space: nowrap; }
 .screen .y { color: var(--yellow); }
 .screen .d { color: var(--dim); }
 
-/* Previous, next, edit */
 .pager { display: flex; gap: 12px; margin-top: 56px; }
 .pager a {
   flex: 1;
@@ -264,7 +255,6 @@ td:first-child { white-space: nowrap; }
 .pager a.next { text-align: right; }
 .edit { display: inline-block; margin-top: 20px; color: var(--dim); font-size: 13px; }
 
-/* Search */
 .search {
   position: fixed;
   inset: 0;

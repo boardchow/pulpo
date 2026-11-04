@@ -1,6 +1,3 @@
-//! The server keeps terminals across an upgrade, stops what runs in them
-//! when they close, and leaves once idle. Speaks the wire protocol by hand.
-
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -43,7 +40,6 @@ impl Conn {
         self.frame(2, &[&(id as u32).to_be_bytes()[..], text.as_bytes()].concat());
     }
 
-    /// The next frame: a JSON message, or a terminal's output as text.
     fn read(&mut self) -> Option<Result<Value, String>> {
         let mut head = [0u8; 5];
         self.0.read_exact(&mut head).ok()?;
@@ -55,7 +51,6 @@ impl Conn {
         })
     }
 
-    /// Read until a message of `kind` comes; returns it.
     fn until(&mut self, kind: &str) -> Value {
         loop {
             match self.read().expect("the server hung up") {
@@ -65,7 +60,6 @@ impl Conn {
         }
     }
 
-    /// Read until a terminal shows `text`.
     fn until_output(&mut self, text: &str) {
         let mut seen = String::new();
         while !seen.contains(text) {
@@ -114,7 +108,6 @@ fn keeps_terminals_across_an_upgrade_and_stops_them_on_close() {
     conn.input(id, "echo A$((1+1))\n");
     conn.until_output("A2");
 
-    // Upgrade (to the same program): the connection drops, the terminal stays.
     conn.send(json!({ "type": "upgrade", "exe": exe }));
     assert!(std::iter::from_fn(|| conn.read()).count() < 1000, "the connection should end");
     let mut conn = Conn::open(&sock);
@@ -139,8 +132,6 @@ fn keeps_terminals_across_an_upgrade_and_stops_them_on_close() {
     conn.input(other, "exit\n");
     conn.until("exit");
 
-    // A program printing as fast as it can waits for the server, which
-    // doesn't pile up its output.
     let server_pid = pid.as_u64().unwrap().to_string();
     conn.send(json!({ "type": "spawn", "token": 9, "program": "/usr/bin/yes", "args": [], "cwd": "/", "rows": 24, "cols": 80 }));
     let yes = conn.until("attach")["info"]["id"].as_u64().unwrap();
@@ -154,7 +145,6 @@ fn keeps_terminals_across_an_upgrade_and_stops_them_on_close() {
     conn.send(json!({ "type": "close", "id": yes }));
     conn.until("exit");
 
-    // Closing interrupts the program first and gives it time to clean up.
     let cleaned = state.join("cleaned");
     conn.send(json!({ "type": "spawn", "token": 10, "program": "/bin/sh", "args": [], "cwd": "/", "rows": 24, "cols": 80 }));
     let polite = conn.until("attach")["info"]["id"].as_u64().unwrap();
@@ -165,8 +155,7 @@ fn keeps_terminals_across_an_upgrade_and_stops_them_on_close() {
     conn.until("exit");
     assert!(cleaned.exists(), "hung up before it cleaned up");
 
-    // Claude quits on a second ctrl-c, sent for it, rather than after the grace.
-    // A shell by the name of claude, which quits on its second ctrl-c.
+    // Claude quits on a second ctrl-c, sent for it; here a shell named claude stands in.
     let claude = state.join("claude");
     std::os::unix::fs::symlink("/bin/sh", &claude).unwrap();
     conn.send(json!({ "type": "spawn", "token": 11, "program": "/bin/sh", "args": [], "cwd": "/", "rows": 24, "cols": 80 }));

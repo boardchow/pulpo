@@ -1,7 +1,3 @@
-//! Pseudo-terminals, with only what Pulpo needs from libc. A terminal is a
-//! master file descriptor and a process id, so it can be handed to another
-//! program image (the server's upgrade) and rebuilt from those two numbers.
-
 use std::fs::File;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -16,8 +12,6 @@ pub struct Pty {
     reaped: bool,
 }
 
-/// Start `program` on a new pseudo-terminal of `rows` x `cols`, as the
-/// leader of its own session with the terminal as its controlling tty.
 pub fn spawn(program: &str, args: &[String], cwd: &Path, env: &[(&str, &str)], unset: &[&str], (rows, cols): (u16, u16)) -> io::Result<Pty> {
     let (mut master, mut slave): (RawFd, RawFd) = (-1, -1);
     let mut size = winsize(rows, cols);
@@ -50,14 +44,12 @@ pub fn spawn(program: &str, args: &[String], cwd: &Path, env: &[(&str, &str)], u
             Ok(())
         });
     }
-    // The child is waited for by pid (`try_wait`), not through `Child`.
+    // Reaped by pid in `exited`, not through `Child`.
     let child = cmd.spawn()?;
     Ok(Pty { master: File::from(master), pid: child.id() as libc::pid_t, reaped: false })
 }
 
 impl Pty {
-    /// A terminal handed over by the server before it upgraded.
-    ///
     /// # Safety
     /// `master` must be an open pseudo-terminal master that nothing else
     /// owns, and `pid` its program, a child of this process.
@@ -70,8 +62,6 @@ impl Pty {
         unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &size) };
     }
 
-    /// The process group in the foreground: the shell itself, or the
-    /// program it runs.
     pub fn foreground(&self) -> Option<libc::pid_t> {
         match unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) } {
             pgrp if pgrp > 0 => Some(pgrp),
@@ -79,13 +69,11 @@ impl Pty {
         }
     }
 
-    /// Its program has exited (and is reaped).
     pub fn exited(&mut self) -> bool {
         self.reaped |= unsafe { libc::waitpid(self.pid, std::ptr::null_mut(), libc::WNOHANG) } == self.pid;
         self.reaped
     }
 
-    /// Tell the program its terminal went away, as closing a window does.
     pub fn hang_up(&self) {
         if !self.reaped {
             unsafe { libc::kill(self.pid, libc::SIGHUP) };
@@ -96,7 +84,6 @@ impl Pty {
 impl Drop for Pty {
     fn drop(&mut self) {
         self.hang_up();
-        // Reap it if it is already gone, so it doesn't linger as a zombie.
         self.exited();
     }
 }

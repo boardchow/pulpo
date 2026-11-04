@@ -1,7 +1,3 @@
-//! The files as a tree, filtered as you type (fuzzy), search in files (plain
-//! text, background thread), and pick a repository to add (found by
-//! scanning the home directory).
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -37,13 +33,10 @@ pub struct Search {
     pub mode: Mode,
     pub query: String,
     pub hits: Vec<Hit>,
-    /// Files: the matches laid out as a tree, which `state` selects in. Empty
-    /// with nothing typed: the workspace's own tree shows instead.
     pub tree: Vec<Row>,
     pub state: ListState,
     pub busy: bool,
     pub root: PathBuf,
-    /// Files of the workspace, or repositories found under the home directory.
     files: Arc<Vec<String>>,
     scanning: bool,
     /// Bumped on every new text search so stale ones stop early.
@@ -86,7 +79,6 @@ impl Search {
         }
     }
 
-    /// Recompute results after the query or mode changed.
     pub fn update(&mut self, tx: &Sender<Msg>) {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         self.state.select(Some(0));
@@ -103,12 +95,10 @@ impl Search {
                     .take(MAX_HITS)
                     .map(|(rel, _)| Hit { rel: rel.clone(), line: None, text: String::new() })
                     .collect();
-                // A typed path can be added even if the scan didn't find it.
                 if self.mode == Mode::Repos && (self.query.starts_with('/') || self.query.starts_with('~')) {
                     let typed = Hit { rel: self.query.clone(), line: None, text: String::new() };
                     self.hits.insert(0, typed);
                 }
-                // On the best match, wherever the tree puts it.
                 if self.mode == Mode::Files {
                     self.tree = tree::of_paths(&self.root, self.hits.iter().map(|hit| hit.rel.as_str()));
                     let best = self.hits.first().map(|hit| self.root.join(&hit.rel));
@@ -141,7 +131,6 @@ impl Search {
         }
     }
 
-    /// List the files again (one was deleted) and redo the search.
     pub fn rescan(&mut self, tx: &Sender<Msg>) {
         if self.mode != Mode::Repos {
             self.files = Arc::new(list_files(&self.root));
@@ -153,7 +142,6 @@ impl Search {
         self.files.len()
     }
 
-    /// The row selected in the filtered tree.
     pub fn selected_row(&self) -> Option<&Row> {
         self.tree.get(self.state.selected()?)
     }
@@ -177,7 +165,6 @@ impl Drop for Search {
     }
 }
 
-/// Files of the workspace relative to its root, gitignore-aware.
 fn list_files(root: &Path) -> Vec<String> {
     WalkBuilder::new(root)
         .hidden(false)
@@ -190,8 +177,6 @@ fn list_files(root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Git repositories under `home` (as `~/...`), skipping hidden and bulky
-/// directories and not descending into repositories.
 fn find_repos(home: &Path) -> Vec<String> {
     const SKIP: &[&str] =
         &["Library", "Applications", "Pictures", "Music", "Movies", "node_modules", "target", "vendor", "dist", "build"];
@@ -230,8 +215,6 @@ fn find_repos(home: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Lines containing `query`, case-insensitive unless the query has capitals.
-/// Returns None when `cancelled` turns true.
 fn grep(root: &Path, files: &[String], query: &str, cancelled: impl Fn() -> bool) -> Option<Vec<Hit>> {
     let ignore_case = !query.chars().any(char::is_uppercase);
     let needle = if ignore_case { query.to_lowercase() } else { query.to_string() };

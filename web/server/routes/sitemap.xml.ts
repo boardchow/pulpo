@@ -1,4 +1,3 @@
-// The landing page and every page of the docs, for search engines.
 export default defineEventHandler(async (event) => {
   const site = useRuntimeConfig(event).public.site;
   const pages = await queryCollection(event, "docs").select("path").all();
