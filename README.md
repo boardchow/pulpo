@@ -12,9 +12,9 @@
 
 A terminal for running several coding agents side by side on a Mac.
 
-- **A worktree per task.** Each task session gets its own branch, files, ports, containers and database. [Task sessions →](https://pulpo.sh/docs/task-sessions/)
-- **See who needs you.** Every session and tab shows whether its agent works or waits for you, and you get a notification. [Agents →](https://pulpo.sh/docs/agents/)
-- **Review next to the work.** The session's files and what it changed sit beside its terminals. [Changes →](https://pulpo.sh/docs/changes/)
+- **A session per task.** Each session is a worktree with its own branch, files, ports, containers and database. [Sessions →](https://pulpo.sh/docs/workspaces-and-sessions/)
+- **See who needs you.** Every session and tab shows whether its agent works or waits for you, and you get a notification. [Terminals →](https://pulpo.sh/docs/terminals/#agent-status)
+- **Review next to the work.** The session's files and what it changed sit beside its terminals. [Files and changes →](https://pulpo.sh/docs/files-and-changes/)
 - **Quit, reboot, update.** Terminals keep running, and Claude sessions resume after a reboot. [Terminals →](https://pulpo.sh/docs/terminals/)
 - **One prefix and the mouse.** `⌘p` then a key, from anywhere, or click. [Keybinds →](https://pulpo.sh/docs/keybinds/)
 
@@ -36,7 +36,7 @@ macOS and [Ghostty](https://ghostty.org). [Claude Code](https://claude.com/claud
 
 ## Docs
 
-[pulpo.sh/docs](https://pulpo.sh/docs/): [installation](https://pulpo.sh/docs/installation/) · [quick start](https://pulpo.sh/docs/quick-start/) · [the screen](https://pulpo.sh/docs/screen/) · [task sessions](https://pulpo.sh/docs/task-sessions/) · [Docker and ports](https://pulpo.sh/docs/docker/) · [keybinds](https://pulpo.sh/docs/keybinds/) · [configuration](https://pulpo.sh/docs/configuration/) · [troubleshooting](https://pulpo.sh/docs/troubleshooting/)
+[pulpo.sh/docs](https://pulpo.sh/docs/): [installation](https://pulpo.sh/docs/installation/) · [quick start](https://pulpo.sh/docs/quick-start/) · [sessions](https://pulpo.sh/docs/workspaces-and-sessions/) · [Docker and ports](https://pulpo.sh/docs/docker/) · [keybinds](https://pulpo.sh/docs/keybinds/) · [configuration](https://pulpo.sh/docs/configuration/) · [troubleshooting](https://pulpo.sh/docs/troubleshooting/)
 
 ## Development
 

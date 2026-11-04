@@ -1,11 +1,11 @@
 ---
 title: Configuration
-description: Pulpo works without settings. These files change the prefix, the colors and how task sessions are set up.
+description: Pulpo works without settings. These files change it.
 section: Reference
-order: 13
+order: 9
 ---
 
-## The prefix
+## Prefix
 
 `~/.config/pulpo/keys.toml`:
 
@@ -13,22 +13,48 @@ order: 13
 prefix = ["cmd-j", "ctrl-a"]
 ```
 
-Keys are written `cmd-`, `ctrl-`, `alt-` (or `opt-`), `shift-`, then a character or `space`, `tab`, `enter`, `esc`, `backspace`, `left`, `right`, `up`, `down`. Run `pulpo keytest` to see what your terminal sends.
+Modifiers are `cmd-`, `ctrl-`, `alt-` and `shift-`. Run `pulpo keytest` to see what your terminal sends.
 
-## Colors
+## Theme
 
-Pulpo uses Ghostty's theme, so it matches the terminal around it; without one, its own Linear Dark. To choose, `~/.config/pulpo/config.toml`:
+Pulpo follows Ghostty's theme, or uses Linear Dark without one. To choose, `~/.config/pulpo/config.toml`:
 
 ```toml
-theme = "Linear Dark"   # or "ghostty" (the default), or a Ghostty theme's name or path
+theme = "Linear Dark"   # or "ghostty", or any Ghostty theme's name
 ```
 
-## Task sessions
+## Sessions
 
-Guessed from the Compose file and lockfiles, then Conductor's `.conductor/settings.toml` if there is one, then `~/.config/pulpo/repos/<repo>.toml`. See [Docker and ports](/docs/docker#settings).
+How a repository's sessions are set up comes in layers, each overriding the one before:
 
-## Environment
+1. What Pulpo guesses from the Compose file and lockfiles.
+2. Conductor's `.conductor/settings.toml`, then `settings.local.toml`.
+3. `~/.config/pulpo/repos/<repo>.toml`.
 
-Every terminal Pulpo starts has `PULPO_TAB`, which the hooks use to match Claude to its terminal. A task session's terminals also have `PULPO_SESSION`, `PULPO_PORT`, `COMPOSE_PROJECT_NAME` and their port variables (see [Docker and ports](/docs/docker#what-a-session-gets)).
+Pulpo writes the last file the first time, with every setting commented out. Uncomment one to set it; an empty value turns it off.
 
-`XDG_CONFIG_HOME` and `XDG_STATE_HOME` move Pulpo's folders; `CLAUDE_CONFIG_DIR` moves where the hooks go.
+```toml
+# include = []                      # extra ignored files to copy, gitignore syntax
+# ports = ["APP_PORT", "DB_PORT"]   # port variables; each session gets its own
+# images = ["app"]                  # images main builds, reused
+# db = "mysql"                      # mysql, postgres, or "" for no copy
+# db_service = "db"
+# fresh = ""                        # run when main's database isn't running
+# setup = ""                        # run at the end of the setup
+# teardown = ""                     # run before the session is deleted
+# branch_prefix = ""                # branches are <prefix>/<name>
+```
+
+A setup or teardown script committed to the repository runs only after you trust it. Creating the session shows it and asks: :k[y] runs it and trusts it, anything else skips it. A changed script asks again.
+
+## Files on disk
+
+| Path | Holds |
+| --- | --- |
+| `~/.config/pulpo/` | Settings, and the list of workspaces |
+| `~/.local/state/pulpo/` | State: the server, sessions, hook events |
+| `~/.local/state/pulpo/logs/` | Session setup and removal logs |
+| `~/.local/state/pulpo/server/log` | The server's log |
+| `<repo>.sessions/<name>` | Sessions, next to their repository |
+
+`XDG_CONFIG_HOME` and `XDG_STATE_HOME` move these folders. `CLAUDE_CONFIG_DIR` moves where the hooks go.

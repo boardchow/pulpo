@@ -1,36 +1,65 @@
 ---
 title: Workspaces and sessions
-description: A workspace is a repository; a session is one checkout of it, with its own terminals, files and changes.
+description: A workspace is a repository. A session is one checkout of it, so agents working in parallel never touch each other's work.
 section: Using Pulpo
-order: 5
+order: 4
 ---
 
 ## Workspaces
 
-Opening `pulpo` inside a repository adds it. To add another, :kp[w] then :kp[n]: pick from the git repositories in your home folder, or type a path.
+Running `pulpo` in a repository adds it. To add another, :kp[w] then :kp[n].
 
-:kp[x] in Workspaces takes a repository off the list. Its files stay.
+:kp[x] in Workspaces removes a repository from the list. Its files stay.
 
 ## Sessions
 
-The current workspace's sessions:
+A session is one checkout of a workspace. Selecting one shows its terminals, files and changes.
 
-| Session | What it is |
-| --- | --- |
-| `main` | The repository itself. |
-| A git worktree | Shown if the repository has worktrees (an agent's, say). Pulpo leaves them to git. |
-| A task session | A worktree Pulpo made for one task, with its own ports and containers. See [Task sessions](/docs/task-sessions). |
+Every workspace starts with `main`, the repository itself. Each session you create is a git worktree on its own branch, with its own ports and Docker containers. Worktrees made outside Pulpo show up as sessions too, read only.
 
-Each row shows the session's state, its name, its number of uncommitted changes (`±3`), the web port of a task session (`:20000`), and under the name its branch, or *setting up* / *setup failed*.
+Each row shows the session's state, name, uncommitted changes (`±3`) and branch.
 
-Selecting a session (click, or arrows in Sessions) puts its terminals, files and changes on screen. Pulpo remembers the last session of each workspace.
+## Create a session
+
+:kp[s], then :kp[n], then a name.
+
+1. Pulpo fetches the remote's default branch and makes a worktree from it in `<repo>.sessions/<name>`, on the branch `<you>/<name>`.
+2. It copies `main`'s `.env` files, and the files listed in `.worktreeinclude`.
+3. A shell opens in it right away.
+4. Setup runs in the background: submodules, [Docker](/docs/docker), then the setup script. The session shows *setting up* meanwhile, or *setup failed* with its log.
+
+`<you>` is the `branch_prefix` setting, else git's `user.name`, else your GitHub login.
+
+Commit and push from a session as usual; `main` sees the commits at once.
+
+## Copy ignored files
+
+A worktree only has tracked files. List the ignored ones a session needs in `.worktreeinclude`, at the repository's root, in `.gitignore` syntax:
+
+```text
+config/master.key
+certs/
+!.env.local
+```
+
+Copies are APFS clones: instant, and no extra disk space.
+
+## Delete a session
+
+:kp[x] in Sessions. Pulpo first says what you'd lose. Then it stops the terminals, runs the teardown script, and removes the containers and the worktree.
+
+The branch stays if it has commits. Deleting the folder by hand has the same effect.
+
+::careful
+Deleting removes everything that wasn't committed in the session.
+::
 
 ## States
 
 | Mark | Meaning |
 | --- | --- |
-| spinner | A terminal is working. |
-| ◆ | A terminal waits for you, or finished something you haven't seen. |
-| ○ | Quiet. |
+| spinner | A terminal is working |
+| ◆ | A terminal waits for you |
+| ○ | Quiet |
 
-A session shows its most urgent terminal; a workspace its most urgent session. See [Agents](/docs/agents).
+A session shows its most urgent terminal, a workspace its most urgent session. See [Agent status](/docs/terminals#agent-status).
