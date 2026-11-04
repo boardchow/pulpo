@@ -56,4 +56,4 @@ cargo uninstall pulpo
 rm -rf ~/.config/pulpo ~/.local/state/pulpo
 ```
 
-Delete sessions in Pulpo first, or remove the `<repo>.sessions/` folders by hand.
+Delete sessions in Pulpo first, or remove `~/.pulpo/sessions/` by hand.

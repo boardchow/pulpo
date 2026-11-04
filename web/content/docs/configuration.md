@@ -55,6 +55,6 @@ A setup or teardown script committed to the repository runs only after you trust
 | `~/.local/state/pulpo/` | State: the server, sessions, hook events |
 | `~/.local/state/pulpo/logs/` | Session setup and removal logs |
 | `~/.local/state/pulpo/server/log` | The server's log |
-| `<repo>.sessions/<name>` | Sessions, next to their repository |
+| `~/.pulpo/sessions/<repo>/<name>` | Sessions |
 
 `XDG_CONFIG_HOME` and `XDG_STATE_HOME` move these folders. `CLAUDE_CONFIG_DIR` moves where the hooks go.
