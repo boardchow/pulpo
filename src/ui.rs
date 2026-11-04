@@ -13,6 +13,7 @@ use crate::search::Mode;
 use crate::tree::Row;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.reorder();
     frame.render_widget(Block::new().style(Style::new().fg(theme::fg()).bg(theme::bg())), frame.area());
     let [main, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
     let left = if app.left_hidden { 0 } else { app.left_width.unwrap_or((main.width * 18 / 100).clamp(26, 36)).clamp(20.min(main.width / 3), main.width / 3) };

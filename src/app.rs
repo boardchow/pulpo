@@ -165,6 +165,9 @@ pub struct App {
     spawning: HashMap<u64, (bool, PathBuf)>,
     /// When each folder last got a shell of its own, so one that exits at once isn't started again and again.
     kept: HashMap<PathBuf, Instant>,
+    /// The Workspaces list, top first, and each row's urgency when last placed.
+    order: Vec<PathBuf>,
+    placed: HashMap<PathBuf, u8>,
     next_token: u64,
     upgrade_asked: bool,
     reconnected: Option<usize>,
@@ -247,6 +250,8 @@ impl App {
             link,
             spawning: HashMap::new(),
             kept: HashMap::new(),
+            order: Vec::new(),
+            placed: HashMap::new(),
             // Far above any terminal id, so the two never mix.
             next_token: 1 << 40,
             upgrade_asked: false,
@@ -397,12 +402,29 @@ impl App {
         out
     }
 
-    /// The workspaces Pulpo made; a project's own folder is its row in Projects.
+    /// The workspaces Pulpo made, as `reorder` last left them; a project's own folder is its row in Projects.
     pub fn workspace_order(&self) -> Vec<usize> {
-        let mut all: Vec<usize> = (0..self.workspaces.len()).filter(|&i| self.workspaces[i].is_worktree()).collect();
-        // Waiting for you, then working, then the rest; stable, so each keeps its place in its group.
-        all.sort_by_key(|&i| std::cmp::Reverse(self.workspace_state(i).map_or(0, |s| s.urgency())));
+        let mut all: Vec<usize> = self.order.iter().filter_map(|root| self.workspaces.iter().position(|w| &w.root == root)).collect();
+        let unplaced: Vec<usize> = (0..self.workspaces.len()).filter(|&i| self.workspaces[i].is_worktree() && !all.contains(&i)).collect();
+        all.extend(unplaced);
         all
+    }
+
+    /// A workspace goes up when it starts waiting or working, and stays put when it calms down.
+    pub fn reorder(&mut self) {
+        let urgency: HashMap<PathBuf, u8> = (0..self.workspaces.len())
+            .filter(|&i| self.workspaces[i].is_worktree())
+            .map(|i| (self.workspaces[i].root.clone(), self.workspace_state(i).map_or(0, State::urgency)))
+            .collect();
+        self.order.retain(|root| urgency.contains_key(root));
+        self.placed.retain(|root, _| urgency.contains_key(root));
+        for i in 0..self.workspaces.len() {
+            let root = &self.workspaces[i].root;
+            let Some(&now) = urgency.get(root) else { continue };
+            if self.placed.insert(root.clone(), now).is_none_or(|was| was < now) || !self.order.contains(root) {
+                rise(&mut self.order, root.clone(), |r| urgency[r]);
+            }
+        }
     }
 
     pub fn place(&self, dir: &Path) -> Option<String> {
@@ -2307,4 +2329,47 @@ fn clipboard() -> Option<String> {
 
 pub fn shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())
+}
+
+/// Moves `item` up past the rows less urgent than it, never down.
+fn rise<T: PartialEq>(order: &mut Vec<T>, item: T, urgency: impl Fn(&T) -> u8) {
+    let now = urgency(&item);
+    let target = order.iter().filter(|r| **r != item).take_while(|r| urgency(r) >= now).count();
+    match order.iter().position(|r| *r == item) {
+        Some(at) if at <= target => {}
+        Some(at) => {
+            let item = order.remove(at);
+            order.insert(target, item);
+        }
+        None => order.insert(target, item),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rise;
+
+    #[test]
+    fn rows_only_move_up() {
+        let mut urgency = std::collections::HashMap::from([('a', 0), ('b', 0), ('c', 0), ('d', 0)]);
+        let mut order = Vec::new();
+        for item in ['a', 'b', 'c', 'd'] {
+            rise(&mut order, item, |r| urgency[r]);
+        }
+        assert_eq!(order, ['a', 'b', 'c', 'd']);
+        urgency.insert('c', 2);
+        rise(&mut order, 'c', |r| urgency[r]);
+        assert_eq!(order, ['c', 'a', 'b', 'd']);
+        // Read: it stays first.
+        urgency.insert('c', 0);
+        assert_eq!(order, ['c', 'a', 'b', 'd']);
+        // Working goes above the quiet rows, under the waiting ones.
+        urgency.extend([('a', 2), ('d', 1)]);
+        rise(&mut order, 'a', |r| urgency[r]);
+        rise(&mut order, 'd', |r| urgency[r]);
+        assert_eq!(order, ['a', 'd', 'c', 'b']);
+        // Working again where it already is doesn't move it.
+        rise(&mut order, 'd', |r| urgency[r]);
+        assert_eq!(order, ['a', 'd', 'c', 'b']);
+    }
 }

@@ -57,7 +57,9 @@ Event sources feeding the loop:
 ### Workspaces
 
 The sidebar has repositories (Projects) and the worktrees Pulpo made in every one
-(Workspaces, each with its project's name: the ones waiting for you first, then the working ones, then the rest).
+(Workspaces, each with its project's name). A workspace only moves up: to the top when it starts
+waiting for you, above the quiet ones when it starts working (`App::reorder`, each frame); it stays
+put when it calms down, so reading one leaves it where it is.
 Each is a `Workspace`: a project's row is the repository's own checkout, so selecting a project
 opens it. Selecting a workspace of another project makes that project the current one.
 The current workspace decides what the right side and the panels show: its
@@ -73,7 +75,7 @@ urgent state of its own terminals.
 
 Three columns and a bottom line, nothing else. Left: the pulpo, then two
 panels as tall as their rows: the projects, and every project's
-workspaces, waiting ones first, then working ones. A project's and a workspace's mark come first on their row. Middle: the workspace's
+workspaces, the ones waiting for you on top. A project's and a workspace's mark come first on their row. Middle: the workspace's
 terminals as tabs, drawn on the top of its frame (in the order of `terms`,
 which is the order they came in; the one on screen is kept by tag per
 workspace). There is always one: a shell opens in a checkout on screen without
