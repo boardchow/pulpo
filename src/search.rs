@@ -181,7 +181,7 @@ fn find_repos(home: &Path) -> Vec<String> {
     const SKIP: &[&str] =
         &["Library", "Applications", "Pictures", "Music", "Movies", "node_modules", "target", "vendor", "dist", "build"];
     const MAX_DEPTH: usize = 5;
-    let registered = crate::workspace::registered();
+    let registered = crate::project::registered();
     let mut found = Vec::new();
     let mut stack = vec![(home.to_path_buf(), 0)];
     while let Some((dir, depth)) = stack.pop() {

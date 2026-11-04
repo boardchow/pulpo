@@ -10,9 +10,10 @@ mod layout;
 mod review;
 mod procs;
 mod proto;
+mod project;
 mod pty;
 mod server;
-mod session;
+mod worktree;
 mod term;
 mod theme;
 mod search;
@@ -39,7 +40,7 @@ use ratatui::crossterm::execute;
 use app::App;
 
 const USAGE: &str = "usage:
-  pulpo [path]   open Pulpo; a repository at path (default: .) joins the workspace list
+  pulpo [path]   open Pulpo; a repository at path (default: .) joins the project list
   pulpo hooks install|status|remove [--dry-run]
                  add Pulpo's hooks to Claude Code, for what agents run and ask
   pulpo hooks    print those hooks instead
@@ -77,8 +78,8 @@ fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         Some("emit") => agents::emit(),
         Some("serve") => server::serve(&args[1..])?,
-        // Run by a session's removal script.
-        Some("forget-session") if args.len() == 2 => session::forget(std::path::Path::new(&args[1]))?,
+        // Run by a workspace's removal script.
+        Some("forget-workspace") if args.len() == 2 => worktree::forget(std::path::Path::new(&args[1]))?,
         Some("hooks") => agents::hooks(&args[1..])?,
         Some("doctor") => doctor::doctor(&args[1..])?,
         Some("keytest") => doctor::keytest()?,
@@ -86,10 +87,10 @@ fn main() -> Result<()> {
         arg => {
             let start = arg.map(PathBuf::from).unwrap_or(std::env::current_dir()?).canonicalize()?;
             let launch = git::toplevel(&start);
-            // A session's copy is its repository's session, not a repository.
-            let copy = launch.as_ref().is_some_and(|top| session::all().iter().any(|s| &s.root == top));
+            // A workspace Pulpo made is its repository's, not a project of its own.
+            let copy = launch.as_ref().is_some_and(|top| worktree::all().iter().any(|s| &s.root == top));
             if let Some(repo) = launch.as_deref().filter(|_| !copy).and_then(git::main_repo) {
-                workspace::register(&repo);
+                project::register(&repo);
             }
             run(launch, start)?;
         }
@@ -135,7 +136,7 @@ fn run(launch: Option<PathBuf>, scratch: PathBuf) -> Result<()> {
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>) -> Result<()> {
     // Draw once so the terminal size is known before the server shows its terminals.
     terminal.draw(|frame| ui::draw(frame, app))?;
-    if workspace::registered().is_empty() {
+    if project::registered().is_empty() {
         app.open_repo_picker();
     }
 

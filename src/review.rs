@@ -17,7 +17,7 @@ pub struct File {
 
 pub struct Changes {
     pub root: PathBuf,
-    /// The commit a session Pulpo made was copied at: fixed, while `base` is found again by each read.
+    /// The commit a workspace Pulpo made was copied at: fixed, while `base` is found again by each read.
     copied: Option<String>,
     base: Option<String>,
     pub since: String,

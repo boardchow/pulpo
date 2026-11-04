@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Layout {
     pub current: Option<PathBuf>,
-    pub sessions: BTreeMap<PathBuf, PathBuf>,
+    pub workspaces: BTreeMap<PathBuf, PathBuf>,
     pub terminals: BTreeMap<PathBuf, String>,
     pub open: Vec<Open>,
 }

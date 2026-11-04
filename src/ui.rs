@@ -91,43 +91,43 @@ fn framed(name: &str, focused: bool) -> Block<'static> {
 
 fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
     let rows = |n: usize| n.max(1) as u16 + 2;
-    let [_, header, _, workspaces, sessions, _] = Layout::vertical([
+    let [_, header, _, projects, workspaces, _] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(PULPO.len() as u16),
         Constraint::Length(1),
-        Constraint::Length(rows(app.repos().len())),
-        Constraint::Length(rows(app.sessions().len())),
+        Constraint::Length(rows(app.projects().len())),
+        Constraint::Length(rows(app.workspace_order().len())),
         Constraint::Fill(1),
     ])
     .areas(area);
     draw_header(frame, app, header);
-    let focused = app.focus == Focus::Workspaces;
-    let block = framed("Workspaces", focused);
-    let rows = block.inner(workspaces);
-    frame.render_widget(block, workspaces);
+    let focused = app.focus == Focus::Projects;
+    let block = framed("Projects", focused);
+    let rows = block.inner(projects);
+    frame.render_widget(block, projects);
 
     let current_repo = app.ws().repo.clone();
     let items: Vec<ListItem> = app
-        .repos()
+        .projects()
         .into_iter()
         .map(|i| {
             let w = &app.workspaces[i];
-            let states = app.workspaces.iter().enumerate().filter(|(_, s)| s.repo == w.repo).filter_map(|(s, _)| app.session_state(s));
+            let states = app.workspaces.iter().enumerate().filter(|(_, s)| s.repo == w.repo).filter_map(|(s, _)| app.workspace_state(s));
             let state = states.max_by_key(|state| state.urgency());
             ListItem::new(Line::from(state_name(state, &w.name, w.repo == current_repo)))
         })
         .collect();
-    frame.render_stateful_widget(List::new(items).highlight_style(highlight(focused)), rows, &mut app.workspaces_state);
-    app.areas.workspaces = rows;
+    frame.render_stateful_widget(List::new(items).highlight_style(highlight(focused)), rows, &mut app.projects_state);
+    app.areas.projects = rows;
 
-    let order = app.sessions();
+    let order = app.workspace_order();
     // States change between frames, and the order with them.
-    app.sessions_state.select(order.iter().position(|&i| i == app.current));
+    app.workspaces_state.select(order.iter().position(|&i| i == app.current));
     let items: Vec<ListItem> = order
         .into_iter()
         .map(|i| {
             let w = &app.workspaces[i];
-            let mut spans = state_name(app.session_state(i), app.session_name(i), i == app.current);
+            let mut spans = state_name(app.workspace_state(i), app.workspace_name(i), i == app.current);
             if !w.status.changes.is_empty() {
                 spans.push(Span::from(format!(" ±{}", w.status.changes.len())).fg(theme::blue()));
             }
@@ -138,7 +138,7 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             let repo = app.workspaces.iter().find(|r| r.repo == w.repo && !r.is_worktree()).map_or(&w.name, |r| &r.name);
             let used = spans.iter().map(Span::width).sum::<usize>();
-            let room = (sessions.width as usize).saturating_sub(used + 4);
+            let room = (workspaces.width as usize).saturating_sub(used + 4);
             if room >= 4 {
                 let repo = if repo.chars().count() > room { format!("{}…", repo.chars().take(room - 1).collect::<String>()) } else { repo.clone() };
                 spans.push(Span::from(" ".repeat(room + 1 - repo.chars().count())));
@@ -147,8 +147,8 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
             ListItem::new(Line::from(spans))
         })
         .collect();
-    let focused = app.focus == Focus::Sessions;
-    app.areas.sessions = panel(frame, framed("Sessions", focused), sessions, focused, items, &mut app.sessions_state);
+    let focused = app.focus == Focus::Workspaces;
+    app.areas.workspaces = panel(frame, framed("Workspaces", focused), workspaces, focused, items, &mut app.workspaces_state);
 }
 
 fn state_name(state: Option<State>, name: &str, current: bool) -> Vec<Span<'static>> {
@@ -170,7 +170,7 @@ fn draw_center(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let mut spans = vec![Span::from(" ")];
     let mut x = area.x + 2;
-    let tabs: Vec<usize> = app.session_terms();
+    let tabs: Vec<usize> = app.workspace_terms();
     let room = area.width.saturating_sub(2 + 1 + 3) as usize;
     let tab_width = |n: usize, cap: usize| format!(" {} ", n + 1).chars().count() + app.terms[tabs[n]].label().chars().count().min(cap) + 1 + 3;
     let cap = (0..=20).rev().find(|&cap| (0..tabs.len()).map(|n| tab_width(n, cap)).sum::<usize>() <= room).unwrap_or(0);
@@ -195,7 +195,7 @@ fn draw_center(frame: &mut Frame, app: &mut App, area: Rect) {
     app.areas.term = inner;
     let Some(id) = app.active else {
         let p = app.keymap.label();
-        let lines = vec![Line::from("No terminal in this session").bold(), Line::default(), Line::from(format!("{p} t opens one, or click +")).fg(theme::muted())];
+        let lines = vec![Line::from("No terminal in this workspace").bold(), Line::default(), Line::from(format!("{p} t opens one, or click +")).fg(theme::muted())];
         let spot = Rect { y: inner.y + inner.height / 3, height: 3.min(inner.height), ..inner };
         frame.render_widget(Paragraph::new(lines).centered(), spot);
         return;
@@ -415,8 +415,8 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
     } else if let Some(prompt) = &app.prompt {
         match &prompt.ask {
-            Ask::Session(branch) => session_input(&prompt.text, branch, false),
-            Ask::Branch(name) => session_input(name, &prompt.text, true),
+            Ask::Workspace(branch) => workspace_input(&prompt.text, branch, false),
+            Ask::Branch(name) => workspace_input(name, &prompt.text, true),
             Ask::File(dir) => {
                 let dir = dir.strip_prefix(&app.ws().root).unwrap_or(dir).display().to_string();
                 let at = if dir.is_empty() { String::new() } else { format!("in {dir}/ · ") };
@@ -444,7 +444,7 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(line, area);
 }
 
-fn session_input(name: &str, branch: &str, on_branch: bool) -> Line<'static> {
+fn workspace_input(name: &str, branch: &str, on_branch: bool) -> Line<'static> {
     let cursor = |here: bool| Span::from(if here { "█" } else { "" }).fg(theme::blue());
     let branch = if branch.is_empty() && !on_branch {
         Span::from("from the name").fg(theme::muted())
@@ -452,7 +452,7 @@ fn session_input(name: &str, branch: &str, on_branch: bool) -> Line<'static> {
         Span::from(branch.to_string())
     };
     Line::from(vec![
-        Span::from(" new session ").fg(theme::on_accent()).bg(theme::accent()).bold(),
+        Span::from(" new workspace ").fg(theme::on_accent()).bg(theme::accent()).bold(),
         Span::from(" › ").fg(theme::blue()).bold(),
         Span::from(name.to_string()),
         cursor(!on_branch),
@@ -542,7 +542,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
         (
             "Panels",
             vec![
-                (prefixed("w s t"), "workspaces, sessions, the terminal"),
+                (prefixed("p w t"), "projects, workspaces, the terminal"),
                 (prefixed("f c"), "files, changes"),
                 (prefixed("< >"), "hide or show the left side, the right side"),
                 (prefixed("[ ]"), "previous, next terminal tab"),
@@ -552,8 +552,8 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
         (
             "Make and close",
             vec![
-                (prefixed("n"), "new workspace, session, terminal or file, by panel"),
-                (prefixed("x"), "remove the workspace, delete the session, close the terminal"),
+                (prefixed("n"), "new project, workspace, terminal or file, by panel"),
+                (prefixed("x"), "remove the project, delete the workspace, close the terminal"),
             ]
             .into_iter()
             .chain(twice.map(|keys| (keys, "the key itself, to the program")))
@@ -617,7 +617,7 @@ fn draw_repos(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Clear, popup);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .title(" New workspace ")
+        .title(" New project ")
         .title_style(Style::new().fg(theme::fg()).bold())
         .title_bottom(Line::from(" git repositories in your home folder · type to filter, or a path (~/…) · ⏎ add · esc close ").fg(theme::dim()))
         .border_style(border(true))

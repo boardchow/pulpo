@@ -1,4 +1,4 @@
-//! The sessions Pulpo makes: a git worktree per task, with its own branch, ports, containers and database.
+//! The workspaces Pulpo makes: a git worktree per task, with its own branch, ports, containers and database.
 
 use std::collections::BTreeSet;
 use std::ffi::CString;
@@ -24,14 +24,14 @@ const DEFAULT_INCLUDE: [&str; 5] = [".env", ".env.*", "!.env.example", "!.env.sa
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
-    /// An APFS copy of the whole checkout (sessions made before worktrees).
+    /// An APFS copy of the whole checkout (workspaces made before worktrees).
     #[default]
     Copy,
     Worktree,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
-pub struct Session {
+pub struct Worktree {
     pub name: String,
     pub repo: PathBuf,
     pub root: PathBuf,
@@ -139,7 +139,7 @@ pub fn guess(compose: &str) -> Guess {
             continue;
         }
         if section == "volumes" && text.starts_with("name:") {
-            guess.warnings.push(format!("a volume has a fixed name ({}): sessions would share it", value(text)));
+            guess.warnings.push(format!("a volume has a fixed name ({}): workspaces would share it", value(text)));
         }
         if section != "services" {
             continue;
@@ -172,7 +172,7 @@ pub fn guess(compose: &str) -> Guess {
                     guess.db = Some((service.clone(), engine.to_string()));
                 }
             }
-            "container_name" => guess.warnings.push(format!("{service} has a fixed container name ({}): two sessions can't both run it", value(text))),
+            "container_name" => guess.warnings.push(format!("{service} has a fixed container name ({}): two workspaces can't both run it", value(text))),
             "ports" => ports_indent = Some(at),
             _ => {}
         }
@@ -191,7 +191,7 @@ fn port(service: &str, entry: &str, guess: &mut Guess) {
             guess.ports.push(var);
         }
     } else if !host.is_empty() {
-        guess.warnings.push(format!("{service} publishes fixed port {host}: two sessions can't both run it"));
+        guess.warnings.push(format!("{service} publishes fixed port {host}: two workspaces can't both run it"));
     }
 }
 
@@ -230,15 +230,15 @@ fn project_name(name: &str) -> String {
 #[cfg(test)]
 thread_local! {
     static TEST_CONFIG: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
-    static TEST_SESSIONS: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static TEST_WORKSPACES: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
-fn sessions_dir() -> PathBuf {
+fn workspaces_dir() -> PathBuf {
     #[cfg(test)]
-    if let Some(dir) = TEST_SESSIONS.with_borrow(Clone::clone) {
+    if let Some(dir) = TEST_WORKSPACES.with_borrow(Clone::clone) {
         return dir;
     }
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".pulpo/sessions")
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".pulpo/workspaces")
 }
 
 fn config_dir() -> PathBuf {
@@ -262,7 +262,7 @@ pub fn config(repo: &Path, checkout: &Path) -> Result<(Config, Vec<String>)> {
     let (db_service, db) = guessed.db.clone().unwrap_or_default();
     let rails = checkout.join("bin/rails").is_file();
     // After the copy too: main's database is at main's migrations, the
-    // session's code at the default branch's (`db:prepare` does what's due).
+    // workspace's code at the default branch's (`db:prepare` does what's due).
     let setup = if rails && guessed.images.iter().any(|s| s == "app") {
         "docker compose exec -T app bin/rails db:prepare".to_string()
     } else if compose.is_none() {
@@ -415,30 +415,30 @@ fn install(dir: &Path) -> String {
 fn starter(c: &Config) -> String {
     let list = |items: &[String]| items.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join(", ");
     format!(
-        "# How Pulpo sets up a session of this repository: a git worktree on its
+        "# How Pulpo sets up a workspace of this repository: a git worktree on its
 # own branch, with its own ports and Docker project. Below, each setting as
 # Pulpo found it when writing this file (guessed from the compose file and
 # lockfiles, or read from .conductor/settings.toml). Uncomment one to set
 # it; an empty value (\"\" or []) turns it off, but for include.
 
-# Main's ignored files each session gets (gitignore patterns), added to its
+# Main's ignored files each workspace gets (gitignore patterns), added to its
 # .env files, those .worktreeinclude names and these found ones: [{}].
 # \"!pattern\" leaves one out; [] adds nothing.
 # include = []
 
-# Port variables of the compose file; each session gets its own ports.
+# Port variables of the compose file; each workspace gets its own ports.
 # ports = [{}]
 # Services main builds: their images are reused instead of built again.
 # images = [{}]
-# How main's database is copied into the session: mysql, postgres or \"\" for no copy.
+# How main's database is copied into the workspace: mysql, postgres or \"\" for no copy.
 # db = {:?}
 # db_service = {:?}
 # Run instead when main's database isn't running.
 # fresh = {:?}
-# Run at the end of the setup, and before a session is removed.
+# Run at the end of the setup, and before a workspace is removed.
 # setup = {:?}
 # teardown = {:?}
-# A session's branch is <branch_prefix>/<name>; \"\" for git's name.
+# A workspace's branch is <branch_prefix>/<name>; \"\" for git's name.
 # branch_prefix = {:?}
 ",
         list(&c.include),
@@ -453,7 +453,7 @@ fn starter(c: &Config) -> String {
     )
 }
 
-/// A session starts from the remote, so whoever can push could otherwise run code here.
+/// A workspace starts from the remote, so whoever can push could otherwise run code here.
 pub fn untrusted(repo: &Path, config: &Config) -> Vec<(&'static str, String)> {
     let trusted = trusted();
     config.committed_scripts().into_iter().filter(|(_, script)| !trusted.iter().any(|(r, s)| r == repo && s == script)).collect()
@@ -483,24 +483,24 @@ fn fnv(bytes: &[u8]) -> u64 {
 }
 
 fn registry_path() -> PathBuf {
-    crate::agents::state_dir().join("sessions.json")
+    crate::agents::state_dir().join("workspaces.json")
 }
 
-pub fn all() -> Vec<Session> {
+pub fn all() -> Vec<Worktree> {
     fs::read(registry_path()).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
 }
 
-fn update<T>(change: impl FnOnce(&mut Vec<Session>) -> Result<T>) -> Result<T> {
+fn update<T>(change: impl FnOnce(&mut Vec<Worktree>) -> Result<T>) -> Result<T> {
     let dir = crate::agents::state_dir();
     fs::create_dir_all(&dir)?;
-    let lock = File::create(dir.join("sessions.lock"))?;
+    let lock = File::create(dir.join("workspaces.lock"))?;
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
         return Err(io::Error::last_os_error().into());
     }
-    let mut sessions = all();
-    let result = change(&mut sessions)?;
+    let mut worktrees = all();
+    let result = change(&mut worktrees)?;
     let tmp = registry_path().with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(&sessions)?)?;
+    fs::write(&tmp, serde_json::to_vec_pretty(&worktrees)?)?;
     fs::rename(&tmp, registry_path())?;
     Ok(result)
 }
@@ -517,16 +517,16 @@ fn port_free(port: u16) -> bool {
     std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) -> Result<(Session, Vec<String>)> {
-    // Lowercase: Compose project names are, and two sessions mustn't share one.
+pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) -> Result<(Worktree, Vec<String>)> {
+    // Lowercase: Compose project names are, and two workspaces mustn't share one.
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
-        bail!("a session name is lowercase letters, digits, - and _");
+        bail!("a workspace name is lowercase letters, digits, - and _");
     }
     if git(repo, &["rev-parse", "-q", "--verify", "HEAD"], None).is_err() {
         bail!("the repository has no commit yet: make one first");
     }
     let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let root = sessions_dir().join(&repo_name).join(name);
+    let root = workspaces_dir().join(&repo_name).join(name);
     if root.exists() {
         bail!("{} already exists", root.display());
     }
@@ -543,7 +543,7 @@ pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) ->
     };
     fs::create_dir_all(root.parent().expect("has a parent"))?;
     let path = root.to_string_lossy().into_owned();
-    let mut add = vec!["worktree", "add", "--lock", "--reason", "a Pulpo session"];
+    let mut add = vec!["worktree", "add", "--lock", "--reason", "a Pulpo workspace"];
     if made_branch {
         add.extend(["-b", branch.as_str(), path.as_str(), start.as_str()]);
     } else {
@@ -582,11 +582,11 @@ pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) ->
     if compose_file.is_some() && fs::read_to_string(root.join("Makefile")).is_ok_and(|m| m.contains("compose -f")) {
         notes.push("! the Makefile names compose files with -f: those commands don't see main's .git".into());
     }
-    let result = update(|sessions| {
+    let result = update(|worktrees| {
         let taken: BTreeSet<u16> =
-            sessions.iter().flat_map(|s| s.ports.iter().map(|(_, p)| *p).chain(s.port.into_iter().flat_map(|p| p..p + BLOCK))).collect();
+            worktrees.iter().flat_map(|s| s.ports.iter().map(|(_, p)| *p).chain(s.port.into_iter().flat_map(|p| p..p + BLOCK))).collect();
         let ports = allocate(&taken, BLOCK as usize + config.ports.len(), port_free).context("no free ports from 20000 up")?;
-        let session = Session {
+        let wt = Worktree {
             name: name.to_string(),
             repo: repo.to_path_buf(),
             root: root.clone(),
@@ -602,11 +602,11 @@ pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) ->
             start: Some(start.clone()),
             compose_file: compose_file.clone(),
         };
-        sessions.push(session.clone());
-        Ok(session)
+        worktrees.push(wt.clone());
+        Ok(wt)
     });
     match result {
-        Ok(session) => Ok((session, notes)),
+        Ok(wt) => Ok((wt, notes)),
         Err(e) => {
             undo(&project);
             Err(e)
@@ -615,7 +615,7 @@ pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) ->
 }
 
 /// No terminal to ask on: Pulpo's screen is raw, and ssh opens the terminal itself unless
-/// in a session of its own.
+/// in a workspace of its own.
 fn git(dir: &Path, args: &[&str], limit: Option<Duration>) -> Result<String> {
     use std::os::unix::process::CommandExt;
     let mut command = Command::new("git");
@@ -633,7 +633,7 @@ fn git(dir: &Path, args: &[&str], limit: Option<Duration>) -> Result<String> {
         while child.try_wait()?.is_none() {
             if Instant::now() > end {
                 // The whole group (ssh, index-pack), TERM first: git then removes its ref
-                // locks, in the repository every session shares.
+                // locks, in the repository every workspace shares.
                 let group = -(child.id() as i32);
                 unsafe { libc::kill(group, libc::SIGTERM) };
                 let grace = Instant::now() + Duration::from_secs(2);
@@ -754,7 +754,7 @@ fn include(repo: &Path, root: &Path, extra: &[String]) -> Vec<String> {
     notes
 }
 
-/// A session's `.git` file points at main's `.git`, missing in a container that mounts its
+/// A workspace's `.git` file points at main's `.git`, missing in a container that mounts its
 /// folder: an override mounts it there, read-only (the repository is shared).
 fn compose_override(repo: &Path, root: &Path, project: &str) -> Result<Option<String>> {
     let files = compose_files(root);
@@ -800,8 +800,8 @@ fn compose_override(repo: &Path, root: &Path, project: &str) -> Result<Option<St
     Ok(Some(files.iter().chain([&path]).map(|f| f.to_string_lossy()).collect::<Vec<_>>().join(":")))
 }
 
-/// In Pulpo's state, not the session's folder (it would show in its changes). Hashed by repo:
-/// two repositories of the same name can have sessions of the same name.
+/// In Pulpo's state, not the workspace's folder (it would show in its changes). Hashed by repo:
+/// two repositories of the same name can have workspaces of the same name.
 fn override_path(repo: &Path, project: &str) -> PathBuf {
     let hash = fnv(repo.as_os_str().as_bytes());
     crate::agents::state_dir().join("compose").join(format!("{project}-{:08x}.yaml", hash as u32))
@@ -821,31 +821,31 @@ fn clone(from: &Path, to: &Path) -> Result<()> {
 }
 
 pub fn forget(root: &Path) -> Result<()> {
-    update(|sessions| {
-        sessions.retain(|s| s.root != root);
+    update(|worktrees| {
+        worktrees.retain(|s| s.root != root);
         Ok(())
     })
 }
 
-pub fn env(session: &Session) -> Vec<(String, String)> {
-    let mut env = vec![("COMPOSE_PROJECT_NAME".to_string(), session.project.clone()), ("PULPO_SESSION".to_string(), session.name.clone())];
-    env.extend(session.ports.iter().map(|(var, port)| (var.clone(), port.to_string())));
+pub fn env(wt: &Worktree) -> Vec<(String, String)> {
+    let mut env = vec![("COMPOSE_PROJECT_NAME".to_string(), wt.project.clone()), ("PULPO_WORKSPACE_NAME".to_string(), wt.name.clone())];
+    env.extend(wt.ports.iter().map(|(var, port)| (var.clone(), port.to_string())));
     let path = |p: &Path| p.to_string_lossy().into_owned();
-    if let Some(port) = session.port {
+    if let Some(port) = wt.port {
         env.push(("PULPO_PORT".into(), port.to_string()));
-        if compose_file(&session.root).is_none() {
+        if compose_file(&wt.root).is_none() {
             env.push(("PORT".into(), port.to_string()));
         }
     }
-    if session.kind == Kind::Worktree {
-        env.push(("PULPO_ROOT_PATH".into(), path(&session.repo)));
-        env.push(("PULPO_WORKSPACE_PATH".into(), path(&session.root)));
+    if wt.kind == Kind::Worktree {
+        env.push(("PULPO_ROOT_PATH".into(), path(&wt.repo)));
+        env.push(("PULPO_WORKSPACE_PATH".into(), path(&wt.root)));
     }
-    if session.compose_file.is_some() {
+    if wt.compose_file.is_some() {
         // Read now: a compose file added since counts, and the override
         // only while it's there (state cleared, Compose would fail).
-        let over = override_path(&session.repo, &session.project);
-        let files: Vec<PathBuf> = compose_files(&session.root).into_iter().chain(over.is_file().then_some(over)).collect();
+        let over = override_path(&wt.repo, &wt.project);
+        let files: Vec<PathBuf> = compose_files(&wt.root).into_iter().chain(over.is_file().then_some(over)).collect();
         if !files.is_empty() {
             env.push(("COMPOSE_FILE".into(), files.iter().map(|f| path(f)).collect::<Vec<_>>().join(":")));
             env.push(("COMPOSE_PATH_SEPARATOR".into(), ":".into()));
@@ -855,7 +855,7 @@ pub fn env(session: &Session) -> Vec<(String, String)> {
 }
 
 /// A copy's unpushed commits count only if main lacks them: main's own were copied with it.
-pub fn unsaved(session: &Session) -> Vec<String> {
+pub fn unsaved(wt: &Worktree) -> Vec<String> {
     let run = |dir: &Path, args: &[&str], input: String| -> Option<String> {
         let mut child = Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
         let mut stdin = child.stdin.take()?;
@@ -864,17 +864,17 @@ pub fn unsaved(session: &Session) -> Vec<String> {
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
     };
     let mut lost = Vec::new();
-    if !session.root.is_dir() {
+    if !wt.root.is_dir() {
         return lost;
     }
-    match run(&session.root, &["status", "--porcelain"], String::new()).map(|out| out.lines().count()) {
+    match run(&wt.root, &["status", "--porcelain"], String::new()).map(|out| out.lines().count()) {
         Some(0) => {}
         Some(n) => lost.push(format!("{n} uncommitted change(s)")),
         None => lost.push("changes git couldn't check".into()),
     }
-    if session.kind == Kind::Worktree {
-        if run(&session.root, &["symbolic-ref", "-q", "HEAD"], String::new()).is_none() {
-            match run(&session.root, &["rev-list", "HEAD", "--not", "--branches", "--remotes"], String::new()).map(|out| out.lines().count()) {
+    if wt.kind == Kind::Worktree {
+        if run(&wt.root, &["symbolic-ref", "-q", "HEAD"], String::new()).is_none() {
+            match run(&wt.root, &["rev-list", "HEAD", "--not", "--branches", "--remotes"], String::new()).map(|out| out.lines().count()) {
                 Some(0) => {}
                 Some(n) => lost.push(format!("{n} commit(s) on no branch")),
                 None => lost.push("commits git couldn't check".into()),
@@ -883,35 +883,35 @@ pub fn unsaved(session: &Session) -> Vec<String> {
         return lost;
     }
     // HEAD too, when there is one: commits on a detached HEAD are on no branch.
-    let head = run(&session.root, &["rev-parse", "-q", "--verify", "HEAD"], String::new()).is_some();
+    let head = run(&wt.root, &["rev-parse", "-q", "--verify", "HEAD"], String::new()).is_some();
     let tips: &[&str] = if head { &["HEAD", "--branches"] } else { &["--branches"] };
-    let commits = run(&session.root, &[&["rev-list"], tips, &["--not", "--remotes"]].concat(), String::new());
-    let in_main = commits.and_then(|commits| run(&session.repo, &["cat-file", "--batch-check"], commits));
+    let commits = run(&wt.root, &[&["rev-list"], tips, &["--not", "--remotes"]].concat(), String::new());
+    let in_main = commits.and_then(|commits| run(&wt.repo, &["cat-file", "--batch-check"], commits));
     match in_main.map(|out| out.lines().filter(|line| line.ends_with(" missing")).count()) {
         Some(0) => {}
         Some(n) => lost.push(format!("{n} commit(s) not pushed")),
         None => lost.push("commits git couldn't check".into()),
     }
     let stash = |dir: &Path| run(dir, &["rev-parse", "-q", "--verify", "refs/stash"], String::new());
-    if stash(&session.root).is_some_and(|s| Some(&s) != stash(&session.repo).as_ref()) {
+    if stash(&wt.root).is_some_and(|s| Some(&s) != stash(&wt.repo).as_ref()) {
         lost.push("stashed changes".into());
     }
     lost
 }
 
-pub fn kept_branch(session: &Session) -> Option<String> {
-    if session.kind != Kind::Worktree {
+pub fn kept_branch(wt: &Worktree) -> Option<String> {
+    if wt.kind != Kind::Worktree {
         return None;
     }
-    let current = git(&session.root, &["branch", "--show-current"], None).ok().filter(|b| !b.is_empty())?;
-    let tip = git(&session.repo, &["rev-parse", "-q", "--verify", &format!("refs/heads/{current}")], None).ok();
-    let untouched = session.made_branch && session.branch.as_ref() == Some(&current) && tip.is_some() && tip == session.start;
+    let current = git(&wt.root, &["branch", "--show-current"], None).ok().filter(|b| !b.is_empty())?;
+    let tip = git(&wt.repo, &["rev-parse", "-q", "--verify", &format!("refs/heads/{current}")], None).ok();
+    let untouched = wt.made_branch && wt.branch.as_ref() == Some(&current) && tip.is_some() && tip == wt.start;
     (!untouched).then_some(current)
 }
 
-fn in_sessions_folder(root: &Path) -> bool {
+fn in_workspaces_folder(root: &Path) -> bool {
     let parent = root.parent();
-    let ours = parent.and_then(Path::parent).is_some_and(|dir| same_path(dir, &sessions_dir()))
+    let ours = parent.and_then(Path::parent).is_some_and(|dir| same_path(dir, &workspaces_dir()))
         && parent.and_then(Path::file_name).is_some_and(|repo| repo != "..");
     ours && root.file_name().is_some_and(|name| !name.is_empty() && name != "..")
 }
@@ -920,43 +920,43 @@ pub fn same_path(a: &Path, b: &Path) -> bool {
     a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
-fn is_session_worktree(repo: &Path, root: &Path) -> bool {
-    in_sessions_folder(root) && !same_path(repo, root) && crate::git::worktrees(repo).iter().any(|w| same_path(w, root))
+fn is_our_worktree(repo: &Path, root: &Path) -> bool {
+    in_workspaces_folder(root) && !same_path(repo, root) && crate::git::worktrees(repo).iter().any(|w| same_path(w, root))
 }
 
 pub fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-pub fn setup_script(session: &Session, config: &Config, notes: &[String]) -> String {
-    let root = quote(&session.root.to_string_lossy());
-    let main = &session.main_project;
+pub fn setup_script(wt: &Worktree, config: &Config, notes: &[String]) -> String {
+    let root = quote(&wt.root.to_string_lossy());
+    let main = &wt.main_project;
     let mut s = String::from("step() { printf '\\n\\033[1m%s\\033[0m\\n' \"$1\"; }\nsetup() (\nset -e\nset -o pipefail\n");
     s += &format!("cd {root}\n");
-    s += &conductor_exports(session);
-    let what = match &session.branch {
-        Some(branch) => format!("Session {}: branch {branch}, a worktree of {}", session.name, session.repo.display()),
-        None => format!("Session {}: a copy of {}", session.name, session.repo.display()),
+    s += &conductor_exports(wt);
+    let what = match &wt.branch {
+        Some(branch) => format!("Workspace {}: branch {branch}, a worktree of {}", wt.name, wt.repo.display()),
+        None => format!("Workspace {}: a copy of {}", wt.name, wt.repo.display()),
     };
     s += &format!("step {}\n", quote(&what));
-    if let Some(port) = session.port {
+    if let Some(port) = wt.port {
         s += &format!("echo {}\n", quote(&format!("  PULPO_PORT={port} (to {})", port + BLOCK - 1)));
     }
-    for (var, port) in &session.ports {
+    for (var, port) in &wt.ports {
         s += &format!("echo {}\n", quote(&format!("  {var}={port}")));
     }
-    s += &format!("echo {}\n", quote(&format!("  settings: {}", config_path(&session.repo).display())));
+    s += &format!("echo {}\n", quote(&format!("  settings: {}", config_path(&wt.repo).display())));
     for note in notes {
         s += &format!("echo {}\n", quote(&format!("  {note}")));
     }
-    if session.kind == Kind::Worktree {
+    if wt.kind == Kind::Worktree {
         s += "if [ -f .gitmodules ]; then\nstep 'Submodules'\nGIT_TERMINAL_PROMPT=0 git submodule update --init --recursive || echo '  ! some submodules could not be fetched: the rest of the setup goes on'\nfi\n";
     }
-    if compose_file(&session.root).is_some() {
-        if !session.images.is_empty() {
+    if compose_file(&wt.root).is_some() {
+        if !wt.images.is_empty() {
             s += "step \"Reusing main's images\"\n";
-            for image in &session.images {
-                let (from, to) = (quote(&format!("{main}-{image}")), quote(&format!("{}-{image}", session.project)));
+            for image in &wt.images {
+                let (from, to) = (quote(&format!("{main}-{image}")), quote(&format!("{}-{image}", wt.project)));
                 s += &format!("if docker image inspect {from} >/dev/null 2>&1; then docker tag {from} {to}; echo \"  {image}\"; fi\n");
             }
         }
@@ -989,7 +989,7 @@ pub fn setup_script(session: &Session, config: &Config, notes: &[String]) -> Str
     }
     // Called on its own: in an `if`, the shell would ignore its `set -e`.
     s += ")\nsetup\nstatus=$?\nif [ $status = 0 ]; then\nstep 'Ready.'\n";
-    for (var, port) in &session.ports {
+    for (var, port) in &wt.ports {
         s += &format!("echo {}\n", quote(&format!("  {var}: localhost:{port}")));
     }
     s += "fi\nexit $status\n";
@@ -997,62 +997,62 @@ pub fn setup_script(session: &Session, config: &Config, notes: &[String]) -> Str
 }
 
 /// Only in Pulpo's scripts, not its terminals, where tools would think they run in Conductor.
-fn conductor_exports(session: &Session) -> String {
-    let Some(port) = session.port else { return String::new() };
+fn conductor_exports(wt: &Worktree) -> String {
+    let Some(port) = wt.port else { return String::new() };
     let vars = [
         ("CONDUCTOR_PORT", port.to_string()),
-        ("CONDUCTOR_ROOT_PATH", session.repo.to_string_lossy().into_owned()),
-        ("CONDUCTOR_WORKSPACE_NAME", session.name.clone()),
-        ("CONDUCTOR_WORKSPACE_PATH", session.root.to_string_lossy().into_owned()),
+        ("CONDUCTOR_ROOT_PATH", wt.repo.to_string_lossy().into_owned()),
+        ("CONDUCTOR_WORKSPACE_NAME", wt.name.clone()),
+        ("CONDUCTOR_WORKSPACE_PATH", wt.root.to_string_lossy().into_owned()),
     ];
     vars.iter().map(|(var, value)| format!("export {var}={}\n", quote(value))).collect()
 }
 
-pub fn teardown_script(session: &Session, config: &Config, exe: &Path) -> String {
-    // Only ever what Pulpo made: a folder in `~/.pulpo/sessions/<repo>`, and for a
+pub fn teardown_script(wt: &Worktree, config: &Config, exe: &Path) -> String {
+    // Only ever what Pulpo made: a folder in `~/.pulpo/workspaces/<repo>`, and for a
     // worktree, one of the repository's.
-    let safe = match session.kind {
-        Kind::Copy => in_sessions_folder(&session.root),
+    let safe = match wt.kind {
+        Kind::Copy => in_workspaces_folder(&wt.root),
         // Its folder deleted by hand: only the worktree's record in main's `.git` is left.
-        Kind::Worktree => is_session_worktree(&session.repo, &session.root) || (in_sessions_folder(&session.root) && !session.root.exists()),
+        Kind::Worktree => is_our_worktree(&wt.repo, &wt.root) || (in_workspaces_folder(&wt.root) && !wt.root.exists()),
     };
     if !safe {
-        return format!("echo {}\nexit 1\n", quote(&format!("Not removing {}: not a session's folder", session.root.display())));
+        return format!("echo {}\nexit 1\n", quote(&format!("Not removing {}: not a workspace's folder", wt.root.display())));
     }
-    let root = quote(&session.root.to_string_lossy());
+    let root = quote(&wt.root.to_string_lossy());
     let mut s = String::from("remove() (\nset -e\n");
     if !config.teardown.is_empty() {
-        s += &format!("if [ -d {root} ]; then\ncd {root}\n{}{}\nfi\n", conductor_exports(session), config.teardown);
+        s += &format!("if [ -d {root} ]; then\ncd {root}\n{}{}\nfi\n", conductor_exports(wt), config.teardown);
     }
     s += "cd /\n";
-    if compose_file(&session.repo).is_some() || compose_file(&session.root).is_some() || !session.images.is_empty() {
-        s += &format!("env -u COMPOSE_FILE docker compose -p {} down -v --remove-orphans\n", quote(&session.project));
-        for image in &session.images {
-            s += &format!("docker image rm {} >/dev/null 2>&1 || true\n", quote(&format!("{}-{image}", session.project)));
+    if compose_file(&wt.repo).is_some() || compose_file(&wt.root).is_some() || !wt.images.is_empty() {
+        s += &format!("env -u COMPOSE_FILE docker compose -p {} down -v --remove-orphans\n", quote(&wt.project));
+        for image in &wt.images {
+            s += &format!("docker image rm {} >/dev/null 2>&1 || true\n", quote(&format!("{}-{image}", wt.project)));
         }
     }
-    match session.kind {
+    match wt.kind {
         Kind::Copy => s += &format!("rm -rf {root}\n"),
         Kind::Worktree => {
-            let repo = quote(&session.repo.to_string_lossy());
+            let repo = quote(&wt.repo.to_string_lossy());
             // Forced twice: it's locked, and its changes go with it (asked before).
             s += &format!(
                 "if [ -d {root} ]; then git -C {repo} worktree remove --force --force {root}; \
                  else git -C {repo} worktree unlock {root} 2>/dev/null || true; git -C {repo} worktree prune; fi\n"
             );
-            if let (true, Some(branch), Some(start)) = (session.made_branch, &session.branch, &session.start) {
+            if let (true, Some(branch), Some(start)) = (wt.made_branch, &wt.branch, &wt.start) {
                 let tip = format!("$(git -C {repo} rev-parse -q --verify {})", quote(&format!("refs/heads/{branch}")));
                 s += &format!("if [ \"{tip}\" = {start} ]; then git -C {repo} branch -q -D {} || true; fi\n", quote(branch));
             }
         }
     }
-    if session.compose_file.is_some() {
-        s += &format!("rm -f {}\n", quote(&override_path(&session.repo, &session.project).to_string_lossy()));
+    if wt.compose_file.is_some() {
+        s += &format!("rm -f {}\n", quote(&override_path(&wt.repo, &wt.project).to_string_lossy()));
     }
-    s += &format!("{} forget-session {root}\n)\n", quote(&exe.to_string_lossy()));
+    s += &format!("{} forget-workspace {root}\n)\n", quote(&exe.to_string_lossy()));
     s += &format!(
         "remove\nif [ $? = 0 ]; then echo {}; else echo 'Stopped before deleting anything that was left (see above).'; exit 1; fi\n",
-        quote(&format!("Session {} removed.", session.name))
+        quote(&format!("Workspace {} removed.", wt.name))
     );
     s
 }
@@ -1098,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn warns_about_what_sessions_share() {
+    fn warns_about_what_workspaces_share() {
         let g = guess(
             "version: '3'\nservices:\n  builder:\n    container_name: portals-builder\n    image: ghcr.io/x\n    ports:\n      - '3000:3000'\nvolumes:\n  data:\n    name: shared-data\n",
         );
@@ -1124,9 +1124,9 @@ mod tests {
     }
 
     #[test]
-    fn scripts_use_the_session() {
-        let root = sessions_dir().join("backbone/a");
-        let session = Session {
+    fn scripts_use_the_workspace() {
+        let root = workspaces_dir().join("backbone/a");
+        let wt = Worktree {
             name: "a".into(),
             repo: "/code/backbone".into(),
             root: root.clone(),
@@ -1134,24 +1134,24 @@ mod tests {
             main_project: "backbone".into(),
             ports: vec![("APP_PORT".into(), 20002)],
             images: vec!["app".into()],
-            ..Session::default()
+            ..Worktree::default()
         };
         let config = Config { db: "mysql".into(), db_service: "db".into(), ..Config::default() };
-        let teardown = teardown_script(&session, &config, Path::new("/bin/pulpo"));
+        let teardown = teardown_script(&wt, &config, Path::new("/bin/pulpo"));
         assert!(teardown.contains("docker compose -p 'backbone-a' down -v --remove-orphans\n"));
         assert!(teardown.contains(&format!("\nrm -rf '{}'", root.display())));
-        assert!(teardown.contains(&format!("'/bin/pulpo' forget-session '{}'", root.display())));
-        assert_eq!(env(&session)[0], ("COMPOSE_PROJECT_NAME".into(), "backbone-a".into()));
+        assert!(teardown.contains(&format!("'/bin/pulpo' forget-workspace '{}'", root.display())));
+        assert_eq!(env(&wt)[0], ("COMPOSE_PROJECT_NAME".into(), "backbone-a".into()));
         assert_eq!(quote("it's"), r"'it'\''s'");
-        let elsewhere = Session { root: "/code/backbone".into(), ..session };
+        let elsewhere = Worktree { root: "/code/backbone".into(), ..wt };
         assert!(!teardown_script(&elsewhere, &config, Path::new("/bin/pulpo")).contains("rm -rf"));
     }
 
     #[test]
     fn removal_stops_when_a_step_fails() {
         let t = Scratch::new("teardown");
-        let root = t.join("sessions/r/a");
-        let session = Session {
+        let root = t.join("workspaces/r/a");
+        let wt = Worktree {
             name: "a".into(),
             repo: t.join("r"),
             root: root.clone(),
@@ -1159,12 +1159,12 @@ mod tests {
             main_project: "r".into(),
             ports: Vec::new(),
             images: Vec::new(),
-            ..Session::default()
+            ..Worktree::default()
         };
         let run = |teardown: &str| {
             fs::create_dir_all(&root).unwrap();
             let config = Config { teardown: teardown.into(), ..Config::default() };
-            let script = teardown_script(&session, &config, Path::new("/usr/bin/true"));
+            let script = teardown_script(&wt, &config, Path::new("/usr/bin/true"));
             // SHELL: the shell it leaves open when it stops.
             std::process::Command::new("sh").args(["-c", &script]).env("SHELL", "/usr/bin/true").output().unwrap();
         };
@@ -1194,7 +1194,7 @@ mod tests {
             fs::create_dir_all(&t).unwrap();
             crate::agents::TEST_STATE.set(Some(t.join("state")));
             TEST_CONFIG.set(Some(t.join("config")));
-            TEST_SESSIONS.set(Some(t.join("sessions")));
+            TEST_WORKSPACES.set(Some(t.join("workspaces")));
             Scratch(t)
         }
     }
@@ -1216,7 +1216,7 @@ mod tests {
         fn drop(&mut self) {
             crate::agents::TEST_STATE.set(None);
             TEST_CONFIG.set(None);
-            TEST_SESSIONS.set(None);
+            TEST_WORKSPACES.set(None);
             let _ = fs::remove_dir_all(&self.0);
         }
     }
@@ -1387,7 +1387,7 @@ mod tests {
 
         let config = Config { ports: vec!["APP_PORT".into()], include: vec![".env".into(), "secret.key".into()], ..Config::default() };
         let (s, notes) = create(&main, "fix", None, &config).unwrap();
-        let root = t.join("sessions/app/fix");
+        let root = t.join("workspaces/app/fix");
         assert_eq!(s.root, root);
         assert_eq!((s.kind, s.branch.as_deref(), s.made_branch), (Kind::Worktree, Some("test-user/fix"), true));
         assert_eq!(run_git(&root, &["branch", "--show-current"]), "test-user/fix");
@@ -1414,15 +1414,15 @@ mod tests {
         run_git(&root, &["add", "c.txt"]);
         run_git(&root, &["commit", "-q", "-m", "c"]);
         assert_eq!(kept_branch(&s).as_deref(), Some("test-user/fix"));
-        for session in [&s, &other, &ticket] {
-            let script = teardown_script(session, &Config::default(), Path::new("/usr/bin/true"));
+        for wt in [&s, &other, &ticket] {
+            let script = teardown_script(wt, &Config::default(), Path::new("/usr/bin/true"));
             let out = std::process::Command::new("sh").args(["-c", &script]).current_dir(&main).output().unwrap();
             assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
-            assert!(!session.root.exists());
+            assert!(!wt.root.exists());
         }
         let branches = run_git(&main, &["branch", "--list"]);
         assert!(branches.contains("test-user/fix") && !branches.contains("test-user/other"), "{branches}");
-        assert!(!run_git(&main, &["worktree", "list"]).contains("sessions"));
+        assert!(!run_git(&main, &["worktree", "list"]).contains("workspaces"));
         let gone = create(&main, "gone", None, &Config::default()).unwrap().0;
         fs::remove_dir_all(&gone.root).unwrap();
         let script = teardown_script(&gone, &Config::default(), Path::new("/usr/bin/true"));
@@ -1431,31 +1431,31 @@ mod tests {
         assert!(!run_git(&main, &["worktree", "list"]).contains("gone"));
         assert!(!run_git(&main, &["branch", "--list"]).contains("test-user/gone"));
         assert!(create(&main, "gone", None, &Config::default()).is_ok());
-        let main_as_session = Session { root: main.clone(), ..s.clone() };
-        assert!(!teardown_script(&main_as_session, &Config::default(), Path::new("/usr/bin/true")).contains("worktree remove"));
+        let main_as_workspace = Worktree { root: main.clone(), ..s.clone() };
+        assert!(!teardown_script(&main_as_workspace, &Config::default(), Path::new("/usr/bin/true")).contains("worktree remove"));
     }
 
     #[test]
-    fn mounts_main_git_where_a_service_mounts_the_session() {
+    fn mounts_main_git_where_a_service_mounts_the_workspace() {
         if !std::process::Command::new("docker").args(["compose", "version"]).output().is_ok_and(|o| o.status.success()) {
             eprintln!("skipped: no docker compose");
             return;
         }
         let t = Scratch::new("override");
         fs::create_dir_all(t.join("app/.git")).unwrap();
-        fs::create_dir_all(t.join("app.sessions/x")).unwrap();
+        fs::create_dir_all(t.join("workspaces/app/x")).unwrap();
         let compose = "services:\n  web:\n    image: alpine\n    volumes:\n      - .:/app\n  tool:\n    extends: web\n    profiles: [tool]\n  db:\n    image: alpine\n    volumes:\n      - ./db:/db\n";
-        fs::write(t.join("app.sessions/x/compose.yaml"), compose).unwrap();
-        let files = compose_override(&t.join("app"), &t.join("app.sessions/x"), "app-x").unwrap().unwrap();
-        assert!(files.starts_with(&t.join("app.sessions/x/compose.yaml").to_string_lossy().into_owned()));
+        fs::write(t.join("workspaces/app/x/compose.yaml"), compose).unwrap();
+        let files = compose_override(&t.join("app"), &t.join("workspaces/app/x"), "app-x").unwrap().unwrap();
+        assert!(files.starts_with(&t.join("workspaces/app/x/compose.yaml").to_string_lossy().into_owned()));
         let written: serde_json::Value = serde_json::from_slice(&fs::read(override_path(&t.join("app"), "app-x")).unwrap()).unwrap();
         let services = written["services"].as_object().unwrap();
         assert_eq!(services.keys().collect::<Vec<_>>(), ["tool", "web"]);
         let mount = &services["web"]["volumes"][0];
         assert_eq!(mount["read_only"], true);
         assert_eq!(mount["source"], t.join("app/.git").canonicalize().unwrap().to_string_lossy().as_ref());
-        fs::write(t.join("app.sessions/x/compose.yaml"), "services:\n  db:\n    image: alpine\n").unwrap();
-        assert_eq!(compose_override(&t.join("app"), &t.join("app.sessions/x"), "app-x").unwrap(), None);
+        fs::write(t.join("workspaces/app/x/compose.yaml"), "services:\n  db:\n    image: alpine\n").unwrap();
+        assert_eq!(compose_override(&t.join("app"), &t.join("workspaces/app/x"), "app-x").unwrap(), None);
     }
 
     #[test]
@@ -1513,7 +1513,7 @@ mod tests {
         clone(&t.join("main"), &t.join("copy")).unwrap();
         git("copy", &["commit", "-q", "--allow-empty", "-m", "mine"]);
         fs::write(t.join("copy/new.txt"), "x").unwrap();
-        let session = Session {
+        let wt = Worktree {
             name: "c".into(),
             repo: t.join("main"),
             root: t.join("copy"),
@@ -1521,13 +1521,13 @@ mod tests {
             main_project: String::new(),
             ports: vec![],
             images: vec![],
-            ..Session::default()
+            ..Worktree::default()
         };
-        assert_eq!(unsaved(&session), ["1 uncommitted change(s)", "1 commit(s) not pushed"]);
+        assert_eq!(unsaved(&wt), ["1 uncommitted change(s)", "1 commit(s) not pushed"]);
         git("copy", &["checkout", "-q", "--detach"]);
         git("copy", &["commit", "-q", "--allow-empty", "-m", "detached"]);
         git("copy", &["stash", "-q", "-u"]);
-        assert_eq!(unsaved(&session), ["2 commit(s) not pushed", "stashed changes"]);
-        assert_eq!(kept_branch(&session), None);
+        assert_eq!(unsaved(&wt), ["2 commit(s) not pushed", "stashed changes"]);
+        assert_eq!(kept_branch(&wt), None);
     }
 }
