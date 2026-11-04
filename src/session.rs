@@ -4,11 +4,11 @@
 //!
 //! The copy is an APFS clone of the whole checkout (`clonefile`): instant,
 //! sharing disk blocks until they change, and exact, from `.env` and hand
-//! made settings to installed dependencies. Its setup then drops what main
-//! hadn't committed, so it starts from main's last commit. Docker gets its own Compose project and its own value for each port
+//! made settings to installed dependencies. Then what main hadn't
+//! committed is dropped, so it starts from main's last commit. Docker gets its own Compose project and its own value for each port
 //! variable of the compose file, in the environment of the session's
 //! terminals. Setting it up (main's images, a copy of main's database) and
-//! removing it run as scripts in a terminal, where you see them work.
+//! removing it run as scripts in the background, with a log.
 
 use std::collections::BTreeSet;
 use std::ffi::CString;
