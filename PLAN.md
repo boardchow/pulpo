@@ -57,7 +57,7 @@ Event sources feeding the loop:
 ### Workspaces
 
 The sidebar has repositories (Projects) and every repository's checkouts
-(Workspaces, each with its project's name, the ones waiting for you first):
+(Workspaces, each with its project's name: the ones waiting for you first, then the working ones, then the rest):
 `main` and its git worktrees, each a `Workspace`. Selecting a checkout of another project makes that project the
 current one.
 The current workspace decides what the right side and the panels show: its
@@ -72,7 +72,7 @@ a project's mark is the most urgent state of their terminals.
 
 Three columns and a bottom line, nothing else. Left: the pulpo, then two
 panels as tall as their rows: the projects, and every project's
-workspaces, waiting ones first. A project's and a workspace's mark come first on their row. Middle: the workspace's
+workspaces, waiting ones first, then working ones. A project's and a workspace's mark come first on their row. Middle: the workspace's
 terminals as tabs, drawn on the top of its frame (in the order of `terms`,
 which is the order they came in; the one on screen is kept by tag per
 workspace). Right: Files over Changes, each a tree and the selected file, over History; in

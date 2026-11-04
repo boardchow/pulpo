@@ -17,7 +17,7 @@ Selecting a project makes it the current one and goes back to the workspace you 
 
 A workspace is one checkout of a project. Selecting one shows its terminals, files and changes.
 
-Workspaces lists every project's workspaces, each with its project's name on the right, so you can go from one to another without going through Projects. The ones waiting for you come first. Selecting a workspace in another project makes that project the current one.
+Workspaces lists every project's workspaces, each with its project's name on the right, so you can go from one to another without going through Projects. The ones waiting for you come first, then the ones working, then the rest. Selecting a workspace in another project makes that project the current one.
 
 Every project starts with `main`, the repository itself. Each workspace you create is a git worktree on its own branch, with its own ports and Docker containers. Worktrees made outside Pulpo, by agents or by hand, don't show.
 
