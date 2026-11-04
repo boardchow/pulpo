@@ -394,7 +394,8 @@ impl App {
 
     pub fn workspace_order(&self) -> Vec<usize> {
         let mut all: Vec<usize> = (0..self.workspaces.len()).collect();
-        all.sort_by_key(|&i| !matches!(self.workspace_state(i), Some(State::Waiting | State::Done)));
+        // Waiting for you, then working, then the rest; stable, so each keeps its place in its group.
+        all.sort_by_key(|&i| std::cmp::Reverse(self.workspace_state(i).map_or(0, |s| s.urgency())));
         all
     }
 
