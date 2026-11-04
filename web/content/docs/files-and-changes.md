@@ -1,6 +1,6 @@
 ---
 title: Files and changes
-description: The session's files, and what it changed, each as a tree beside the selected file.
+description: The workspace's files, and what it changed, each as a tree beside the selected file.
 section: Using Pulpo
 order: 6
 ---
@@ -19,9 +19,9 @@ order: 6
 
 ## Changes
 
-Every file the session changed, shown whole with its changes in place. Marks on the right edge show where it changed.
+Every file the workspace changed, shown whole with its changes in place. Marks on the right edge show where it changed.
 
-A session you created is compared with the commit it started from, so the agent's commits are included. `main` is compared with its last commit, any other branch with where it left `main`.
+A workspace you created is compared with the commit it started from, so the agent's commits are included. `main` is compared with its last commit, any other branch with where it left `main`.
 
 Pulpo never runs git for you. Agents, or you in a terminal, commit and push.
 

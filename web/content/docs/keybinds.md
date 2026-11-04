@@ -11,7 +11,7 @@ The prefix is :k[⌘p] or :k[⌃b]. It works everywhere, terminals included.
 
 | Key | Does |
 | --- | --- |
-| :k[w] :k[s] :k[t] | Workspaces, Sessions, Terminal |
+| :k[p] :k[w] :k[t] | Projects, Workspaces, Terminal |
 | :k[f] :k[c] | Files, Changes |
 | :k{k="["} :k{k="]"} | Previous, next tab |
 | :k[a] | Next terminal waiting for you |
@@ -23,10 +23,10 @@ The prefix is :k[⌘p] or :k[⌃b]. It works everywhere, terminals included.
 
 Acts on the focused panel.
 
-| Key | Workspaces | Sessions | Terminal | Files |
+| Key | Projects | Workspaces | Terminal | Files |
 | --- | --- | --- | --- | --- |
-| :k[n] | Add repository | New session | New terminal | New file |
-| :k[x] | Remove from list | Delete session | Close terminal | Delete file |
+| :k[n] | Add project | New workspace | New terminal | New file |
+| :k[x] | Remove from list | Delete workspace | Close terminal | Delete file |
 
 ## Files
 
