@@ -515,7 +515,14 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         Line::default()
     };
+    let used = line.width();
     frame.render_widget(line, area);
+    if let Some(branch) = app.ws().status.branch.as_deref() {
+        let branch = Line::from(format!("⎇ {branch} ")).fg(theme::muted()).right_aligned();
+        if used + branch.width() + 2 <= area.width as usize {
+            frame.render_widget(branch, area);
+        }
+    }
 }
 
 fn workspace_input(name: &str, branch: &str, on_branch: bool) -> Line<'static> {
