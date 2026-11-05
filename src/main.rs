@@ -147,13 +147,14 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
     loop {
         app.tick();
         let wake = Duration::from_millis(if app.animating() { 100 } else { 500 });
-        if (changed && (typed.elapsed() < ECHO || drawn.elapsed() >= FRAME)) || drawn.elapsed() >= wake {
+        let held = app.loading();
+        if held.is_none() && ((changed && (typed.elapsed() < ECHO || drawn.elapsed() >= FRAME)) || drawn.elapsed() >= wake) {
             terminal.draw(|frame| ui::draw(frame, app))?;
             drawn = Instant::now();
             changed = false;
         }
 
-        let wait = if changed { FRAME } else { wake }.saturating_sub(drawn.elapsed());
+        let wait = held.unwrap_or_else(|| if changed { FRAME } else { wake }.saturating_sub(drawn.elapsed()));
         let first = match rx.recv_timeout(wait) {
             Ok(msg) => Some(msg),
             Err(RecvTimeoutError::Timeout) => None,

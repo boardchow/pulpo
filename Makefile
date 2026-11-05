@@ -1,4 +1,4 @@
-.PHONY: install uninstall run test
+.PHONY: install uninstall run test stress
 
 install:
 	cargo install --path . --locked
@@ -11,3 +11,6 @@ run:
 
 test:
 	cargo test
+
+stress:
+	cargo test --release --test stress -- --ignored --nocapture
