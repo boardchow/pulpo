@@ -65,8 +65,8 @@ Pulpo looks for a theme by name in `~/.config/ghostty/themes`, `~/Library/Applic
 | `images` | Compose services with `build` and no `image` | The project's images to reuse instead of building them again |
 | `db` | The first MySQL, MariaDB, Postgres or PostGIS image | How to copy the project's database: `"mysql"`, `"postgres"`, or `""` for no copy |
 | `db_service` | The service with that image | The Compose service that runs the database |
-| `fresh` | Nothing | Runs when the project's database isn't running, after the containers start |
-| `setup` | Without Compose: install from the lockfiles (pnpm, yarn, bun, npm, Bundler, uv). Rails with an `app` service: `bin/rails db:prepare` in it | Runs at the end of the setup, in the workspace's folder |
+| `fresh` | Nothing | Runs when the project has no database to copy, after the containers start |
+| `setup` | Without Compose: install from the lockfiles (pnpm, yarn, bun, npm, Bundler, uv). Rails with an `app` service: `bin/rails db:prepare` in a new `app` container | Runs at the end of the setup, in the workspace's folder |
 | `teardown` | Nothing | Runs in the workspace's folder before it's deleted |
 | `branch_prefix` | Nothing | Branches are `<branch_prefix>/<name>`. Empty: git's `user.name`, else your GitHub login, in lowercase |
 

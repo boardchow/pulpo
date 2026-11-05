@@ -255,11 +255,14 @@ pub enum State {
     Running,
     Waiting,
     Done,
+    Ready,
+    Failed,
 }
 
 impl State {
     pub fn urgency(self) -> u8 {
         match self {
+            State::Ready | State::Failed => 3,
             State::Waiting | State::Done => 2,
             State::Running => 1,
             State::Idle => 0,

@@ -130,11 +130,6 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
             if !w.status.changes.is_empty() {
                 spans.push(Span::from(format!(" ±{}", w.status.changes.len())).fg(theme::blue()));
             }
-            if app.setup_failed.contains_key(&w.root) {
-                spans.push(Span::from(" ✗ setup failed").fg(theme::red()));
-            } else if app.setting_up.contains_key(&w.root) {
-                spans.push(Span::from(format!(" {} setting up", state_icon(State::Running).0)).fg(theme::yellow()));
-            }
             let repo = app.workspaces.iter().find(|r| r.repo == w.repo && !r.is_worktree()).map_or(&w.name, |r| &r.name);
             let used = spans.iter().map(Span::width).sum::<usize>();
             let room = (workspaces.width as usize).saturating_sub(used + 4);
@@ -158,7 +153,7 @@ fn state_name(state: Option<State>, name: &str, current: bool) -> Vec<Span<'stat
     let (icon, color) = state.map_or((" ", theme::dim()), state_icon);
     let name = Span::from(name.to_string());
     let name = match state {
-        Some(State::Waiting | State::Done) => name.fg(color).bold(),
+        Some(State::Waiting | State::Done | State::Ready | State::Failed) => name.fg(color).bold(),
         _ if current => name.fg(theme::fg()).bold(),
         _ => name.fg(theme::muted()),
     };
@@ -196,6 +191,15 @@ fn draw_center(frame: &mut Frame, app: &mut App, area: Rect) {
     app.set_term_size(inner.height, inner.width);
     app.areas.term = inner;
     let Some(id) = app.active else {
+        if app.making(&app.ws().root) {
+            let (spinner, color) = state_icon(State::Running);
+            let lines = vec![
+                Line::from(vec![Span::from(format!("{spinner} ")).fg(color).bold(), Span::from(format!("Making workspace {}", app.ws().name)).bold()]),
+                Line::from("  its folder and branch first, then its setup").fg(theme::muted()),
+            ];
+            frame.render_widget(Paragraph::new(lines), inner);
+            return;
+        }
         let p = app.keymap.label();
         let lines = vec![Line::from("No terminal in this workspace").bold(), Line::default(), Line::from(format!("{p} t opens one, or click +")).fg(theme::muted())];
         let spot = Rect { y: inner.y + inner.height / 3, height: 3.min(inner.height), ..inner };
@@ -731,6 +735,8 @@ fn state_icon(state: State) -> (&'static str, Color) {
     match state {
         State::Running => (SPINNER[(now.as_millis() / 100) as usize % SPINNER.len()], theme::yellow()),
         State::Waiting | State::Done => ("◆", theme::magenta()),
+        State::Ready => ("✓", theme::green()),
+        State::Failed => ("✗", theme::red()),
         State::Idle => ("○", theme::dim()),
     }
 }

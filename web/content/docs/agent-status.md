@@ -15,9 +15,11 @@ order: 5
 
 Each terminal tab shows its mark. A workspace or project shows the mark of its most urgent terminal. A ◆ clears once you look at that terminal.
 
+A workspace being [set up](/docs/workspace-setup) shows the spinner, then ✓ or ✗ until you go there.
+
 ## Go to the agent that waits
 
-Press :kp[a]. Pulpo goes to the terminal that has waited longest, in any workspace. Terminals that asked something come before those that finished. Press :kp[a] again for the next one.
+Press :kp[a]. Pulpo goes first to a workspace whose setup ended, then to the terminal that has waited longest, in any workspace. Terminals that asked something come before those that finished. Press :kp[a] again for the next one.
 
 ## Get exact status from Claude Code
 
