@@ -64,28 +64,22 @@ It runs the install script again: it builds the latest Pulpo, updates Rust if it
 
 ## Uninstall
 
-1. In Pulpo, delete each workspace with :kp[w], then :kp[x]. Deleting one in Pulpo also removes its containers, its worktree and its untouched branch.
-2. Press :kp[Q], then :k[y], to stop every terminal and quit.
-3. Remove the hooks from Claude Code:
+Quit Pulpo, then run:
 
-   ```sh
-   pulpo hooks remove
-   ```
+```sh
+pulpo uninstall
+```
 
-4. Remove the app:
+It lists what it removes and asks before changing anything. Then it:
 
-   ```sh
-   cargo uninstall pulpo
-   ```
+1. Stops every terminal, as :kp[Q] does.
+2. Deletes each workspace, as deleting it in Pulpo does: its folder or worktree, its containers and its untouched branch.
+3. Removes the hooks from Claude Code.
+4. Deletes every folder Pulpo writes: `~/.pulpo`, the settings in `~/.config/pulpo` and the state in `~/.local/state/pulpo`. Those two follow `XDG_CONFIG_HOME` and `XDG_STATE_HOME` if you set them.
+5. Uninstalls the `pulpo` command.
 
-5. Remove every folder Pulpo writes: the workspaces, the settings and the state. The settings and state folders follow `XDG_CONFIG_HOME` and `XDG_STATE_HOME` if you set them, and this command does too:
+If a workspace can't be deleted, it stops there and leaves the rest. Fix what it shows, then run it again.
 
-   ```sh
-   rm -rf ~/.pulpo \
-     "${XDG_CONFIG_HOME:-$HOME/.config}/pulpo" \
-     "${XDG_STATE_HOME:-$HOME/.local/state}/pulpo"
-   ```
-
-   ::careful
-   This deletes every workspace still in `~/.pulpo/workspaces`, and everything in it that wasn't committed. Commits stay on their branches in your repository. Their containers keep running, and their repositories keep a record of each worktree until you run `git worktree prune` in them.
-   ::
+::careful
+Each workspace goes with everything in it that wasn't committed. The list says which ones have changes you'd lose. Commits stay on their branches in your repository.
+::

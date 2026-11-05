@@ -14,6 +14,7 @@ order: 16
 | `pulpo hooks remove` | Remove the hooks, leaving yours |
 | `pulpo doctor` | Check the prefix and the hooks |
 | `pulpo update` | Build and install the latest Pulpo |
+| `pulpo uninstall` | Remove Pulpo, its workspaces and its hooks |
 | `pulpo keytest` | Show what Pulpo receives for each key you press |
 | `pulpo --help`, `pulpo -h` | Show the commands |
 
@@ -50,6 +51,10 @@ It ends with `All good.` when nothing is wrong. A line marked `✗` says what to
 ## pulpo update
 
 Runs the [install script](/docs/installation#install) again, so it builds the latest Pulpo into `~/.cargo/bin`, updates Rust if it's older than 1.88, and refreshes the hooks if Claude Code is installed. The next time you open Pulpo, its server switches to the new build. Your terminals keep running.
+
+## pulpo uninstall
+
+Stops every terminal, deletes each workspace, removes the hooks and every folder Pulpo writes, then uninstalls the `pulpo` command. It lists all of it and asks first. Run it with Pulpo closed, from a terminal outside Pulpo. See [Uninstall](/docs/installation#uninstall).
 
 ## pulpo keytest
 

@@ -20,6 +20,7 @@ mod search;
 mod status;
 mod tree;
 mod ui;
+mod uninstall;
 mod viewer;
 mod workspace;
 
@@ -47,6 +48,8 @@ const USAGE: &str = "usage:
   pulpo keytest  show what reaches Pulpo for each key (⌘p and ⌃b are the prefix)
   pulpo doctor   check that the prefix reaches Pulpo, and the hooks
   pulpo update   build and install the latest Pulpo
+  pulpo uninstall
+                 stop every terminal, delete the workspaces, the hooks and Pulpo itself
   pulpo emit     record a hook event from stdin (called by the hooks)
   pulpo serve    run the server that keeps terminals running (Pulpo starts it)";
 
@@ -85,6 +88,7 @@ fn main() -> Result<()> {
         Some("doctor") => doctor::doctor(&args[1..])?,
         Some("keytest") => doctor::keytest()?,
         Some("update") => update()?,
+        Some("uninstall") => uninstall::uninstall()?,
         Some("-h" | "--help") => println!("{USAGE}"),
         arg => {
             let start = arg.map(PathBuf::from).unwrap_or(std::env::current_dir()?).canonicalize()?;

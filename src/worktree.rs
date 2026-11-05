@@ -233,7 +233,7 @@ thread_local! {
     static TEST_WORKSPACES: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
-fn workspaces_dir() -> PathBuf {
+pub fn workspaces_dir() -> PathBuf {
     #[cfg(test)]
     if let Some(dir) = TEST_WORKSPACES.with_borrow(Clone::clone) {
         return dir;
@@ -1006,6 +1006,15 @@ fn conductor_exports(wt: &Worktree) -> String {
         ("CONDUCTOR_WORKSPACE_PATH", wt.root.to_string_lossy().into_owned()),
     ];
     vars.iter().map(|(var, value)| format!("export {var}={}\n", quote(value))).collect()
+}
+
+/// The teardown script, less the repository's steps that aren't trusted yet.
+pub fn removal_script(wt: &Worktree, exe: &Path) -> String {
+    let checkout = if wt.root.is_dir() { &wt.root } else { &wt.repo };
+    let mut settings = config(&wt.repo, checkout).map(|(c, _)| c).unwrap_or_default();
+    let untrusted = untrusted(&wt.repo, &settings);
+    let skipped: String = settings.without(&untrusted).iter().map(|n| format!("echo {}\n", quote(n))).collect();
+    skipped + &teardown_script(wt, &settings, exe)
 }
 
 pub fn teardown_script(wt: &Worktree, config: &Config, exe: &Path) -> String {
