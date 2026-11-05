@@ -1,25 +1,25 @@
 ---
 title: Introduction
-description: A terminal for running several coding agents side by side on a Mac.
+description: Pulpo runs several coding agents side by side on your Mac, each in its own copy of your repository.
+banner: Pulpo is in beta. Expect bugs, and changes that break how it works from one version to the next.
 section: Get started
 order: 1
 ---
 
-::app-screen
-::
+Each copy is a [workspace](/docs/projects-and-workspaces): a git worktree on its own branch, so no agent touches another's files.
 
-| Column | Shows | Go there |
+## Who it's for
+
+Developers who give Claude Code, or any agent that runs in a terminal, more than one task at a time.
+
+## Why not tmux and worktrees by hand
+
+| To | With tmux | With Pulpo |
 | --- | --- | --- |
-| Left | Your projects and their workspaces | :kp[p], :kp[w] |
-| Middle | The workspace's terminals, as tabs | :kp[t] |
-| Right | The workspace's files, and what it changed | :kp[f], :kp[c] |
+| Start a task | Make a branch and a worktree, copy `.env`, open a pane | Two keys and a name |
+| Run the app in each task | Change ports by hand | Each workspace gets its own ports, and with Docker Compose its own containers and database |
+| See who needs you | Check every pane | A ◆ marks the agent that waits, and one key goes to it |
+| Review the work | Run `git diff` | Changes shows each edited file whole, with its changes in place |
+| Restart your Mac | Start every session again | Terminals reopen and Claude sessions resume |
 
-Every action is the prefix, :k[⌘p], then one key. It works from anywhere, terminals included. The mouse works too.
-
-## Concepts
-
-- **Project:** a git repository. Selecting it opens the repository's own folder.
-- **Workspace:** an isolated copy of a project: a git worktree with its own branch, ports and database.
-
-The screen shows the selected project's or workspace's terminals, files and changes.
-- **Terminals keep running** when you quit Pulpo, and come back after a reboot.
+Pulpo never commits, pushes or merges. Your agents, or you, do that in the terminal.

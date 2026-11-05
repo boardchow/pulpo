@@ -1,71 +1,62 @@
 ---
 title: Projects and workspaces
-description: A project is a repository. A workspace is one checkout of it, so agents working in parallel never touch each other's work.
-section: Using Pulpo
-order: 4
+description: "A project is a repository you work on. A workspace is a copy of it, on its own branch, for one task."
+section: Concepts
+order: 11
 ---
 
 ## Projects
 
-Running `pulpo` in a repository adds it. To add another, :kp[p] then :kp[n].
+A project is a git repository you added to Pulpo. Running `pulpo` in a repository adds it, and so does :kp[p], then :kp[n].
 
-Selecting a project opens the project itself, the repository folder you added: its terminals, files and changes. Use it for quick work on `main`, pulling, or running the app. The branch you're on shows in the bottom right corner.
+Selecting a project shows the repository's own folder: its terminals, files and changes. Use it for quick work on the branch it has checked out, to pull, or to run the app. The branch shows in the bottom right corner.
 
-:kp[x] in Projects removes a project from the list. Its files stay.
+:kp[x] in Projects takes a project off the list. Its files stay where they are.
 
 ## Workspaces
 
-A workspace is an isolated copy of a project, a git worktree on its own branch, with its own ports and Docker containers. Selecting one shows its terminals, files and changes.
+A workspace is a copy of a project for one task: a [git worktree](#workspaces-are-worktrees) in `~/.pulpo/workspaces/<repo>/<name>`, on its own branch. Each workspace has its own:
 
-Workspaces lists every project's workspaces, each with its project's name on the right, so you can go from one to another without going through Projects. A workspace moves to the top when it starts waiting for you, and above the quiet ones when it starts working. It stays where it is once you've read it: rows only move up. Selecting a workspace in another project makes that project the current one.
-
-A new project has no workspaces. Worktrees made outside Pulpo, by agents or by hand, don't show.
-
-Each row shows its number, the workspace's state, name, uncommitted changes (`±3`) and project. The prefix then the number goes straight to that workspace's terminal: with two workspaces waiting for you, :kp[1] is the first and :kp[2] the second. The numbers follow the order, so they change when a workspace moves up.
-
-## Create a workspace
-
-:kp[w], then :kp[n], then a name. The workspace is made in the current project.
-
-1. Pulpo fetches the remote's default branch and makes a worktree from it in `~/.pulpo/workspaces/<repo>/<name>`, on the branch `<you>/<name>`.
-2. It copies the project's `.env` files, and the files listed in `.worktreeinclude`.
-3. A shell opens in it right away.
-4. Setup runs in the background: submodules, [Docker](/docs/docker), then the setup script. The workspace shows *setting up* meanwhile, or *setup failed* with its log.
-
-`<you>` is the `branch_prefix` setting, else git's `user.name`, else your GitHub login.
-
-To pick the branch yourself, say for a Linear ticket, press `Tab` after the name and type or paste it. The name stays the folder's.
-
-Commit and push from a workspace as usual; the project sees the commits at once. To merge into `main` without a pull request, ask the agent to merge from the project's folder (`git -C <project> merge <branch>`): git keeps `main` checked out there, so a workspace can't switch to it.
-
-## Copy ignored files
-
-A worktree only has tracked files. List the ignored ones a workspace needs in `.worktreeinclude`, at the repository's root, in `.gitignore` syntax:
-
-```text
-config/master.key
-certs/
-!.env.local
-```
-
-Copies are APFS clones: instant, and no extra disk space.
-
-## Delete a workspace
-
-:kp[x] in Workspaces. Pulpo first says what you'd lose. Then it stops the terminals, runs the teardown script, and removes the containers and the worktree.
-
-The branch stays if it has commits. Deleting the folder by hand has the same effect.
-
-::careful
-Deleting removes everything that wasn't committed in the workspace.
-::
-
-## States
-
-| Mark | Meaning |
+| Its own | Means |
 | --- | --- |
-| spinner | A terminal is working |
-| ◆ | A terminal waits for you |
-| ○ | Quiet |
+| Folder and branch | Agents never edit each other's files |
+| Terminals | Each workspace keeps its own tabs |
+| Ports | Ten ports from 20000 up, the first in `PULPO_PORT` |
+| Compose project | Containers, volumes and a copy of the database, with [Docker Compose](/docs/docker) |
 
-A project or workspace shows its most urgent terminal. See [Agent status](/docs/terminals#agent-status).
+To create one, see [Run agents on separate branches](/docs/run-agents-in-parallel). Selecting a workspace shows its terminals, files and changes.
+
+## Workspaces are worktrees
+
+A worktree is a second checkout of the same repository. It shares the project's `.git`, so:
+
+- A commit made in a workspace is in the project at once, on the workspace's branch.
+- A branch can be checked out in one place only. Since the project has the default branch checked out, a workspace can't switch to it.
+- Stashes are shared between the project and its workspaces.
+- A worktree only has the files git tracks. Pulpo copies the ignored ones a workspace needs, like `.env`: see [Set up new workspaces automatically](/docs/workspace-setup).
+
+Pulpo locks each worktree, so `git worktree prune` leaves it alone. Worktrees made outside Pulpo, by agents or by hand, don't show in the list.
+
+## The two lists
+
+Projects lists your repositories by name. Workspaces lists the workspaces of every project, with the project's name on the right, so you go from one to another without going through Projects.
+
+Each workspace row shows:
+
+| Part | Shows |
+| --- | --- |
+| Number | :kp[1] to :kp[9] go to that workspace |
+| Mark | Spinner: working. ◆: waits for you. ○: quiet |
+| `±3` | Files changed and not committed |
+| *setting up*, *✗ setup failed* | Its setup, while it runs or if it fails |
+
+A workspace moves to the top when it starts waiting for you, and above the quiet ones when it starts working. Once you've read it, it stays where it is: rows only move up.
+
+| To | Press |
+| --- | --- |
+| Move | :k[↑] :k[↓] or :k[j] :k[k]; past the end of one list into the other |
+| Go to the top, the bottom | :k[g], :k[G] |
+| Go from Projects to Workspaces, and back | :k[→], :k[←] |
+| Go to the terminal | :k[⏎], :k[→] in Workspaces, or double-click a workspace |
+
+Pulpo opens on the workspace you were on last. Running `pulpo` in a project's folder opens that project's last workspace.

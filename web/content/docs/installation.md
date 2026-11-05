@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: One command builds Pulpo and connects it to Claude Code.
+description: "Install Pulpo and connect it to Claude Code, so it knows when each agent works or waits for you."
 section: Get started
 order: 2
 ---
@@ -9,17 +9,31 @@ order: 2
 
 - macOS, with git.
 - [Ghostty](https://ghostty.org). Other terminals may work, but aren't tested.
-- [Claude Code](https://claude.com/claude-code), to see what each agent is doing. Optional.
+- [Claude Code](https://claude.com/claude-code). Optional: without it, Pulpo still runs any agent, and guesses its status from the terminal's output.
 
 ## Install
 
-```sh
-curl -fsSL https://pulpo.sh/install | sh
-```
+1. Run the install script:
 
-The script installs the Xcode Command Line Tools and Rust if they're missing, builds Pulpo into `~/.cargo/bin`, and adds its hooks to Claude Code if it's installed.
+   ```sh
+   curl -fsSL https://pulpo.sh/install | sh
+   ```
 
-From a checkout instead:
+   It builds Pulpo into `~/.cargo/bin`, which takes a minute or two. It installs Rust if you don't have it, and updates it if yours is older than 1.88. If Claude Code is installed, it also adds Pulpo's [hooks](#connect-claude-code). If the Xcode Command Line Tools are missing, the script opens their installer and stops: accept the dialog, wait for the install to finish, then run the command again.
+
+2. Open a new terminal window, so your shell finds `pulpo`.
+
+3. Check the install:
+
+   ```sh
+   pulpo doctor
+   ```
+
+   The last line says `All good.` If something is missing, the line marked `✗` says how to fix it.
+
+### From source
+
+With Rust 1.88 or later:
 
 ```sh
 git clone https://github.com/boardchow/pulpo
@@ -28,32 +42,46 @@ make install
 pulpo hooks install
 ```
 
-Check the result with `pulpo doctor`.
+## Connect Claude Code
 
-## Claude Code hooks
-
-The hooks tell Pulpo when Claude works, waits or stops. They go in `~/.claude/settings.json`, next to your own hooks.
+The hooks tell Pulpo when Claude works, waits for you or stops. They also let Pulpo resume Claude sessions after a reboot. The install script adds them; to add them yourself, run:
 
 ```sh
 pulpo hooks install
-pulpo hooks status
-pulpo hooks remove
 ```
 
-Only Claude sessions started after installing them report to Pulpo.
+Each hook shows as `added`, and they go in `~/.claude/settings.json`, next to any hooks of your own. Only Claude sessions started after this report to Pulpo: start a new one to see its status.
+
+To check or remove the hooks, see the [CLI reference](/docs/cli).
 
 ## Update
 
-Run the install command again. Running terminals keep running: the server switches to the new build in place.
+Run the install command again. The next time you open Pulpo, its server switches to the new build. Your terminals keep running.
 
 ## Uninstall
 
-Press :kp[Q] in Pulpo to stop every terminal, then:
+1. In Pulpo, delete each workspace with :kp[w], then :kp[x]. Deleting one in Pulpo also removes its containers, its worktree and its untouched branch.
+2. Press :kp[Q], then :k[y], to stop every terminal and quit.
+3. Remove the hooks from Claude Code:
 
-```sh
-pulpo hooks remove
-cargo uninstall pulpo
-rm -rf ~/.config/pulpo ~/.local/state/pulpo
-```
+   ```sh
+   pulpo hooks remove
+   ```
 
-Delete workspaces in Pulpo first, or remove `~/.pulpo/workspaces/` by hand.
+4. Remove the app:
+
+   ```sh
+   cargo uninstall pulpo
+   ```
+
+5. Remove every folder Pulpo writes: the workspaces, the settings and the state. The settings and state folders follow `XDG_CONFIG_HOME` and `XDG_STATE_HOME` if you set them, and this command does too:
+
+   ```sh
+   rm -rf ~/.pulpo \
+     "${XDG_CONFIG_HOME:-$HOME/.config}/pulpo" \
+     "${XDG_STATE_HOME:-$HOME/.local/state}/pulpo"
+   ```
+
+   ::careful
+   This deletes every workspace still in `~/.pulpo/workspaces`, and everything in it that wasn't committed. Commits stay on their branches in your repository. Their containers keep running, and their repositories keep a record of each worktree until you run `git worktree prune` in them.
+   ::

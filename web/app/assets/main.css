@@ -126,6 +126,8 @@ a:hover { text-decoration: underline; }
 .doc h2:hover a.anchor, .doc h3:hover a.anchor { opacity: 1; text-decoration: none; }
 .doc p, .doc ul, .doc ol { margin: 0 0 14px; }
 .doc li { margin: 4px 0; }
+/* A list item's paragraphs come joined by <br>: none after a code block, which has its margin. */
+.doc li > pre + br { display: none; }
 .doc strong { color: var(--fg); }
 .doc code {
   padding: 1px 5px;
@@ -190,6 +192,7 @@ td:first-child { white-space: nowrap; }
   background: var(--panel);
 }
 .careful { border-left-color: var(--yellow); }
+.doc .banner { margin-bottom: 28px; }
 .note p:last-child, .careful p:last-child { margin: 0; }
 
 .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0 0 24px; }

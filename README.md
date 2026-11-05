@@ -4,19 +4,11 @@
 
 <h1 align="center">Pulpo</h1>
 
-<p align="center">
-  <a href="https://pulpo.sh">pulpo.sh</a> · <a href="#install">install</a> · <a href="https://pulpo.sh/docs/quick-start/">quick start</a> · <a href="https://pulpo.sh/docs/">docs</a>
-</p>
-
 <p align="center"><b>Many agents. One terminal.</b></p>
 
-A terminal for running several coding agents side by side on a Mac.
+Pulpo runs several coding agents side by side on your Mac, each in its own copy of your repository.
 
-- **A workspace per task.** Each workspace is a worktree with its own branch, files, ports, containers and database. [Workspaces →](https://pulpo.sh/docs/projects-and-workspaces/)
-- **See who needs you.** Every workspace and tab shows whether its agent works or waits for you, and you get a notification. [Terminals →](https://pulpo.sh/docs/terminals/#agent-status)
-- **Review next to the work.** The workspace's files and what it changed sit beside its terminals. [Files and changes →](https://pulpo.sh/docs/files-and-changes/)
-- **Quit, reboot, update.** Terminals keep running, and Claude sessions resume after a reboot. [Terminals →](https://pulpo.sh/docs/terminals/)
-- **One prefix and the mouse.** `⌘p` then a key, from anywhere, or click. [Keybinds →](https://pulpo.sh/docs/keybinds/)
+![Pulpo: projects and workspaces on the left, Claude Code working in a terminal on the right](assets/screenshot.png)
 
 ## Install
 
@@ -24,28 +16,22 @@ A terminal for running several coding agents side by side on a Mac.
 curl -fsSL https://pulpo.sh/install | sh
 ```
 
-Then, in a repository:
+Then run `pulpo` inside a git repository.
 
-```sh
-pulpo
-```
-
-`⌘p q` quits and leaves your agents working; `pulpo` brings them back. [Quick start →](https://pulpo.sh/docs/quick-start/)
-
-macOS and [Ghostty](https://ghostty.org). [Claude Code](https://claude.com/claude-code) to see what agents do.
+Pulpo needs macOS. Ghostty is recommended, and Claude Code lets Pulpo show what each agent is doing. See [Installation](https://pulpo.sh/docs/installation) for details.
 
 ## Docs
 
-[pulpo.sh/docs](https://pulpo.sh/docs/): [installation](https://pulpo.sh/docs/installation/) · [quick start](https://pulpo.sh/docs/quick-start/) · [workspaces](https://pulpo.sh/docs/projects-and-workspaces/) · [Docker and ports](https://pulpo.sh/docs/docker/) · [keybinds](https://pulpo.sh/docs/keybinds/) · [configuration](https://pulpo.sh/docs/configuration/) · [troubleshooting](https://pulpo.sh/docs/troubleshooting/)
+**[pulpo.sh/docs](https://pulpo.sh/docs)**
 
 ## Development
 
 ```sh
-make install   # build and install into ~/.cargo/bin
-make test      # unit tests and the server's end-to-end test
+make run    # build and run Pulpo from this checkout
+make test   # unit tests and the server's end-to-end test
 ```
 
-How it's built: [PLAN.md](PLAN.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). The site and the docs: [web/](web).
+How it's built: [PLAN.md](PLAN.md).
 
 ## License
 
