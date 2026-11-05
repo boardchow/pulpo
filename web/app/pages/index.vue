@@ -1,10 +1,11 @@
 <script setup>
-const description = "Spin up a few coding agents, give each its own copy of your repo, and see who needs you. One terminal. Have fun :)";
+const title = "Pulpo: run coding agents side by side on your Mac";
+const description = "Run several coding agents at once, each in its own git worktree, branch and ports. Pulpo marks the one waiting for you. Free, open source, macOS beta.";
 const site = useRuntimeConfig().public.site;
 useSeoMeta({
-  title: "Pulpo: Many agents. One terminal.",
+  title,
   description,
-  ogTitle: "Pulpo: Many agents. One terminal.",
+  ogTitle: title,
   ogDescription: description,
   ogUrl: site,
   ogImage: `${site}/og.png`,
@@ -40,8 +41,8 @@ async function copy() {
       </header>
       <main>
         <p class="badge"><span class="dot" />v0.1 · beta</p>
-        <h1>Many agents.<br>One terminal.</h1>
-        <p class="pitch">{{ description }}</p>
+        <h1>Stop checking<br>every tab.</h1>
+        <p class="pitch">Run several coding agents, each on its own branch and ports. Pulpo marks the one waiting for you and takes you straight to it.</p>
         <div class="install">
           <code><span class="prompt">$ </span><span>{{ command }}</span></code>
           <button type="button" @click="copy">{{ copied }}</button>
