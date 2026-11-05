@@ -40,7 +40,7 @@ async function copy() {
         </nav>
       </header>
       <main>
-        <p class="badge"><span class="dot" />v0.1 · beta</p>
+        <p class="badge"><span class="dot" />v0.1.0 · beta</p>
         <h1>Stop checking<br>every tab.</h1>
         <p class="pitch">Run several coding agents, each on its own branch and ports. Pulpo marks the one waiting for you and takes you straight to it.</p>
         <div class="install">
