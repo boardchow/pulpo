@@ -2243,12 +2243,7 @@ impl App {
         if self.removing.contains(&wt.root) {
             return;
         }
-        let checkout = if wt.root.is_dir() { &wt.root } else { &wt.repo };
-        let mut config = worktree::config(&wt.repo, checkout).map(|(c, _)| c).unwrap_or_default();
-        let untrusted = worktree::untrusted(&wt.repo, &config);
-        let skipped = config.without(&untrusted);
-        let skipped: String = skipped.iter().map(|n| format!("echo {}\n", worktree::quote(n))).collect();
-        let script = skipped + &worktree::teardown_script(&wt, &config, &exe);
+        let script = worktree::removal_script(&wt, &exe);
         let log = logs().join(format!("remove-{}.log", wt.project));
         let mut child = match run_in_background(&script, &wt.repo, &wt, &log) {
             Ok(child) => child,
