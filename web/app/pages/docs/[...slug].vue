@@ -66,7 +66,7 @@ onBeforeUnmount(() => removeEventListener("scroll", onScroll));
       </nav>
 
       <main class="doc">
-        <div v-if="page.banner" class="careful banner">{{ page.banner }}</div>
+        <div class="careful banner">Pulpo is in beta. Expect bugs, and changes that break how it works from one version to the next.</div>
         <p class="eyebrow">{{ page.section }}</p>
         <h1>{{ page.title }}</h1>
         <p class="lead">{{ page.description }}</p>
