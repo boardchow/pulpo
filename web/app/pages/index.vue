@@ -26,13 +26,41 @@ async function copy() {
   }
   setTimeout(() => (copied.value = "Copy"), 1600);
 }
+
+const scrolled = ref(false);
+const onScroll = () => (scrolled.value = scrollY > 0);
+onMounted(() => {
+  onScroll();
+  addEventListener("scroll", onScroll, { passive: true });
+});
+onBeforeUnmount(() => removeEventListener("scroll", onScroll));
+
+// The window's bottom edge fades the screenshot, until the footer, which has its own fade, comes into view.
+const footer = ref(null);
+const footerSeen = ref(false);
+let watching;
+onMounted(() => {
+  watching = new IntersectionObserver(([entry]) => (footerSeen.value = entry.isIntersecting));
+  watching.observe(footer.value);
+});
+onBeforeUnmount(() => watching?.disconnect());
+
+// The globe turns east, one side every 1.5s, unless motion is reduced.
+const sides = ["🌍", "🌏", "🌎"];
+const side = ref(0);
+let turning;
+onMounted(() => {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  turning = setInterval(() => (side.value = (side.value + 1) % sides.length), 1500);
+});
+onBeforeUnmount(() => clearInterval(turning));
 </script>
 
 <template>
   <div class="landing">
     <LandingField />
     <div class="page">
-      <header>
+      <header :class="{ scrolled }">
         <NuxtLink class="brand" to="/"><img src="/favicon.svg" alt="">Pulpo</NuxtLink>
         <nav>
           <NuxtLink to="/docs">Docs</NuxtLink>
@@ -48,12 +76,26 @@ async function copy() {
           <button type="button" @click="copy">{{ copied }}</button>
         </div>
       </main>
+      <div class="shot">
+        <img src="/screenshot.png" width="2560" height="1412" alt="Pulpo: projects and workspaces on the left, Claude Code in a terminal in the middle, files, changes and history on the right">
+      </div>
+      <div class="edge" :class="{ hidden: footerSeen }" />
+      <footer ref="footer">
+        <div class="meta">
+          <span>Built across time zones <span class="globe" aria-hidden="true">{{ sides[side] }}</span></span>
+          <nav>
+            <NuxtLink to="/docs">Docs</NuxtLink>
+            <a href="https://github.com/boardchow/pulpo" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/boardchow/pulpo/blob/main/LICENSE" target="_blank" rel="noopener">MIT license</a>
+          </nav>
+        </div>
+      </footer>
     </div>
   </div>
 </template>
 
 <style scoped>
-.landing { overflow-x: hidden; }
+.landing { overflow-x: clip; }
 .landing :where(p, h1) { margin: 0; }
 .page {
   position: relative;
@@ -66,7 +108,8 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  position: relative;
+  position: sticky;
+  top: 0;
   z-index: 1;
   width: 100%;
   max-width: 1080px;
@@ -78,6 +121,20 @@ header {
   text-transform: uppercase;
   color: var(--muted);
 }
+/* The window's full width, though the header itself is only as wide as the content. */
+header::before {
+  content: "";
+  position: absolute;
+  inset: 0 50%;
+  width: 100vw;
+  transform: translateX(-50%);
+  z-index: -1;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+header.scrolled::before { opacity: 1; }
 header .brand {
   display: flex;
   align-items: center;
@@ -101,9 +158,7 @@ main {
   align-items: center;
   justify-content: center;
   text-align: center;
-  /* Centered in the whole window, not just below the header, then raised 25px: a touch above center reads as centered. */
-  margin-top: calc(-1 * var(--header));
-  padding: calc(var(--header) + 24px) 0 calc(var(--header) + 74px);
+  padding-top: clamp(24px, 9vh, 112px);
 }
 .badge {
   display: inline-flex;
@@ -178,7 +233,71 @@ h1 {
   transition: color 0.15s, border-color 0.15s;
 }
 .install button:hover { color: var(--fg); border-color: var(--dim); }
+.shot {
+  position: relative;
+  width: 100%;
+  max-width: 1080px;
+  margin: 56px auto 0;
+}
+/* Its bottom edge, and the field around it, fades into the footer. */
+.shot::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 100vw;
+  height: 160px;
+  transform: translateX(-50%);
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+}
+.edge {
+  position: fixed;
+  inset: auto 0 0;
+  z-index: 1;
+  height: 120px;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+.edge.hidden { opacity: 0; }
+footer {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 32px 0 40px;
+  font-size: 13px;
+  color: var(--dim);
+}
+/* Solid across the window, so the field stops where the screenshot fades out. */
+footer::before {
+  content: "";
+  position: absolute;
+  inset: 0 50%;
+  width: 100vw;
+  transform: translateX(-50%);
+  z-index: -1;
+  background: var(--bg);
+}
+footer .meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 24px; }
+footer nav { display: flex; gap: 24px; }
+footer a { color: var(--muted); text-decoration: none; transition: color 0.15s; }
+footer a:hover { color: var(--fg); }
+footer .globe { display: inline-block; margin-left: 4px; }
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
 @media (max-width: 560px) {
   .install { font-size: 12px; }
+  footer .meta { flex-direction: column-reverse; align-items: center; gap: 12px; }
+  /* Readable size, starting at the left margin and cut by the window's right edge. */
+  .shot { width: 800px; max-width: none; margin-left: 0; }
+  .shot::after { left: -16px; transform: none; }
 }
 </style>

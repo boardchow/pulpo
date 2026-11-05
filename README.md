@@ -8,7 +8,7 @@
 
 Run several coding agents, each on its own branch and ports. Pulpo marks the one waiting for you and takes you straight to it.
 
-![Pulpo: projects and workspaces on the left, Claude Code working in a terminal on the right](assets/screenshot.png)
+![Pulpo: projects and workspaces on the left, Claude Code in a terminal in the middle, files, changes and history on the right](web/public/screenshot.png)
 
 ## Install
 
