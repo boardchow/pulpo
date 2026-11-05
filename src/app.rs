@@ -35,6 +35,8 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const OTHERS_STATUS: Duration = Duration::from_secs(3);
 /// How long a terminal just switched to may wait for its snapshot before it's drawn empty.
 const SNAPSHOT: Duration = Duration::from_millis(100);
+/// A resumed agent reprints its conversation meanwhile: that isn't news.
+const RESUMING: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
@@ -164,7 +166,9 @@ pub struct App {
     last_workspace: HashMap<PathBuf, PathBuf>,
     saved: Layout,
     ready: bool,
-    reopening: HashMap<u64, String>,
+    /// The tag each reopened terminal had, and whether it was waiting for you.
+    reopening: HashMap<u64, (String, bool)>,
+    resumed: HashMap<usize, Instant>,
     link: Link,
     /// Terminals asked for and not attached yet: whether to focus them, and where.
     spawning: HashMap<u64, (bool, PathBuf)>,
@@ -258,6 +262,7 @@ impl App {
             saved: layout.clone(),
             ready: false,
             reopening: HashMap::new(),
+            resumed: HashMap::new(),
             link,
             spawning: HashMap::new(),
             kept: HashMap::new(),
@@ -656,7 +661,7 @@ impl App {
             let args = layout::reopen(was, &shell());
             agents += usize::from(!args.is_empty());
             let token = self.spawn_in(was.cwd.clone(), &shell(), &args, false);
-            self.reopening.insert(token, was.tag.clone());
+            self.reopening.insert(token, (was.tag.clone(), was.unread));
             terminals += 1;
         }
         if terminals > 0 {
@@ -669,7 +674,12 @@ impl App {
         let open = self
             .terms
             .iter()
-            .map(|t| layout::Open { cwd: t.info.cwd.clone(), tag: t.info.tag.clone(), claude: self.agents.session_for_tab(&t.info.tag).map(String::from) })
+            .map(|t| layout::Open {
+                cwd: t.info.cwd.clone(),
+                tag: t.info.tag.clone(),
+                claude: self.agents.session_for_tab(&t.info.tag).map(String::from),
+                unread: t.unread(),
+            })
             .collect();
         Layout {
             current: Some(self.ws().root.clone()),
@@ -686,11 +696,17 @@ impl App {
                 if self.terms.iter().any(|t| t.id == id) {
                     return;
                 }
+                // What its agent last said was known before: only what you hadn't seen waits.
+                let reported = self.agents.for_tab(&info.tag).map_or(State::Idle, |a| a.state);
+                let unread = self.saved.open.iter().any(|o| o.tag == info.tag && o.unread);
                 self.terms.push(Term::new(info, (rows, cols), self.link.clone()));
                 let i = self.terms.len() - 1;
+                (self.terms[i].reported, self.terms[i].hook_unread) = (reported, unread);
                 self.terms[i].resize(self.term_size.0, self.term_size.1);
                 let wt = self.workspace_of(&self.terms[i]);
-                if let Some(old) = token.and_then(|t| self.reopening.remove(&t)) {
+                if let Some((old, unread)) = token.and_then(|t| self.reopening.remove(&t)) {
+                    self.terms[i].hook_unread = unread;
+                    self.resumed.insert(id, Instant::now());
                     let new = self.terms[i].info.tag.clone();
                     for tag in self.last_term.values_mut().filter(|tag| **tag == old) {
                         *tag = new.clone();
@@ -734,7 +750,11 @@ impl App {
                 self.keep_a_terminal();
                 self.restore_term();
             }
-            ToClient::Info { info } => {
+            ToClient::Info { mut info } => {
+                if info.unread && self.resumed.get(&(info.id as usize)).is_some_and(|at| at.elapsed() < RESUMING) {
+                    info.unread = false;
+                    self.link.send(&ToServer::Seen { id: info.id });
+                }
                 if let Some(term) = self.terms.iter_mut().find(|t| t.id == info.id as usize) {
                     term.set_info(info);
                 }

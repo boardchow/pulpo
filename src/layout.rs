@@ -21,6 +21,8 @@ pub struct Open {
     pub cwd: PathBuf,
     pub tag: String,
     pub claude: Option<String>,
+    /// Waiting for you when Pulpo closed.
+    pub unread: bool,
 }
 
 fn path() -> PathBuf {
@@ -57,7 +59,7 @@ mod tests {
 
     #[test]
     fn resumes_claude_then_leaves_a_shell() {
-        let open = |claude: Option<&str>| Open { cwd: "/code".into(), tag: "1-2".into(), claude: claude.map(String::from) };
+        let open = |claude: Option<&str>| Open { cwd: "/code".into(), tag: "1-2".into(), claude: claude.map(String::from), unread: false };
         assert_eq!(reopen(&open(Some("0f1e-a2")), "/bin/zsh")[2], "claude --resume 0f1e-a2; exec /bin/zsh -l");
         assert!(reopen(&open(None), "/bin/zsh").is_empty());
         assert!(reopen(&open(Some("x; rm -rf ~")), "/bin/zsh").is_empty());
