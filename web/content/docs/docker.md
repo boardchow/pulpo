@@ -41,8 +41,8 @@ services:
 Pulpo finds each variable in a `ports` entry and gives each workspace its own value. When you create a workspace, its setup then:
 
 1. Reuses the images the project built, for services with `build` and no `image`.
-2. Copies the project's database, if a service runs a MySQL, MariaDB, Postgres or PostGIS image and the project's container is running. Otherwise the workspace starts from a fresh database.
-3. Runs `docker compose up -d`.
+2. Copies the project's database, if a service runs a MySQL, MariaDB, Postgres or PostGIS image. With Docker Desktop, that takes about a second whatever its size. Without a database to copy, the workspace starts from a fresh one.
+3. Runs `docker compose up -d --build`, which only builds again what changed since the project's images, like a new dependency.
 
 Each workspace is its own Compose project, so containers, networks and volumes never collide. Containers that mount the workspace's folder also get the project's `.git`, read only, so git works inside them.
 

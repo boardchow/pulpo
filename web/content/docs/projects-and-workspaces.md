@@ -46,11 +46,10 @@ Each workspace row shows:
 | Part | Shows |
 | --- | --- |
 | Number | :kp[1] to :kp[9] go to that workspace |
-| Mark | Spinner: working. ◆: waits for you. ○: quiet |
+| Mark | Spinner: working or setting up. ✓, ✗: its setup worked or failed. ◆: waits for you. ○: quiet |
 | `±3` | Files changed and not committed |
-| *setting up*, *✗ setup failed* | Its setup, while it runs or if it fails |
 
-A workspace moves to the top when it starts waiting for you, and above the quiet ones when it starts working. Once you've read it, it stays where it is: rows only move up.
+A workspace moves to the top when its setup ends or it starts waiting for you, and above the quiet ones when it starts working. Finished setups come first. Once you've read it, it stays where it is: rows only move up.
 
 | To | Press |
 | --- | --- |

@@ -56,7 +56,7 @@ The setup log lists what went wrong, on lines starting with `!`. Each line conta
 | *git won't work in its containers* | `docker compose config` failed, so Pulpo couldn't add the project's `.git` to the containers |
 | *compose files with -f* | Those `make` commands skip the Compose file Pulpo adds, so git doesn't work in their containers |
 
-If the workspace shows *✗ setup failed*, select it: the bottom line shows the log's path. Fix the cause, then run the remaining steps in the workspace's terminal, or delete the workspace and create it again.
+If a setup fails, its *setup* tab ends with what went wrong. Fix the cause, then run the remaining steps in the workspace's terminal, or delete the workspace and create it again.
 
 ## Deleting a workspace
 

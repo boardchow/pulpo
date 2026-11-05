@@ -32,7 +32,7 @@ Each of these goes to the workspace's terminal:
 | To | Press |
 | --- | --- |
 | Go to workspace 1 to 9 | :kp[1] to :kp[9] |
-| Go to the agent that waits for you | :kp[a] |
+| Go to the agent that waits for you, or a workspace whose setup ended | :kp[a] |
 | Pick from the list | :kp[w], then :k[↑] :k[↓] and :k[⏎] |
 | Find a workspace by name | :kp[/], type part of its name, then :k[⏎] |
 
