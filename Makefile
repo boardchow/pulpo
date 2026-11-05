@@ -1,4 +1,4 @@
-.PHONY: install uninstall run test stress
+.PHONY: install uninstall run test stress docker
 
 install:
 	cargo install --path . --locked
@@ -14,3 +14,6 @@ test:
 
 stress:
 	cargo test --release --test stress -- --ignored --nocapture
+
+docker:
+	cargo test sets_up_any_compose_project -- --ignored

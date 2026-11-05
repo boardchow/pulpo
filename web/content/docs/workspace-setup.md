@@ -30,11 +30,11 @@ setup = "npm ci && npm run build"
 The setup script runs in the workspace's folder, in the background, after the [containers](/docs/docker) start. It has the [workspace's variables](/docs/docker#use-the-workspaces-ports). Until you set it, Pulpo guesses one:
 
 - Without a Compose file, it installs dependencies from the lockfiles it finds: pnpm, yarn, bun, npm, Bundler or uv.
-- In a Rails app with an `app` service, it runs `bin/rails db:prepare` in that container.
+- In a Rails app with an `app` service, it runs `bin/rails db:prepare` in a new `app` container.
 
-`teardown` works the same way, and runs before a workspace is deleted. `fresh` runs when the project's database isn't running to copy from.
+`teardown` works the same way, and runs before a workspace is deleted. `fresh` runs when the project has no database to copy.
 
-While setup runs, the workspace shows *setting up*. You can work in its terminal meanwhile.
+The workspace's *setup* tab shows each step as it runs, and ends with *✓ Workspace … is ready* and its ports. A terminal then opens beside it. If you were in another workspace, this one shows ✓ until you go there, which opens its *setup* tab. Closing the tab doesn't stop the setup.
 
 ## Trust a committed script
 
@@ -57,4 +57,4 @@ Your `repos/<repo>.toml` overrides them.
 
 ## When setup fails
 
-The workspace shows *✗ setup failed*. Select it, and the bottom line shows the log's path, in `~/.local/state/pulpo/logs/`. Fix the cause, then run the remaining steps in the workspace's terminal, or delete the workspace and create it again.
+The *setup* tab ends with what went wrong, and the workspace shows ✗ until you go there. A container that stops at boot fails the setup too, with its last logs. The log is also in `~/.local/state/pulpo/logs/`. Fix the cause, then run the remaining steps in the workspace's terminal, or delete the workspace and create it again.

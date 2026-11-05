@@ -263,8 +263,9 @@ pub fn config(repo: &Path, checkout: &Path) -> Result<(Config, Vec<String>)> {
     let rails = checkout.join("bin/rails").is_file();
     // After the copy too: main's database is at main's migrations, the
     // workspace's code at the default branch's (`db:prepare` does what's due).
+    // `run`, not `exec`: it needs no server up.
     let setup = if rails && guessed.images.iter().any(|s| s == "app") {
-        "docker compose exec -T app bin/rails db:prepare".to_string()
+        "docker compose run --rm -T app bin/rails db:prepare".to_string()
     } else if compose.is_none() {
         install(checkout)
     } else {
@@ -433,7 +434,7 @@ fn starter(c: &Config) -> String {
 # How main's database is copied into the workspace: mysql, postgres or \"\" for no copy.
 # db = {:?}
 # db_service = {:?}
-# Run instead when main's database isn't running.
+# Run instead when main has no database to copy.
 # fresh = {:?}
 # Run at the end of the setup, and before a workspace is removed.
 # setup = {:?}
@@ -525,8 +526,7 @@ pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) ->
     if git(repo, &["rev-parse", "-q", "--verify", "HEAD"], None).is_err() {
         bail!("the repository has no commit yet: make one first");
     }
-    let repo_name = repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let root = workspaces_dir().join(&repo_name).join(name);
+    let root = root_of(repo, name);
     if root.exists() {
         bail!("{} already exists", root.display());
     }
@@ -612,6 +612,10 @@ pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) ->
             Err(e)
         }
     }
+}
+
+pub fn root_of(repo: &Path, name: &str) -> PathBuf {
+    workspaces_dir().join(repo.file_name().unwrap_or_default()).join(name)
 }
 
 /// No terminal to ask on: Pulpo's screen is raw, and ssh opens the terminal itself unless
@@ -970,16 +974,23 @@ pub fn setup_script(wt: &Worktree, config: &Config, notes: &[String]) -> String 
             _ => None,
         };
         let mut fresh = false;
-        if let Some((dump, restore)) = copy.filter(|_| !config.db_service.is_empty()) {
-            s += "step 'Starting its database'\n";
-            s += &format!("docker compose up -d --wait {db}\n");
-            s += &format!("if [ -n \"$(docker compose -p {} ps -q --status running {db} 2>/dev/null)\" ]; then\n", quote(main));
+        if !config.db.is_empty() && !config.db_service.is_empty() {
+            let main = quote(main);
+            s += COPY_VOLUMES;
+            s += &format!("from=$(docker compose -p {main} ps -aq {db} 2>/dev/null)\n");
+            s += "if [ -n \"$from\" ] && [ -n \"$(docker inspect -f \"$volumes\" \"$from\")\" ]; then\n";
             s += "step \"Copying main's database\"\n";
-            s += &format!("docker compose -p {} exec -T {db} sh -c {} | docker compose exec -T {db} sh -c {}\n", quote(main), quote(dump), quote(restore));
-            s += "else\nstep \"main's database isn't running: starting from a fresh one\"\nfresh=1\nfi\n";
+            s += &format!("docker compose create {db}\ncopy_volumes \"$from\" \"$(docker compose ps -aq {db})\"\n");
+            if let Some((dump, restore)) = copy {
+                s += &format!("elif [ -n \"$(docker compose -p {main} ps -q --status running {db} 2>/dev/null)\" ]; then\n");
+                s += &format!("step \"Copying main's database\"\ndocker compose up -d --wait {db}\n");
+                s += &format!("docker compose -p {main} exec -T {db} sh -c {} | docker compose exec -T {db} sh -c {}\n", quote(dump), quote(restore));
+            }
+            s += "else\nstep \"main has no database to copy: starting from a fresh one\"\nfresh=1\nfi\n";
             fresh = !config.fresh.is_empty();
         }
-        s += "step 'Starting its containers'\ndocker compose up -d\n";
+        // Built still: main's images can be older than the workspace's code.
+        s += "step 'Starting its containers'\ndocker compose up -d --build\n";
         if fresh {
             s += &format!("if [ -n \"$fresh\" ]; then step 'Preparing the fresh database'; {}; fi\n", config.fresh);
         }
@@ -987,14 +998,47 @@ pub fn setup_script(wt: &Worktree, config: &Config, notes: &[String]) -> String 
     if !config.setup.is_empty() {
         s += &format!("step 'Setup'\n{}\n", config.setup);
     }
+    if compose_file(&wt.root).is_some() {
+        // Crashed, or crashing in a loop under a restart policy.
+        s += "ids=$(docker compose ps -aq)\n";
+        s += "stopped=$([ -z \"$ids\" ] || docker inspect --format '{{index .Config.Labels \"com.docker.compose.service\"}} {{.State.Status}} {{.State.ExitCode}} {{.RestartCount}}' $ids \\\n  | awk '($2 == \"exited\" && $3 != 0) || $2 == \"restarting\" || $4 > 0 { print $1 }' | sort -u)\n";
+        s += "for service in $stopped; do step \"$service stopped\"; docker compose logs --no-log-prefix --tail 20 \"$service\"; done\n";
+        s += "[ -z \"$stopped\" ]\n";
+    }
     // Called on its own: in an `if`, the shell would ignore its `set -e`.
-    s += ")\nsetup\nstatus=$?\nif [ $status = 0 ]; then\nstep 'Ready.'\n";
+    s += ")\nsetup\nstatus=$?\nif [ $status = 0 ]; then\n";
+    s += &format!("printf '\\n\\033[1;32m%s\\033[0m\\n' {}\n", quote(&format!("✓ Workspace {} is ready", wt.name)));
     for (var, port) in &wt.ports {
         s += &format!("echo {}\n", quote(&format!("  {var}: localhost:{port}")));
     }
-    s += "fi\nexit $status\n";
+    s += "else\n";
+    s += &format!("printf '\\n\\033[1;31m%s\\033[0m\\n' {}\n", quote(&format!("✗ The setup of workspace {} failed", wt.name)));
+    // Hides the cursor: the tab is done.
+    s += "fi\nprintf '\\033[?25l'\nexit $status\n";
     s
 }
+
+/// Copies container $1's volumes into $2's, with reflinks where the disk has them. A running $1
+/// is paused meanwhile: its files are then as after a crash, which a database recovers from.
+const COPY_VOLUMES: &str = r#"volumes='{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{.Destination}}{{"\n"}}{{end}}{{end}}'
+copy_volumes() (
+image=$(docker inspect -f '{{.Image}}' "$1")
+targets=$(docker inspect -f "$volumes" "$2")
+if [ "$(docker inspect -f '{{.State.Running}}' "$1")" = true ]; then
+trap 'docker unpause "$1" >/dev/null' EXIT
+trap 'exit 1' INT TERM HUP
+docker pause "$1" >/dev/null
+fi
+docker inspect -f "$volumes" "$1" | while read -r name dest; do
+[ -n "$name" ] || continue
+target=$(printf '%s\n' "$targets" | awk -v d="$dest" '$2 == d { print $1 }')
+[ -n "$target" ] || { echo "  ! the workspace's database has no volume at $dest"; exit 1; }
+docker run --rm --user 0 --entrypoint sh -v "$name:/from" -v "$target:/to" "$image" \
+  -c 'rm -rf /to/* /to/.[!.]* && { cp -a --reflink=auto /from/. /to/ 2>/dev/null || cp -a /from/. /to/; }'
+echo "  $dest"
+done
+)
+"#;
 
 /// Only in Pulpo's scripts, not its terminals, where tools would think they run in Conductor.
 fn conductor_exports(wt: &Worktree) -> String {
@@ -1181,6 +1225,93 @@ mod tests {
         assert!(root.is_dir());
         run("true");
         assert!(!root.exists());
+    }
+
+    /// Needs Docker: `make docker`.
+    #[test]
+    #[ignore]
+    fn sets_up_any_compose_project_on_its_own() {
+        let t = Scratch::new("docker");
+        let repo = t.join("shop");
+        fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q"]);
+        let compose = |extra: &str| format!(r#"services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: pw
+    healthcheck:
+      test: pg_isready -U postgres
+      interval: 1s
+      retries: 30
+    ports:
+      - ${{PG_PORT:-15432}}:5432
+  web:
+    build: .
+    ports:
+      - "${{WEB_PORT:-18080}}:8000"
+    volumes:
+      - .:/srv
+    depends_on:
+      db:
+        condition: service_healthy
+  init:
+    image: alpine:3.20
+    command: "true"
+{extra}"#);
+        fs::write(repo.join("compose.yaml"), compose("")).unwrap();
+        fs::write(repo.join("Dockerfile"), "FROM alpine:3.20\nCOPY version /version\nCMD [\"sleep\", \"1d\"]\n").unwrap();
+        fs::write(repo.join("version"), "old").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-q", "-m", "1"]);
+        let sh = |dir: &Path, script: &str, env: Vec<(String, String)>| {
+            // Not this terminal's project, when it runs in a workspace.
+            let mut command = Command::new("sh");
+            command.args(["-c", script]).current_dir(dir).env_remove("COMPOSE_PROJECT_NAME").env_remove("COMPOSE_FILE");
+            let out = command.envs(env).output().unwrap();
+            let text = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+            (out.status.success(), text)
+        };
+        // Left by a run that failed: its project names are fixed.
+        for project in ["shop", "shop-a", "shop-b"] {
+            sh(&repo, &format!("docker compose -p {project} down -v --remove-orphans"), vec![]);
+        }
+        let (ok, out) = sh(&repo, "docker compose up -d --build --wait db web && docker compose exec -T db psql -U postgres -c 'create table kept (x int)'", vec![]);
+        assert!(ok, "{out}");
+        fs::write(repo.join("version"), "new").unwrap();
+        run_git(&repo, &["commit", "-qam", "2"]);
+
+        let run = |name: &str| {
+            let (config, warnings) = config(&repo, &repo).unwrap();
+            let (wt, notes) = create(&repo, name, None, &config).unwrap();
+            let script = setup_script(&wt, &config, &notes);
+            let (ok, out) = sh(&wt.root, &script, env(&wt));
+            assert!(warnings.is_empty(), "{warnings:?}");
+            (wt, config, ok, out)
+        };
+        let (a, ca, ok, out) = run("a");
+        assert!(ok, "{out}");
+        assert!(out.contains("  /var/lib/postgresql/data\n") && out.contains("✓ Workspace a is ready"), "{out}");
+        let (_, v) = sh(&a.root, "docker compose exec -T web cat /version", env(&a));
+        assert_eq!(v.trim(), "new");
+        let (_, tables) = sh(&a.root, "docker compose exec -T db psql -U postgres -tc '\\dt'", env(&a));
+        assert!(tables.contains("kept"), "{tables}");
+
+        fs::write(repo.join("compose.yaml"), compose("  worker:\n    image: alpine:3.20\n    command: sh -c 'echo boom; exit 3'\n    restart: on-failure\n")).unwrap();
+        run_git(&repo, &["commit", "-qam", "3"]);
+        // Main's database stopped: copied all the same.
+        sh(&repo, "docker compose stop db", vec![]);
+        let (b, cb, ok, out) = run("b");
+        assert!(!ok, "{out}");
+        assert!(out.contains("worker stopped") && out.contains("boom") && out.contains("✗ The setup of workspace b failed"), "{out}");
+        let (_, tables) = sh(&b.root, "docker compose exec -T db psql -U postgres -tc '\\dt'", env(&b));
+        assert!(tables.contains("kept"), "{tables}");
+
+        for (wt, c) in [(a, ca), (b, cb)] {
+            let (ok, out) = sh(&repo, &teardown_script(&wt, &c, Path::new("/usr/bin/true")), vec![]);
+            assert!(ok, "{out}");
+        }
+        sh(&repo, "docker compose down -v", vec![]);
     }
 
     fn run_git(dir: &Path, args: &[&str]) -> String {

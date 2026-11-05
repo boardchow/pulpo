@@ -35,6 +35,8 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const OTHERS_STATUS: Duration = Duration::from_secs(3);
 /// How long a terminal just switched to may wait for its snapshot before it's drawn empty.
 const SNAPSHOT: Duration = Duration::from_millis(100);
+/// A resumed agent reprints its conversation meanwhile: that isn't news.
+const RESUMING: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
@@ -155,7 +157,8 @@ pub struct App {
     pub keymap: Keymap,
     pub areas: Areas,
     pub setting_up: HashMap<PathBuf, u32>,
-    pub setup_failed: HashMap<PathBuf, PathBuf>,
+    /// Whether each worked, until you go there.
+    setup_ended: HashMap<PathBuf, bool>,
     copying: HashSet<(PathBuf, String)>,
     removing: HashSet<PathBuf>,
     gone: HashSet<PathBuf>,
@@ -163,7 +166,9 @@ pub struct App {
     last_workspace: HashMap<PathBuf, PathBuf>,
     saved: Layout,
     ready: bool,
-    reopening: HashMap<u64, String>,
+    /// The tag each reopened terminal had, and whether it was waiting for you.
+    reopening: HashMap<u64, (String, bool)>,
+    resumed: HashMap<usize, Instant>,
     link: Link,
     /// Terminals asked for and not attached yet: whether to focus them, and where.
     spawning: HashMap<u64, (bool, PathBuf)>,
@@ -248,7 +253,7 @@ impl App {
             keymap,
             areas: Areas::default(),
             setting_up: HashMap::new(),
-            setup_failed: HashMap::new(),
+            setup_ended: HashMap::new(),
             copying: HashSet::new(),
             removing: HashSet::new(),
             gone: HashSet::new(),
@@ -257,6 +262,7 @@ impl App {
             saved: layout.clone(),
             ready: false,
             reopening: HashMap::new(),
+            resumed: HashMap::new(),
             link,
             spawning: HashMap::new(),
             kept: HashMap::new(),
@@ -323,6 +329,12 @@ impl App {
                 self.workspaces.push(reuse(s.root.clone(), &repo));
                 self.worktrees.push(s.clone());
             }
+            let making: Vec<PathBuf> = self.copying.iter().filter(|(r, _)| *r == repo).map(|(r, name)| worktree::root_of(r, name)).collect();
+            for root in making {
+                if !self.workspaces.iter().any(|w| w.root == root) {
+                    self.workspaces.push(reuse(root, &repo));
+                }
+            }
         }
         // All marked before any goes: each removal lists them again.
         self.gone.extend(gone.iter().map(|s| s.root.clone()));
@@ -357,10 +369,13 @@ impl App {
         for path in self.watched.difference(&wanted) {
             let _ = self.watcher.unwatch(path);
         }
-        for path in wanted.difference(&self.watched) {
-            let _ = self.watcher.watch(path, RecursiveMode::Recursive);
+        self.watched.retain(|path| wanted.contains(path));
+        // Only once there: a workspace is listed before its folder is made.
+        for path in wanted {
+            if !self.watched.contains(&path) && self.watcher.watch(&path, RecursiveMode::Recursive).is_ok() {
+                self.watched.insert(path);
+            }
         }
-        self.watched = wanted;
     }
 
     fn set_current(&mut self, i: usize) -> bool {
@@ -391,11 +406,16 @@ impl App {
             self.changes = Some(Changes::new(&self.workspaces[i].root, base));
             self.reload_changes();
             self.restore_term();
+            if let Some(ok) = self.setup_ended.remove(&self.workspaces[i].root) {
+                if let Some(id) = self.workspace_terms().into_iter().map(|t| &self.terms[t]).find(|t| is_setup_tab(t)).map(|t| t.id) {
+                    self.select_term(id);
+                }
+                if !ok {
+                    self.message = Some("this workspace's setup failed: its setup tab shows why".into());
+                }
+            }
             self.keep_a_terminal();
             self.preview();
-            if let Some(log) = self.setup_failed.get(&self.workspaces[i].root) {
-                self.message = Some(format!("this workspace's setup stopped: see {}", log.display()));
-            }
         }
         let ws = &self.workspaces[i];
         self.last_workspace.insert(ws.repo.clone(), ws.root.clone());
@@ -515,7 +535,8 @@ impl App {
     }
 
     fn read_status(&mut self, i: usize) {
-        if !self.workspaces[i].begin_status() {
+        // Half checked out, everything would show as changed.
+        if self.making(&self.workspaces[i].root) || !self.workspaces[i].begin_status() {
             return;
         }
         let (root, tx) = (self.workspaces[i].root.clone(), self.tx.clone());
@@ -546,6 +567,9 @@ impl App {
     }
 
     fn reload_changes(&mut self) {
+        if self.making(&self.ws().root) {
+            return;
+        }
         let Some(changes) = &mut self.changes else { return };
         let (request, tx) = (changes.request(), self.tx.clone());
         std::thread::spawn(move || {
@@ -637,7 +661,7 @@ impl App {
             let args = layout::reopen(was, &shell());
             agents += usize::from(!args.is_empty());
             let token = self.spawn_in(was.cwd.clone(), &shell(), &args, false);
-            self.reopening.insert(token, was.tag.clone());
+            self.reopening.insert(token, (was.tag.clone(), was.unread));
             terminals += 1;
         }
         if terminals > 0 {
@@ -650,7 +674,12 @@ impl App {
         let open = self
             .terms
             .iter()
-            .map(|t| layout::Open { cwd: t.info.cwd.clone(), tag: t.info.tag.clone(), claude: self.agents.session_for_tab(&t.info.tag).map(String::from) })
+            .map(|t| layout::Open {
+                cwd: t.info.cwd.clone(),
+                tag: t.info.tag.clone(),
+                claude: self.agents.session_for_tab(&t.info.tag).map(String::from),
+                unread: t.unread(),
+            })
             .collect();
         Layout {
             current: Some(self.ws().root.clone()),
@@ -667,11 +696,17 @@ impl App {
                 if self.terms.iter().any(|t| t.id == id) {
                     return;
                 }
+                // What its agent last said was known before: only what you hadn't seen waits.
+                let reported = self.agents.for_tab(&info.tag).map_or(State::Idle, |a| a.state);
+                let unread = self.saved.open.iter().any(|o| o.tag == info.tag && o.unread);
                 self.terms.push(Term::new(info, (rows, cols), self.link.clone()));
                 let i = self.terms.len() - 1;
+                (self.terms[i].reported, self.terms[i].hook_unread) = (reported, unread);
                 self.terms[i].resize(self.term_size.0, self.term_size.1);
                 let wt = self.workspace_of(&self.terms[i]);
-                if let Some(old) = token.and_then(|t| self.reopening.remove(&t)) {
+                if let Some((old, unread)) = token.and_then(|t| self.reopening.remove(&t)) {
+                    self.terms[i].hook_unread = unread;
+                    self.resumed.insert(id, Instant::now());
                     let new = self.terms[i].info.tag.clone();
                     for tag in self.last_term.values_mut().filter(|tag| **tag == old) {
                         *tag = new.clone();
@@ -715,7 +750,11 @@ impl App {
                 self.keep_a_terminal();
                 self.restore_term();
             }
-            ToClient::Info { info } => {
+            ToClient::Info { mut info } => {
+                if info.unread && self.resumed.get(&(info.id as usize)).is_some_and(|at| at.elapsed() < RESUMING) {
+                    info.unread = false;
+                    self.link.send(&ToServer::Seen { id: info.id });
+                }
                 if let Some(term) = self.terms.iter_mut().find(|t| t.id == info.id as usize) {
                     term.set_info(info);
                 }
@@ -831,6 +870,10 @@ impl App {
     }
 
     pub fn term_state(&self, term: &Term) -> State {
+        // Its pauses aren't news.
+        if is_setup_tab(term) {
+            return State::Idle;
+        }
         match term.status().map(|(status, _)| status) {
             Some(Status::Working) => State::Running,
             Some(Status::Blocked) => State::Waiting,
@@ -888,7 +931,7 @@ impl App {
     }
 
     pub fn animating(&self) -> bool {
-        !self.setting_up.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
+        !self.setting_up.is_empty() || !self.copying.is_empty() || !self.spawning.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
     }
 
     fn workspace_of(&self, term: &Term) -> Option<usize> {
@@ -902,8 +945,23 @@ impl App {
 
     pub fn workspace_state(&self, i: usize) -> Option<State> {
         let root = &self.workspaces[i].root;
+        if self.making(root) || self.setting_up.contains_key(root) {
+            return Some(State::Running);
+        }
+        if let Some(&ok) = self.setup_ended.get(root) {
+            return Some(if ok { State::Ready } else { State::Failed });
+        }
         let states = self.terms.iter().filter(|t| &t.info.cwd == root).map(|t| self.term_state(t));
         states.max_by_key(|state| state.urgency())
+    }
+
+    pub fn making(&self, root: &Path) -> bool {
+        self.copying.iter().any(|(repo, name)| worktree::root_of(repo, name) == root)
+    }
+
+    /// Its folder or a terminal still on the way.
+    pub fn opening(&self, root: &Path) -> bool {
+        self.making(root) || self.spawning.values().any(|(_, cwd)| cwd == root)
     }
 
     pub fn term(&self) -> Option<&Term> {
@@ -963,6 +1021,13 @@ impl App {
     }
 
     fn next_waiting(&mut self) {
+        let ended = (0..self.workspaces.len()).find(|&i| i != self.current && self.setup_ended.contains_key(&self.workspaces[i].root));
+        if let Some(i) = ended {
+            if self.set_current(i) {
+                self.set_focus(Focus::Terminal);
+            }
+            return;
+        }
         let mut waiting: Vec<(bool, u64, usize)> = self
             .terms
             .iter()
@@ -2133,13 +2198,15 @@ impl App {
 
     fn create_workspace(&mut self, name: &str, branch: Option<&str>) {
         let (repo, name, branch, tx) = (self.ws().repo.clone(), name.to_string(), branch.map(str::to_string), self.tx.clone());
-        let place = self.place(&repo).unwrap_or_default();
         // Asked twice: the first copy is still being made.
         if !self.copying.insert((repo.clone(), name.clone())) {
             self.message = Some(format!("workspace {name} is being made already"));
             return;
         }
-        self.message = Some(format!("making workspace {name} of {place}…"));
+        self.load_workspaces();
+        if let Some(i) = self.workspaces.iter().position(|w| w.root == worktree::root_of(&repo, &name)) {
+            self.set_current(i);
+        }
         std::thread::spawn(move || {
             let made = worktree::config(&repo, &repo).and_then(|(config, _)| worktree::create(&repo, &name, branch.as_deref(), &config));
             let made = made.map(|(s, notes)| (s.root, notes)).map_err(|e| format!("could not make the workspace: {e:#}"));
@@ -2153,14 +2220,25 @@ impl App {
             Ok(made) => made,
             Err(e) => {
                 self.message = Some(e);
+                self.load_workspaces();
                 return;
             }
         };
+        // Read again: listed before its folder was there.
+        if let Some(w) = self.workspaces.iter_mut().find(|w| w.root == root) {
+            *w = Workspace::new(root.clone(), w.repo.clone());
+        }
         self.load_workspaces();
         let Some(wt) = self.worktrees.iter().find(|s| s.root == root).cloned() else { return };
-        // Asked for first, so it is the workspace's terminal rather than one more.
-        self.spawn_in(root.clone(), &shell(), &[], true);
+        // Emptied: not an older setup's. Asked for first, so it is the workspace's terminal rather than one more.
+        let log = setup_log(&wt);
+        let _ = std::fs::write(&log, "");
+        self.spawn_in(root.clone(), &setup_viewer().to_string_lossy(), &[log.to_string_lossy().into_owned()], true);
         if let Some(i) = self.workspaces.iter().position(|w| w.root == root) {
+            // Shown already, without its folder: shown again, with it.
+            if i == self.current {
+                self.current = usize::MAX;
+            }
             self.set_current(i);
         }
         let config = match worktree::config(&wt.repo, &root) {
@@ -2169,7 +2247,9 @@ impl App {
                 config
             }
             Err(e) => {
-                self.message = Some(format!("workspace {}: could not read its settings: {e:#}", wt.name));
+                let error = format!("workspace {}: could not read its settings: {e:#}", wt.name);
+                let _ = std::fs::write(&log, format!("{error}\n"));
+                self.message = Some(error);
                 return;
             }
         };
@@ -2209,7 +2289,7 @@ impl App {
     fn set_up(&mut self, wt: &worktree::Worktree, config: worktree::Config, notes: Vec<String>) {
         let root = wt.root.clone();
         let script = worktree::setup_script(wt, &config, &notes);
-        let log = logs().join(format!("setup-{}.log", wt.project));
+        let log = setup_log(wt);
         match run_in_background(&script, &root, wt, &log) {
             Ok(mut child) => {
                 self.setting_up.insert(root.clone(), child.id());
@@ -2218,7 +2298,7 @@ impl App {
                     let ok = child.wait().is_ok_and(|status| status.success());
                     let _ = tx.send(Msg::SetUp(root, log, ok));
                 });
-                self.message = Some(format!("workspace {} is yours; setting it up in the background", wt.name));
+                self.message = Some(format!("workspace {} is yours; its setup tab shows the setup", wt.name));
             }
             Err(e) => self.message = Some(format!("could not set up workspace {}: {e}", wt.name)),
         }
@@ -2227,10 +2307,20 @@ impl App {
     pub fn on_set_up(&mut self, root: PathBuf, log: PathBuf, ok: bool) {
         self.setting_up.remove(&root);
         let name = root.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        self.message = Some(if ok { format!("workspace {name} is set up") } else { format!("the setup of workspace {name} stopped: see {}", log.display()) });
-        if !ok {
-            self.setup_failed.insert(root, log);
+        self.message = Some(if ok {
+            format!("workspace {name} is ready")
+        } else {
+            format!("the setup of workspace {name} failed: its setup tab and {} show why", log.display())
+        });
+        if !root.is_dir() || self.removing.contains(&root) {
+            return;
         }
+        if self.ws().root != root {
+            self.setup_ended.insert(root.clone(), ok);
+            let place = self.place(&root).unwrap_or(name);
+            notify(&if ok { format!("{place} is ready") } else { format!("the setup of {place} failed") });
+        }
+        self.spawn_in(root, &shell(), &[], false);
     }
 
     fn remove_workspace(&mut self, root: &Path) {
@@ -2293,6 +2383,23 @@ fn logs() -> PathBuf {
     let dir = crate::agents::state_dir().join("logs");
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+fn is_setup_tab(term: &Term) -> bool {
+    term.info.name == "setup"
+}
+
+fn setup_log(wt: &worktree::Worktree) -> PathBuf {
+    logs().join(format!("setup-{}.log", wt.project))
+}
+
+/// A program named `setup`, so its tab is.
+fn setup_viewer() -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = logs().join("setup");
+    let _ = std::fs::write(&path, "#!/bin/sh\nexec tail -n +1 -f \"$1\"\n");
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+    path
 }
 
 /// In its own process group, so it outlives Pulpo.
