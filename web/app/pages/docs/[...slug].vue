@@ -1,5 +1,5 @@
 <script setup>
-const SECTIONS = ["Get started", "Using Pulpo", "Reference"];
+const SECTIONS = ["Get started", "Guides", "Concepts", "Reference"];
 const REPO = "https://github.com/boardchow/pulpo";
 
 const route = useRoute();
@@ -66,6 +66,7 @@ onBeforeUnmount(() => removeEventListener("scroll", onScroll));
       </nav>
 
       <main class="doc">
+        <div v-if="page.banner" class="careful banner">{{ page.banner }}</div>
         <p class="eyebrow">{{ page.section }}</p>
         <h1>{{ page.title }}</h1>
         <p class="lead">{{ page.description }}</p>
