@@ -1,29 +1,35 @@
 ---
 title: Quick start
-description: From the first run to reviewing what an agent did.
+description: "In five minutes, you'll have two Claude Code agents working on separate branches, and you'll review what one of them changed."
 section: Get started
 order: 3
 ---
 
+You need Pulpo [installed](/docs/installation), Claude Code, and a git repository with at least one commit.
+
 ::steps
-1. **Open Pulpo in a repository.**
+1. **Open Pulpo in your repository.** Replace `~/code/my-app` with the path to the repository:
 
    ```sh
    cd ~/code/my-app
    pulpo
    ```
 
-   A shell opens in the middle.
+   Pulpo opens in three columns. The repository shows under Projects on the left, a shell runs in the middle, and the repository's files and changes are on the right. The repository is now a [project](/docs/projects-and-workspaces).
 
-2. **Start an agent.** Type `claude` and give it a task.
+2. **Try the prefix.** Every Pulpo action is :k[⌘p], released, then one key. It works even while a program runs in the terminal. Press :k[⌘p], release it, then press :k[?]. The list of every key opens; press any key to close it. To learn more, see [the prefix key](/docs/prefix-key).
 
-3. **Learn the prefix.** Press :k[⌘p], release, then a key. :kp[?] lists every key.
+3. **Create a workspace.** A workspace is a copy of your project on its own branch, so an agent's edits stay out of everything else. Press :kp[w] to go to Workspaces, then :kp[n]. Type `add-tests` and press :k[⏎]. `add-tests` shows in Workspaces with the number 1, and a shell opens in it, on the branch `<you>/add-tests` (shown bottom right), where `<you>` is your git user name in lowercase. If Pulpo asks whether to run the repository's setup script, press :k[y] to run it or :k[n] to skip it.
 
-4. **Start a second task in a new workspace.** :kp[w], then :kp[n], then a name. It's a worktree on its own branch, and a shell opens in it. Start `claude` there too.
+4. **Start an agent.** Type `claude`, press :k[⏎], and give it a task.
 
-5. **See who needs you.** A ◆ marks the workspace waiting for you. :kp[a] goes to it.
+5. **Start a second agent.** Repeat steps 3 and 4 with the name `update-readme`. Two agents now work on two branches, each in its own folder.
 
-6. **Review the work.** :kp[c] shows every file the workspace changed. :k[⏎] opens one, :k[esc] goes back.
+6. **Switch between them.** Press :kp[1] for the first workspace and :kp[2] for the second. A workspace moves up the list when its agent starts working or waits for you, so the numbers can change. Check the number next to its name.
 
-7. **Quit.** :kp[q] quits and leaves the agents working. Run `pulpo` to come back.
+7. **Answer the agent that needs you.** When an agent finishes or asks something, its workspace shows ◆ and Ghostty shows a notification. Press :kp[a] to go to it.
+
+8. **Review what it changed.** Press :kp[c]. Changes lists every file the agent changed and hasn't committed. Move with :k[↑] and :k[↓], then press :k[⏎] to open a file full screen, with its changes in place. Press :k[esc] to step back: to the list, to the three columns, then to the terminal.
+
+9. **Quit and come back.** Press :kp[q]. Pulpo closes, and the agents keep working. Run `pulpo` again: they're where you left them.
 ::

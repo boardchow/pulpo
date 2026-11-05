@@ -1,37 +1,65 @@
 ---
-title: Docker and ports
-description: Each workspace gets its own ports and, with a Compose file, its own containers and database.
-section: Using Pulpo
-order: 7
+title: Run your app in each workspace
+description: "Run your app in several workspaces at once, each on its own ports and, with Docker Compose, its own containers and database."
+section: Guides
+order: 8
 ---
 
-## Environment
+## Use the workspace's ports
 
-Every terminal of a workspace you created has:
+Pulpo keeps ten free ports for each workspace, from 20000 up. The first one is in `PULPO_PORT`. Without a Compose file, `PORT` has it too, which many dev servers read. To start a server on it:
+
+```sh
+python3 -m http.server "$PULPO_PORT"
+```
+
+Every terminal of a workspace Pulpo made has these variables:
 
 | Variable | Value |
 | --- | --- |
-| `PULPO_PORT` | The first of ten ports kept for the workspace, from 20000 |
-| `PORT` | `PULPO_PORT`, without a Compose file |
+| `PULPO_PORT` | The first of the workspace's ten ports |
+| `PORT` | The same port, when the project has no Compose file |
+| Each port variable of the Compose file | A port of its own, right after the ten |
 | `COMPOSE_PROJECT_NAME` | `<project>-<workspace>` |
+| `COMPOSE_FILE` | The Compose files, with the one Pulpo adds for git (only when it adds one) |
 | `PULPO_WORKSPACE_NAME` | The workspace's name |
-| `PULPO_ROOT_PATH`, `PULPO_WORKSPACE_PATH` | Where the project and the workspace are |
+| `PULPO_ROOT_PATH` | The project's folder |
+| `PULPO_WORKSPACE_PATH` | The workspace's folder |
 
-## Docker
+## Use Docker Compose
 
-Read host ports from variables so workspaces don't collide:
+Read host ports from variables, with the project's own port as the default:
 
 ```yaml
 services:
   app:
+    build: .
     ports:
       - ${APP_PORT:-8080}:8080
 ```
 
-When a workspace is created, Pulpo reuses the images the project built, copies the project's MySQL or Postgres database, runs `docker compose up -d`, then the setup script.
+Pulpo finds each variable in a `ports` entry and gives each workspace its own value. When you create a workspace, its setup then:
 
-Containers that mount the workspace's folder also get the project's `.git`, read only, so git works inside them.
+1. Reuses the images the project built, for services with `build` and no `image`.
+2. Copies the project's database, if a service runs a MySQL, MariaDB, Postgres or PostGIS image and the project's container is running. Otherwise the workspace starts from a fresh database.
+3. Runs `docker compose up -d`.
 
-The setup log lists what can't be isolated: fixed host ports, `container_name`, named volumes.
+Each workspace is its own Compose project, so containers, networks and volumes never collide. Containers that mount the workspace's folder also get the project's `.git`, read only, so git works inside them.
 
-To change ports, images, the database or the scripts, see [Configuration](/docs/configuration#workspaces).
+The setup log ends with each port, like `APP_PORT: localhost:20010`.
+
+## Fix what can't be isolated
+
+The setup log warns about what two workspaces would share:
+
+| Warning | Fix |
+| --- | --- |
+| A fixed host port, like `3000:3000` | Read it from a variable, like `${WEB_PORT:-3000}:3000` |
+| A fixed `container_name` | Remove it |
+| A volume with a fixed `name` | Remove the `name` |
+
+## Change what Pulpo guessed
+
+Pulpo guesses the ports, images and database from the Compose file. To change them, edit `~/.config/pulpo/repos/<repo>.toml`, where `<repo>` is the repository's folder name. See [Configuration](/docs/configuration).
+
+Deleting a workspace removes its containers, its volumes and its images.
