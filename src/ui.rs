@@ -495,9 +495,22 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::from("  ? keybinds").fg(theme::muted()),
         ])
     } else if let Some(prompt) = &app.prompt {
+        let project = app.new_in.file_name().unwrap_or_default().to_string_lossy().into_owned();
         match &prompt.ask {
-            Ask::Workspace(branch) => workspace_input(&prompt.text, branch, false),
-            Ask::Branch(name) => workspace_input(name, &prompt.text, true),
+            Ask::Project(at) => {
+                let mut spans = vec![
+                    Span::from(" new workspace in ").fg(theme::on_accent()).bg(theme::accent()).bold(),
+                    Span::from(" › ").fg(theme::blue()).bold(),
+                ];
+                for (n, i) in app.projects().into_iter().enumerate() {
+                    let name = Span::from(format!(" {} ", app.workspaces[i].name));
+                    spans.push(if n == *at { name.fg(theme::fg()).bg(theme::hover()).bold() } else { name.fg(theme::muted()) });
+                }
+                spans.push(Span::from("   ↑↓ project · ⏎ next · esc cancel").fg(theme::muted()));
+                Line::from(spans)
+            }
+            Ask::Workspace(branch) => workspace_input(&project, &prompt.text, branch, false),
+            Ask::Branch(name) => workspace_input(&project, name, &prompt.text, true),
             Ask::File(dir) => {
                 let dir = dir.strip_prefix(&app.ws().root).unwrap_or(dir).display().to_string();
                 let at = if dir.is_empty() { String::new() } else { format!("in {dir}/ · ") };
@@ -532,7 +545,7 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn workspace_input(name: &str, branch: &str, on_branch: bool) -> Line<'static> {
+fn workspace_input(project: &str, name: &str, branch: &str, on_branch: bool) -> Line<'static> {
     let cursor = |here: bool| Span::from(if here { "█" } else { "" }).fg(theme::blue());
     let branch = if branch.is_empty() && !on_branch {
         Span::from("from the name").fg(theme::muted())
@@ -540,7 +553,7 @@ fn workspace_input(name: &str, branch: &str, on_branch: bool) -> Line<'static> {
         Span::from(branch.to_string())
     };
     Line::from(vec![
-        Span::from(" new workspace ").fg(theme::on_accent()).bg(theme::accent()).bold(),
+        Span::from(format!(" new workspace in {project} ")).fg(theme::on_accent()).bg(theme::accent()).bold(),
         Span::from(" › ").fg(theme::blue()).bold(),
         Span::from(name.to_string()),
         cursor(!on_branch),
@@ -639,6 +652,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
             "Make and close",
             vec![
                 (prefixed("n"), "new project, workspace, terminal or file, by panel"),
+                (prefixed("N"), "new workspace, in any project"),
                 (prefixed("x"), "remove the project, delete the workspace, close the terminal"),
             ]
             .into_iter()
