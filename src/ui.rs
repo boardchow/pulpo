@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -191,13 +192,9 @@ fn draw_center(frame: &mut Frame, app: &mut App, area: Rect) {
     app.set_term_size(inner.height, inner.width);
     app.areas.term = inner;
     let Some(id) = app.active else {
-        if app.making(&app.ws().root) {
-            let (spinner, color) = state_icon(State::Running);
-            let lines = vec![
-                Line::from(vec![Span::from(format!("{spinner} ")).fg(color).bold(), Span::from(format!("Making workspace {}", app.ws().name)).bold()]),
-                Line::from("  its folder and branch first, then its setup").fg(theme::muted()),
-            ];
-            frame.render_widget(Paragraph::new(lines), inner);
+        if app.opening(&app.ws().root) {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            frame.render_widget(Line::from(format!("Warming up{}", ".".repeat(1 + (now.as_millis() / 400) as usize % 3))).fg(theme::muted()), inner);
             return;
         }
         let p = app.keymap.label();
@@ -361,12 +358,13 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn file_items(rows: &[Row], changed: &[(PathBuf, char)]) -> Vec<ListItem<'static>> {
-    rows.iter()
-        .map(|row| {
-            let kind = changed.iter().find(|(p, _)| if row.is_dir { p.starts_with(&row.path) } else { *p == row.path }).map(|(_, k)| *k);
-            tree_item(row, kind)
-        })
-        .collect()
+    let mut kinds: HashMap<&Path, char> = HashMap::new();
+    for (path, kind) in changed {
+        for at in path.ancestors() {
+            kinds.entry(at).or_insert(*kind);
+        }
+    }
+    rows.iter().map(|row| tree_item(row, kinds.get(row.path.as_path()).copied())).collect()
 }
 
 fn tree_item(row: &Row, kind: Option<char>) -> ListItem<'static> {

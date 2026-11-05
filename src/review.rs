@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -30,6 +30,8 @@ pub struct Changes {
     /// Bumped by each read asked for, so an older one arriving late is dropped.
     generation: u64,
     pub files: Vec<File>,
+    /// Each changed file's status, and each folder's first: thousands of files are looked up per frame.
+    statuses: HashMap<PathBuf, char>,
     pub rows: Vec<Row>,
     folded: HashSet<PathBuf>,
     pub state: ListState,
@@ -58,6 +60,7 @@ impl Changes {
             loaded: false,
             generation: 0,
             files: Vec::new(),
+            statuses: HashMap::new(),
             rows: Vec::new(),
             folded: HashSet::new(),
             state: ListState::default().with_selected(Some(0)),
@@ -119,6 +122,12 @@ impl Changes {
         }
         let (was, scroll) = (self.diff.take().map(|(p, _)| p), self.scroll);
         (self.since, self.files, self.history) = (read.since, read.files, read.history);
+        self.statuses.clear();
+        for f in &self.files {
+            for at in self.root.join(&f.path).ancestors().take_while(|a| a.starts_with(&self.root)) {
+                self.statuses.entry(at.to_path_buf()).or_insert(f.status);
+            }
+        }
         self.layout(selected);
         if let Some((path, diff)) = read.diff {
             self.scroll = if was.as_ref() == Some(&path) { scroll } else { first_change(&diff, self.split) };
@@ -166,7 +175,7 @@ impl Changes {
     }
 
     pub fn status_of(&self, path: &Path) -> Option<char> {
-        self.files.iter().find(|f| self.root.join(&f.path).starts_with(path)).map(|f| f.status)
+        self.statuses.get(path).copied()
     }
 
     pub fn step(&mut self, delta: isize) {

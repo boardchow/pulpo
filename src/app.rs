@@ -364,10 +364,13 @@ impl App {
         for path in self.watched.difference(&wanted) {
             let _ = self.watcher.unwatch(path);
         }
-        for path in wanted.difference(&self.watched) {
-            let _ = self.watcher.watch(path, RecursiveMode::Recursive);
+        self.watched.retain(|path| wanted.contains(path));
+        // Only once there: a workspace is listed before its folder is made.
+        for path in wanted {
+            if !self.watched.contains(&path) && self.watcher.watch(&path, RecursiveMode::Recursive).is_ok() {
+                self.watched.insert(path);
+            }
         }
-        self.watched = wanted;
     }
 
     fn set_current(&mut self, i: usize) -> bool {
@@ -527,7 +530,8 @@ impl App {
     }
 
     fn read_status(&mut self, i: usize) {
-        if !self.workspaces[i].begin_status() {
+        // Half checked out, everything would show as changed.
+        if self.making(&self.workspaces[i].root) || !self.workspaces[i].begin_status() {
             return;
         }
         let (root, tx) = (self.workspaces[i].root.clone(), self.tx.clone());
@@ -558,6 +562,9 @@ impl App {
     }
 
     fn reload_changes(&mut self) {
+        if self.making(&self.ws().root) {
+            return;
+        }
         let Some(changes) = &mut self.changes else { return };
         let (request, tx) = (changes.request(), self.tx.clone());
         std::thread::spawn(move || {
@@ -904,7 +911,7 @@ impl App {
     }
 
     pub fn animating(&self) -> bool {
-        !self.setting_up.is_empty() || !self.copying.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
+        !self.setting_up.is_empty() || !self.copying.is_empty() || !self.spawning.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
     }
 
     fn workspace_of(&self, term: &Term) -> Option<usize> {
@@ -930,6 +937,11 @@ impl App {
 
     pub fn making(&self, root: &Path) -> bool {
         self.copying.iter().any(|(repo, name)| worktree::root_of(repo, name) == root)
+    }
+
+    /// Its folder or a terminal still on the way.
+    pub fn opening(&self, root: &Path) -> bool {
+        self.making(root) || self.spawning.values().any(|(_, cwd)| cwd == root)
     }
 
     pub fn term(&self) -> Option<&Term> {
