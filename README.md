@@ -4,9 +4,9 @@
 
 <h1 align="center">Pulpo</h1>
 
-<p align="center"><b>Many agents. One terminal.</b></p>
+<p align="center"><b>Stop checking every tab.</b></p>
 
-Pulpo runs several coding agents side by side on your Mac, each in its own copy of your repository.
+Run several coding agents, each on its own branch and ports. Pulpo marks the one waiting for you and takes you straight to it.
 
 ![Pulpo: projects and workspaces on the left, Claude Code working in a terminal on the right](assets/screenshot.png)
 
