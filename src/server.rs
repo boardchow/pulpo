@@ -19,7 +19,7 @@ use crate::proto::{self, Frame, Info, ToClient, ToServer};
 use crate::procs;
 use crate::pty::{self, Pty};
 use crate::status::Records;
-use crate::term::{self, Events, SCROLLBACK, nz};
+use crate::term::{self, Events};
 
 /// Bumped when `Resume` changes so that an older server can't read it.
 const RESUME: u32 = 1;
@@ -126,6 +126,7 @@ struct Client {
     id: u64,
     frames: SyncSender<Vec<u8>>,
     stream: UnixStream,
+    watching: Option<u32>,
 }
 
 struct Terminal {
@@ -171,7 +172,7 @@ impl Terminal {
 
     fn feed(&mut self, bytes: &[u8]) {
         let before = self.parser.callbacks().status.summary().map(|(status, _)| status);
-        self.parser.process(bytes);
+        term::feed(&mut self.parser, bytes);
         if self.last_input.elapsed() > ECHO {
             self.settle();
             if !self.active() {
@@ -206,7 +207,7 @@ impl Terminal {
     fn resize(&mut self, rows: u16, cols: u16) {
         self.last_input = Instant::now();
         self.pty.resize(rows, cols);
-        self.parser.set_size(nz(rows), nz(cols));
+        self.parser.set_size(term::nz(rows), term::nz(cols));
     }
 
     fn working(&self) -> bool {
@@ -317,8 +318,8 @@ fn resume(file: &Path) -> Result<()> {
     for t in saved.terminals {
         // Only this server's own readers may hold a terminal's end.
         pty::set_cloexec(t.master, true)?;
-        let mut parser = vt100::Parser::new_with_callbacks(nz(t.rows), nz(t.cols), SCROLLBACK, Events::with_status(t.status));
-        parser.process(t.screen.as_bytes());
+        let mut parser = term::parser(t.rows, t.cols, Events::with_status(t.status));
+        term::feed(&mut parser, t.screen.as_bytes());
         parser.callbacks_mut().replies.clear();
         let pty = unsafe { Pty::from_raw(t.master, t.pid) };
         server.readers.push(reader(t.id, &pty.master, server.wake.0.as_raw_fd(), server.events.clone())?);
@@ -494,7 +495,12 @@ impl Server {
             Event::Output(id, bytes) => {
                 if let Some(terminal) = self.terminal(id) {
                     terminal.feed(&bytes);
-                    self.broadcast(&proto::output(id, &bytes));
+                    let frame = proto::output(id, &bytes);
+                    for i in (0..self.clients.len()).rev() {
+                        if self.clients[i].watching == Some(id) {
+                            self.deliver(i, frame.clone());
+                        }
+                    }
                 }
             }
             Event::Eof(id) => {
@@ -549,6 +555,7 @@ impl Server {
                     self.broadcast(&proto::encode(&ToClient::Resized { id, rows, cols }));
                 }
             }
+            ToServer::Watch { id } => self.watch(client, id),
             ToServer::Seen { id } => {
                 if let Some(terminal) = self.terminal(id) {
                     terminal.unread = false;
@@ -605,7 +612,7 @@ impl Server {
             unread: false,
             pty,
             input,
-            parser: vt100::Parser::new_with_callbacks(nz(rows), nz(cols), SCROLLBACK, Events::default()),
+            parser: term::parser(rows, cols, Events::default()),
             last_activity: Instant::now(),
             working_since: None,
             last_input: Instant::now(),
@@ -674,7 +681,7 @@ impl Server {
                         pid: t.pty.pid,
                         rows,
                         cols,
-                        screen: String::from_utf8_lossy(&term::snapshot(t.parser.screen(), &t.title)).into_owned(),
+                        screen: String::from_utf8_lossy(&term::snapshot(&t.parser, &t.title)).into_owned(),
                         status: t.parser.callbacks().status.clone(),
                     }
                 })
@@ -717,10 +724,17 @@ impl Server {
         let info = terminal.info();
         terminal.sent = Some(info.clone());
         let (rows, cols) = terminal.size();
-        let snapshot = term::snapshot(terminal.parser.screen(), &terminal.title);
-        let id = terminal.id;
         self.send(client, &ToClient::Attach { info, rows, cols, token });
-        self.send_frame(client, proto::output(id, &snapshot));
+    }
+
+    fn watch(&mut self, client: u64, id: Option<u32>) {
+        let Some(c) = self.clients.iter_mut().find(|c| c.id == client) else { return };
+        c.watching = id;
+        let Some(terminal) = id.and_then(|id| self.terminals.iter().find(|t| t.id == id)) else { return };
+        let (rows, cols) = terminal.size();
+        let snapshot = proto::output(terminal.id, &term::snapshot(&terminal.parser, &terminal.title));
+        self.send(client, &ToClient::Snapshot { id: terminal.id, rows, cols });
+        self.send_frame(client, snapshot);
     }
 
     /// Waits on the process, not only for EOF: a background job can keep the terminal open after its shell exits.
@@ -780,7 +794,7 @@ impl Server {
             }
             let _ = tx.send(Event::Disconnected(id));
         });
-        self.clients.push(Client { id, frames, stream });
+        self.clients.push(Client { id, frames, stream, watching: None });
     }
 
     fn send(&mut self, client: u64, message: &ToClient) {

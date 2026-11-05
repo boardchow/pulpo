@@ -31,6 +31,10 @@ const MESSAGE_FOR: Duration = Duration::from_secs(5);
 const UNSAVED: &str = "unsaved changes in the editor: ⌘s saves them, esc twice throws them away";
 const PREFIX_FOR: Duration = Duration::from_secs(3);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// Another workspace only shows how many changes it has: its `git status` can wait this long.
+const OTHERS_STATUS: Duration = Duration::from_secs(3);
+/// How long a terminal just switched to may wait for its snapshot before it's drawn empty.
+const SNAPSHOT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
@@ -170,11 +174,17 @@ pub struct App {
     placed: HashMap<PathBuf, u8>,
     next_token: u64,
     upgrade_asked: bool,
+    /// The terminal the server sends output for: the one on screen.
+    watching: Option<usize>,
+    watched_at: Instant,
     reconnected: Option<usize>,
     last_reconnect: Option<Instant>,
     offline: bool,
     term_size: (u16, u16),
     fs_dirty: HashSet<PathBuf>,
+    /// Other workspaces changed since their last `git status`.
+    stale: HashSet<PathBuf>,
+    others_read: Instant,
     reload_list: bool,
     watcher: RecommendedWatcher,
     watched: HashSet<PathBuf>,
@@ -255,11 +265,15 @@ impl App {
             // Far above any terminal id, so the two never mix.
             next_token: 1 << 40,
             upgrade_asked: false,
+            watching: None,
+            watched_at: Instant::now(),
             reconnected: None,
             last_reconnect: None,
             offline: false,
             term_size: (24, 80),
             fs_dirty: HashSet::new(),
+            stale: HashSet::new(),
+            others_read: Instant::now(),
             reload_list: false,
             watcher,
             watched: HashSet::new(),
@@ -368,6 +382,7 @@ impl App {
             self.changes_expanded = false;
             self.selecting = None;
             self.workspaces[i].refresh();
+            self.stale.remove(&self.workspaces[i].root);
             if !self.workspaces[i].reading_status() {
                 self.read_status(i);
             }
@@ -459,7 +474,7 @@ impl App {
     }
 
     pub fn fs_pending(&self) -> bool {
-        !self.fs_dirty.is_empty() || self.reload_list
+        !self.fs_dirty.is_empty() || self.reload_list || (!self.stale.is_empty() && self.others_read.elapsed() >= OTHERS_STATUS)
     }
 
     pub fn flush_fs(&mut self) {
@@ -467,9 +482,18 @@ impl App {
             self.load_workspaces();
         }
         let dirty = std::mem::take(&mut self.fs_dirty);
-        for i in 0..self.workspaces.len() {
-            if dirty.contains(&self.workspaces[i].root) {
-                self.read_status(i);
+        let current = self.ws().root.clone();
+        self.stale.extend(dirty.iter().filter(|root| **root != current).cloned());
+        if dirty.contains(&current) {
+            self.read_status(self.current);
+        }
+        if !self.stale.is_empty() && self.others_read.elapsed() >= OTHERS_STATUS {
+            self.others_read = Instant::now();
+            let stale = std::mem::take(&mut self.stale);
+            for i in 0..self.workspaces.len() {
+                if stale.contains(&self.workspaces[i].root) {
+                    self.read_status(i);
+                }
             }
         }
         if dirty.contains(&self.ws().root) {
@@ -546,6 +570,14 @@ impl App {
 
     /// A commit is shown only full screen: leaving it brings the workspace's changes back.
     pub fn settle(&mut self) {
+        if self.watching != self.active {
+            if let Some(term) = self.watching.and_then(|id| self.terms.iter_mut().find(|t| t.id == id)) {
+                term.unmirror();
+            }
+            self.watching = self.active;
+            self.watched_at = Instant::now();
+            self.link.send(&ToServer::Watch { id: self.active.map(|id| id as u32) });
+        }
         if self.shelved.is_some() && !(self.focus == Focus::Changes && self.changes_expanded) {
             self.changes = self.shelved.take();
             if self.focus == Focus::Changes {
@@ -688,6 +720,13 @@ impl App {
                     term.set_info(info);
                 }
             }
+            ToClient::Snapshot { id, rows, cols } => {
+                if self.watching == Some(id as usize)
+                    && let Some(term) = self.terms.iter_mut().find(|t| t.id == id as usize)
+                {
+                    term.mirror(rows, cols);
+                }
+            }
             ToClient::Resized { id, rows, cols } => {
                 if let Some(term) = self.terms.iter_mut().find(|t| t.id == id as usize) {
                     term.set_size(rows, cols);
@@ -700,6 +739,12 @@ impl App {
 
     pub fn shows(&self, id: u32) -> bool {
         self.active == Some(id as usize)
+    }
+
+    /// How much longer to wait for the snapshot of the terminal on screen: drawing now would flash it empty.
+    pub fn loading(&self) -> Option<Duration> {
+        let waited = self.watched_at.elapsed();
+        (self.term().is_some_and(|term| !term.mirrored()) && waited < SNAPSHOT).then(|| SNAPSHOT - waited)
     }
 
     /// The title isn't shown, and programs change it all the time.
@@ -731,6 +776,7 @@ impl App {
         self.terms.clear();
         self.spawning.clear();
         self.active = None;
+        self.watching = None;
         self.selecting = None;
         if self.last_reconnect.is_some_and(|at| at.elapsed() < Duration::from_secs(2)) {
             self.offline = true;

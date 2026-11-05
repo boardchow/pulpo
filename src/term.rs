@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::Write;
 use std::num::NonZeroU16;
 use std::time::Instant;
@@ -22,6 +23,8 @@ pub struct Events {
     pub title: Option<String>,
     pub host: Vec<u8>,
     pub status: Records,
+    /// Lines scrolled off the screen, as text: vt100 keeps 32 bytes a character.
+    pub history: VecDeque<Box<str>>,
     /// Progress (OSC 9;4) stands in for a status until a real one arrives.
     reports_status: bool,
 }
@@ -89,6 +92,34 @@ impl vt100::Callbacks for Events {
             _ => {}
         }
     }
+
+    fn on_scroll(&mut self, row: vt100::capture::RowContents<'_>, alternate_screen: bool) {
+        if alternate_screen {
+            return;
+        }
+        let mut line = String::new();
+        let _ = row.write_formatted_basic(&mut line, &mut vt100::capture::BasicFormattedCaptureState::new());
+        if self.history.len() >= SCROLLBACK {
+            self.history.pop_front();
+        }
+        self.history.push_back(line.into());
+    }
+}
+
+/// A terminal that keeps its history in `Events`.
+pub fn parser(rows: u16, cols: u16, events: Events) -> vt100::Parser<Events> {
+    vt100::Parser::new_with_callbacks(nz(rows), nz(cols), 0, events)
+}
+
+/// vt100 only clears the history it keeps itself.
+pub fn feed(parser: &mut vt100::Parser<Events>, mut bytes: &[u8]) {
+    const CLEAR: &[u8] = b"\x1b[3J";
+    while let Some(at) = bytes.windows(CLEAR.len()).position(|w| w == CLEAR) {
+        parser.process(&bytes[..at + CLEAR.len()]);
+        parser.callbacks_mut().history.clear();
+        bytes = &bytes[at + CLEAR.len()..];
+    }
+    parser.process(bytes);
 }
 
 /// The mirror only draws: the server answers the program's queries.
@@ -107,7 +138,10 @@ pub struct Term {
     pub reported: State,
     pub notice: Option<String>,
     pub last_notice: Option<Instant>,
-    parser: vt100::Parser<Mirror>,
+    /// Only while it's watched, from its snapshot on.
+    parser: Option<vt100::Parser<Mirror>>,
+    /// The size of the snapshot that's the next output.
+    snapshot: Option<(u16, u16)>,
     link: Link,
     asked: (u16, u16),
 }
@@ -121,14 +155,39 @@ impl Term {
             reported: State::Idle,
             notice: None,
             last_notice: None,
-            parser: vt100::Parser::new_with_callbacks(nz(rows), nz(cols), SCROLLBACK, Mirror),
+            parser: None,
+            snapshot: None,
             link,
             asked: (rows, cols),
         }
     }
 
+    /// The output frame that follows is its snapshot.
+    pub fn mirror(&mut self, rows: u16, cols: u16) {
+        self.parser = None;
+        self.snapshot = Some((rows, cols));
+    }
+
+    pub fn unmirror(&mut self) {
+        self.parser = None;
+        self.snapshot = None;
+    }
+
+    pub fn mirrored(&self) -> bool {
+        self.parser.is_some()
+    }
+
+    fn screen(&self) -> Option<&vt100::Screen> {
+        self.parser.as_ref().map(vt100::Parser::screen)
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.parser.process(bytes);
+        if let Some((rows, cols)) = self.snapshot.take() {
+            self.parser = Some(vt100::Parser::new_with_callbacks(nz(rows), nz(cols), SCROLLBACK, Mirror));
+        }
+        if let Some(parser) = &mut self.parser {
+            parser.process(bytes);
+        }
     }
 
     pub fn set_info(&mut self, info: Info) {
@@ -143,7 +202,9 @@ impl Term {
     }
 
     pub fn set_size(&mut self, rows: u16, cols: u16) {
-        self.parser.set_size(nz(rows), nz(cols));
+        if let Some(parser) = &mut self.parser {
+            parser.set_size(nz(rows), nz(cols));
+        }
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -179,13 +240,13 @@ impl Term {
     }
 
     pub fn key(&mut self, key: KeyEvent) {
-        if let Some(bytes) = encode_key(key, self.parser.screen().application_cursor()) {
+        if let Some(bytes) = encode_key(key, self.screen().is_some_and(vt100::Screen::application_cursor)) {
             self.send(&bytes);
         }
     }
 
     pub fn paste(&mut self, text: &str) {
-        if self.parser.screen().bracketed_paste() {
+        if self.screen().is_some_and(vt100::Screen::bracketed_paste) {
             self.send(format!("\x1b[200~{text}\x1b[201~").as_bytes());
         } else {
             self.send(text.as_bytes());
@@ -193,20 +254,22 @@ impl Term {
     }
 
     fn send(&mut self, bytes: &[u8]) {
-        self.parser.screen_mut().set_scrollback(0);
+        if let Some(parser) = &mut self.parser {
+            parser.screen_mut().set_scrollback(0);
+        }
         self.link.input(self.info.id, bytes);
     }
 
     pub fn wants_mouse(&self) -> bool {
-        self.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+        self.screen().is_some_and(|screen| screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None)
     }
 
     pub fn alternate_screen(&self) -> bool {
-        self.parser.screen().alternate_screen()
+        self.screen().is_some_and(vt100::Screen::alternate_screen)
     }
 
     pub fn mouse(&mut self, kind: MouseEventKind, col: u16, row: u16, modifiers: KeyModifiers) -> bool {
-        let screen = self.parser.screen();
+        let Some(screen) = self.screen() else { return false };
         match encode_mouse(screen.mouse_protocol_mode(), screen.mouse_protocol_encoding(), kind, col, row, modifiers) {
             Some(bytes) => {
                 self.link.input(self.info.id, &bytes);
@@ -217,7 +280,7 @@ impl Term {
     }
 
     pub fn word_at(&self, row: u16, col: u16) -> String {
-        let screen = self.parser.screen();
+        let Some(screen) = self.screen() else { return String::new() };
         let line: Vec<char> = screen.rows(0, screen.size().1.get()).nth(row as usize).unwrap_or_default().chars().collect();
         let col = col as usize;
         if col >= line.len() || line[col].is_whitespace() {
@@ -231,17 +294,20 @@ impl Term {
 
     pub fn selection(&self, a: (u16, u16), b: (u16, u16)) -> String {
         let (start, end) = if a <= b { (a, b) } else { (b, a) };
-        let text = self.parser.screen().contents_between(start.0, start.1, end.0, end.1 + 1);
+        let Some(screen) = self.screen() else { return String::new() };
+        let text = screen.contents_between(start.0, start.1, end.0, end.1 + 1);
         text.lines().map(str::trim_end).collect::<Vec<_>>().join("\n")
     }
 
     pub fn scroll(&mut self, rows: isize) {
-        let screen = self.parser.screen_mut();
-        screen.set_scrollback(screen.scrollback().saturating_add_signed(rows));
+        if let Some(parser) = &mut self.parser {
+            let screen = parser.screen_mut();
+            screen.set_scrollback(screen.scrollback().saturating_add_signed(rows));
+        }
     }
 
     pub fn render(&self, area: Rect, buf: &mut Buffer) -> Option<(u16, u16)> {
-        let screen = self.parser.screen();
+        let screen = self.screen()?;
         for row in 0..area.height {
             for col in 0..area.width {
                 let Some(cell) = screen.cell(row, col) else { continue };
@@ -276,32 +342,23 @@ impl Term {
     }
 }
 
-/// vt100 can't read the screen behind an alternate one; that part and its history are left out.
-pub fn snapshot(screen: &vt100::Screen, title: &str) -> Vec<u8> {
-    let mut screen = screen.clone();
-    let (rows, cols) = (screen.size().0.get(), screen.size().1.get());
-    let mut out = String::new();
+/// vt100 can't read the screen behind an alternate one; that part is left out.
+pub fn snapshot(parser: &vt100::Parser<Events>, title: &str) -> Vec<u8> {
+    let screen = parser.screen();
+    let history = &parser.callbacks().history;
+    let mut out = String::with_capacity(history.iter().map(|line| line.len() + 8).sum::<usize>() + 4096);
+    if !history.is_empty() {
+        for line in history {
+            out.push_str("\x1b[m");
+            out.push_str(line);
+            out.push_str("\x1b[m\r\n");
+        }
+        // Scroll those lines off the screen into the history, so drawing
+        // the screen over them doesn't lose them.
+        out.push_str(&"\n".repeat(usize::from(screen.size().0.get()) - 1));
+    }
     if screen.alternate_screen() {
         out.push_str("\x1b[?1049h");
-    } else {
-        screen.set_scrollback(usize::MAX);
-        let mut back = screen.scrollback();
-        if back > 0 {
-            while back > 0 {
-                screen.set_scrollback(back);
-                let n = back.min(usize::from(rows));
-                for row in screen.rows_formatted(0, cols).take(n) {
-                    out.push_str("\x1b[m");
-                    out.push_str(&row);
-                    out.push_str("\x1b[m\r\n");
-                }
-                back -= n;
-            }
-            // Scroll those lines off the screen into the history, so drawing
-            // the screen over them doesn't lose them.
-            out.push_str(&"\n".repeat(usize::from(rows) - 1));
-        }
-        screen.set_scrollback(0);
     }
     out.push_str(&screen.state_formatted());
     if !title.is_empty() {
@@ -523,15 +580,16 @@ mod tests {
 
     #[test]
     fn snapshots_rebuild_the_same_terminal() {
-        let mut parser = vt100::Parser::new_with_callbacks(nz(10), nz(30), 100, Events::default());
+        let mut parser = parser(10, 30, Events::default());
         for i in 0..45 {
-            parser.process(format!("\x1b[3{}mline {i}\x1b[m\r\n", i % 8).as_bytes());
+            feed(&mut parser, format!("\x1b[3{}mline {i}\x1b[m\r\n", i % 8).as_bytes());
         }
-        parser.process(b"\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?1h$ half typed\x1b[4D");
+        feed(&mut parser, b"\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[?1h$ half typed\x1b[4D");
         let screen = parser.screen();
+        assert_eq!(parser.callbacks().history.len(), 36);
 
         let mut copy = vt100::Parser::new(nz(10), nz(30), 100);
-        copy.process(&snapshot(screen, "work"));
+        copy.process(&snapshot(&parser, "work"));
         let other = copy.screen();
         assert_eq!(other.contents(), screen.contents());
         assert_eq!(other.contents_formatted(), screen.contents_formatted());
@@ -539,19 +597,28 @@ mod tests {
         assert!(other.bracketed_paste() && other.application_cursor());
         assert_eq!(other.mouse_protocol_mode(), screen.mouse_protocol_mode());
         assert_eq!(other.mouse_protocol_encoding(), screen.mouse_protocol_encoding());
-        let history = |s: &vt100::Screen| {
-            let mut s = s.clone();
-            s.set_scrollback(usize::MAX);
-            (s.scrollback(), s.contents_formatted())
-        };
-        assert_eq!(history(other), history(screen));
-        assert_eq!(history(other).0, 36);
+        let mut back = other.clone();
+        back.set_scrollback(usize::MAX);
+        assert_eq!(back.scrollback(), 36);
+        assert_eq!(back.rows_formatted(0, 30).next().unwrap(), "\x1b[30mline 0");
+
+        // An upgraded server reads its history back from the snapshot.
+        let mut resumed = super::parser(10, 30, Events::default());
+        feed(&mut resumed, &snapshot(&parser, "work"));
+        assert_eq!(resumed.callbacks().history, parser.callbacks().history);
+        assert_eq!(resumed.screen().contents_formatted(), screen.contents_formatted());
 
         parser.process(b"\x1b[?1049h\x1b[2J\x1b[Hvim here");
         let mut copy = vt100::Parser::new(nz(10), nz(30), 100);
-        copy.process(&snapshot(parser.screen(), ""));
+        copy.process(&snapshot(&parser, ""));
         assert!(copy.screen().alternate_screen());
         assert_eq!(copy.screen().contents(), parser.screen().contents());
+        copy.process(b"\x1b[?1049l");
+        copy.screen_mut().set_scrollback(usize::MAX);
+        assert_eq!(copy.screen().scrollback(), 36, "the history outlives vim");
+
+        feed(&mut parser, b"\x1b[?1049l\x1b[H\x1b[2J\x1b[3Jafter");
+        assert!(parser.callbacks().history.is_empty());
     }
 
     #[test]

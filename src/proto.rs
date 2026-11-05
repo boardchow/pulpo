@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::status::Status;
 
 /// Bumped when a message changes in a way the other side would misread.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 const MAX_FRAME: usize = 64 << 20;
 
 const JSON: u8 = 0;
@@ -30,6 +30,8 @@ pub enum ToServer {
         env: Vec<(String, String)>,
     },
     Resize { id: u32, rows: u16, cols: u16 },
+    /// Only the terminal on screen gets its output sent.
+    Watch { id: Option<u32> },
     Seen { id: u32 },
     Close { id: u32 },
     Upgrade { exe: PathBuf },
@@ -39,8 +41,9 @@ pub enum ToServer {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToClient {
     Hello { protocol: u32, pid: u32, exe: PathBuf, built: u64 },
-    /// An output frame with its snapshot follows.
     Attach { info: Info, rows: u16, cols: u16, token: Option<u64> },
+    /// An output frame with the watched terminal's screen and history follows.
+    Snapshot { id: u32, rows: u16, cols: u16 },
     Ready,
     Info { info: Info },
     Resized { id: u32, rows: u16, cols: u16 },
