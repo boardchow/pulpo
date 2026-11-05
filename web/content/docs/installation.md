@@ -56,7 +56,11 @@ To check or remove the hooks, see the [CLI reference](/docs/cli).
 
 ## Update
 
-Run the install command again. The next time you open Pulpo, its server switches to the new build. Your terminals keep running.
+```sh
+pulpo update
+```
+
+It runs the install script again: it builds the latest Pulpo, updates Rust if it needs to, and refreshes the hooks. The next time you open Pulpo, its server switches to the new build. Your terminals keep running.
 
 ## Uninstall
 

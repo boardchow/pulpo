@@ -46,6 +46,7 @@ const USAGE: &str = "usage:
   pulpo hooks    print those hooks instead
   pulpo keytest  show what reaches Pulpo for each key (⌘p and ⌃b are the prefix)
   pulpo doctor   check that the prefix reaches Pulpo, and the hooks
+  pulpo update   build and install the latest Pulpo
   pulpo emit     record a hook event from stdin (called by the hooks)
   pulpo serve    run the server that keeps terminals running (Pulpo starts it)";
 
@@ -83,6 +84,7 @@ fn main() -> Result<()> {
         Some("hooks") => agents::hooks(&args[1..])?,
         Some("doctor") => doctor::doctor(&args[1..])?,
         Some("keytest") => doctor::keytest()?,
+        Some("update") => update()?,
         Some("-h" | "--help") => println!("{USAGE}"),
         arg => {
             let start = arg.map(PathBuf::from).unwrap_or(std::env::current_dir()?).canonicalize()?;
@@ -94,6 +96,15 @@ fn main() -> Result<()> {
             }
             run(launch, start)?;
         }
+    }
+    Ok(())
+}
+
+/// Runs the install script again, so an update gets its Rust and hook steps too.
+fn update() -> Result<()> {
+    let status = std::process::Command::new("sh").args(["-c", "set -o pipefail; curl -fsSL https://pulpo.sh/install | sh"]).status()?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
 }
