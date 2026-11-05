@@ -13,6 +13,7 @@ order: 16
 | `pulpo hooks status` | Show whether each hook is installed |
 | `pulpo hooks remove` | Remove the hooks, leaving yours |
 | `pulpo doctor` | Check the prefix and the hooks |
+| `pulpo update` | Build and install the latest Pulpo |
 | `pulpo keytest` | Show what Pulpo receives for each key you press |
 | `pulpo --help`, `pulpo -h` | Show the commands |
 
@@ -45,6 +46,10 @@ Checks:
 - That the hooks are installed.
 
 It ends with `All good.` when nothing is wrong. A line marked `✗` says what to fix.
+
+## pulpo update
+
+Runs the [install script](/docs/installation#install) again, so it builds the latest Pulpo into `~/.cargo/bin`, updates Rust if it's older than 1.88, and refreshes the hooks if Claude Code is installed. The next time you open Pulpo, its server switches to the new build. Your terminals keep running.
 
 ## pulpo keytest
 
