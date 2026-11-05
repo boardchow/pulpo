@@ -15,6 +15,12 @@ A [workspace](/docs/projects-and-workspaces) is a copy of your project in its ow
 
 The workspace shows in Workspaces, and a shell opens in it. Pulpo makes it in the current project, from origin's default branch, fetched first, on the branch `<you>/fix-login`. `<you>` is your git user name in lowercase, unless you [set a branch prefix](/docs/configuration).
 
+## Create a workspace in another project
+
+1. Press :kp[N] from any panel. The bottom line lists your projects, with the current one selected.
+2. Press :k[↑] or :k[↓] to select a project, then :k[⏎]. The bottom line asks for the workspace's name.
+3. Type the name and press :k[⏎].
+
 ## Name the branch yourself
 
 To use a branch name of your own, for example a ticket's, press :k[tab] after typing the workspace's name. Type or paste the branch, then press :k[⏎]. The workspace's name stays the folder's name.

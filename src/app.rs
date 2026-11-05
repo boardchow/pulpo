@@ -49,6 +49,8 @@ pub enum Focus {
 }
 
 pub enum Ask {
+    /// Which of `projects` the workspace is made in.
+    Project(usize),
     /// The text is the name; this, the branch (empty: from the name).
     Workspace(String),
     /// The text is the branch; this, the name.
@@ -172,6 +174,10 @@ pub struct App {
     link: Link,
     /// Terminals asked for and not attached yet: whether to focus them, and where.
     spawning: HashMap<u64, (bool, PathBuf)>,
+    /// The shell a setup that worked hands its tab's place to.
+    handing_over: HashSet<u64>,
+    /// The project a new workspace is made in.
+    pub new_in: PathBuf,
     /// When each folder last got a shell of its own, so one that exits at once isn't started again and again.
     kept: HashMap<PathBuf, Instant>,
     /// The Workspaces list, top first, and each row's urgency when last placed.
@@ -265,6 +271,8 @@ impl App {
             resumed: HashMap::new(),
             link,
             spawning: HashMap::new(),
+            handing_over: HashSet::new(),
+            new_in: PathBuf::new(),
             kept: HashMap::new(),
             order: Vec::new(),
             placed: HashMap::new(),
@@ -406,13 +414,11 @@ impl App {
             self.changes = Some(Changes::new(&self.workspaces[i].root, base));
             self.reload_changes();
             self.restore_term();
-            if let Some(ok) = self.setup_ended.remove(&self.workspaces[i].root) {
+            if self.setup_ended.remove(&self.workspaces[i].root) == Some(false) {
                 if let Some(id) = self.workspace_terms().into_iter().map(|t| &self.terms[t]).find(|t| is_setup_tab(t)).map(|t| t.id) {
                     self.select_term(id);
                 }
-                if !ok {
-                    self.message = Some("this workspace's setup failed: its setup tab shows why".into());
-                }
+                self.message = Some("this workspace's setup failed: its setup tab shows why".into());
             }
             self.keep_a_terminal();
             self.preview();
@@ -723,6 +729,15 @@ impl App {
                     }
                     return;
                 };
+                if token.is_some_and(|t| self.handing_over.remove(&t)) {
+                    let root = self.terms[i].info.cwd.clone();
+                    let on_setup = self.last_term.get(&root).is_none_or(|tag| self.terms.iter().any(|t| &t.info.tag == tag && is_setup_tab(t)));
+                    if on_setup && wt == Some(self.current) {
+                        self.select_term(id);
+                    } else if on_setup {
+                        self.last_term.insert(root, self.terms[i].info.tag.clone());
+                    }
+                }
                 if focus && let Some(wt) = wt
                     && !self.set_current(wt)
                 {
@@ -1144,6 +1159,7 @@ impl App {
             'c' => self.set_focus(Focus::Changes),
             'h' => self.set_focus(Focus::History),
             'n' => self.new_here(),
+            'N' => self.pick_project(),
             'x' => self.close_here(),
             '[' => self.cycle_tab(-1),
             ']' => self.cycle_tab(1),
@@ -1253,7 +1269,7 @@ impl App {
     fn new_here(&mut self) {
         match self.focus {
             Focus::Projects => self.open_repo_picker(),
-            Focus::Workspaces => self.prompt = Some(Prompt { ask: Ask::Workspace(String::new()), text: String::new() }),
+            Focus::Workspaces => self.ask_workspace(self.ws().repo.clone()),
             Focus::Terminal => self.new_terminal(true),
             Focus::Files => {
                 let root = self.ws().root.clone();
@@ -1306,8 +1322,34 @@ impl App {
         }
     }
 
+    fn pick_project(&mut self) {
+        let projects = self.projects();
+        let at = projects.iter().position(|&i| self.workspaces[i].repo == self.ws().repo).unwrap_or(0);
+        self.prompt = Some(Prompt { ask: Ask::Project(at), text: String::new() });
+    }
+
+    fn ask_workspace(&mut self, repo: PathBuf) {
+        self.new_in = repo;
+        self.prompt = Some(Prompt { ask: Ask::Workspace(String::new()), text: String::new() });
+    }
+
     fn prompt_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if let Some(Prompt { ask: Ask::Project(at), .. }) = &self.prompt {
+            let (at, projects) = (*at, self.projects());
+            let step = |by: usize| Ask::Project((at + by) % projects.len().max(1));
+            match key.code {
+                KeyCode::Esc => self.prompt = None,
+                KeyCode::Enter => match projects.get(at) {
+                    Some(&i) => self.ask_workspace(self.workspaces[i].repo.clone()),
+                    None => self.prompt = None,
+                },
+                KeyCode::Up | KeyCode::Left => self.prompt = Some(Prompt { ask: step(projects.len().saturating_sub(1)), text: String::new() }),
+                KeyCode::Down | KeyCode::Right => self.prompt = Some(Prompt { ask: step(1), text: String::new() }),
+                _ => {}
+            }
+            return;
+        }
         let Some(prompt) = &mut self.prompt else { return };
         match key.code {
             KeyCode::Esc => self.prompt = None,
@@ -1323,7 +1365,7 @@ impl App {
                             Ask::Workspace(branch) => self.create_workspace(&text, Some(branch.trim()).filter(|b| !b.is_empty())),
                             Ask::File(dir) => self.create(&dir, &text),
                             Ask::Rename(path) => self.rename(&path, &text),
-                            Ask::Branch(_) => {}
+                            Ask::Branch(_) | Ask::Project(_) => {}
                         }
                     }
                 }
@@ -2197,7 +2239,7 @@ impl App {
     }
 
     fn create_workspace(&mut self, name: &str, branch: Option<&str>) {
-        let (repo, name, branch, tx) = (self.ws().repo.clone(), name.to_string(), branch.map(str::to_string), self.tx.clone());
+        let (repo, name, branch, tx) = (self.new_in.clone(), name.to_string(), branch.map(str::to_string), self.tx.clone());
         // Asked twice: the first copy is still being made.
         if !self.copying.insert((repo.clone(), name.clone())) {
             self.message = Some(format!("workspace {name} is being made already"));
@@ -2320,7 +2362,10 @@ impl App {
             let place = self.place(&root).unwrap_or(name);
             notify(&if ok { format!("{place} is ready") } else { format!("the setup of {place} failed") });
         }
-        self.spawn_in(root, &shell(), &[], false);
+        let token = self.spawn_in(root, &shell(), &[], false);
+        if ok {
+            self.handing_over.insert(token);
+        }
     }
 
     fn remove_workspace(&mut self, root: &Path) {
