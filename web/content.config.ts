@@ -8,7 +8,6 @@ export default defineContentConfig({
       schema: z.object({
         section: z.enum(["Get started", "Guides", "Concepts", "Reference"]),
         order: z.number(),
-        banner: z.string().optional(),
       }),
     }),
   },

@@ -1,7 +1,6 @@
 ---
 title: Introduction
 description: Pulpo runs several coding agents side by side on your Mac, each in its own copy of your repository.
-banner: Pulpo is in beta. Expect bugs, and changes that break how it works from one version to the next.
 section: Get started
 order: 1
 ---
