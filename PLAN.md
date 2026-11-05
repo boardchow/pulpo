@@ -90,7 +90,7 @@ question (y), or read a message; its right end shows the current checkout's bran
 
 Keys go to what has the focus. The prefix (⌘p or ⌃b, then one key) is
 taken from anywhere first: p w t f c h move the focus, 1 to 9 go to that workspace (numbered in
-the list) and its terminal, n and x make and close what has it, [ ] change tabs, a goes to who waits, / opens the search
+the list) and its terminal, n and x make and close what has it, N makes a workspace in any project (picked on the bottom line), [ ] change tabs, a goes to who waits, / opens the search
 popup (over everything; a file found opens full screen), d e r
 act on files, q and Q quit. < and > hide or show a side; ? shows the keybinds in a popup (any key closes it). The prefix waits 3 s for its key; a click cancels it. ⌃b twice sends one to the program. The editor
 saves with ⌘s or ⌃s and stays open; esc leaves it. A panel opens wide with the

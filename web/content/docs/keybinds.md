@@ -39,6 +39,12 @@ These act on the panel you're in.
 | :kp[n] | Add a project | New workspace | New terminal | New file, or a folder if the name ends with `/` |
 | :kp[x] | Remove from the list, after asking | Delete the workspace, after asking | Close the terminal, asking if a program runs | Delete, after asking |
 
+This one works from any panel:
+
+| Keys | Does |
+| --- | --- |
+| :kp[N] | New workspace in any project: :k[↑] :k[↓] picks the project, :k[⏎] asks for the name |
+
 ## Files only
 
 | Keys | Does |
