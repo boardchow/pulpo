@@ -43,10 +43,8 @@ main() {
   # --force: replaces a Pulpo installed before.
   cargo install --git "$REPO" --locked --force
 
-  if command -v claude >/dev/null 2>&1 || [ -d "$HOME/.claude" ]; then
-    say "Adding Pulpo's hooks to Claude Code…"
-    "${CARGO_HOME:-$HOME/.cargo}/bin/pulpo" hooks install
-  fi
+  say "Adding Pulpo's hooks to your agents…"
+  "${CARGO_HOME:-$HOME/.cargo}/bin/pulpo" hooks install
 
   say "Pulpo is installed in ~/.cargo/bin."
   if (PATH="$caller_path"; command -v pulpo >/dev/null 2>&1); then
