@@ -1,7 +1,7 @@
 <script setup>
 const title = "Pulpo: run coding agents side by side on your Mac";
 const description = "Run several coding agents at once, each in its own git worktree, branch and ports. Pulpo marks the one waiting for you. Free, open source, macOS beta.";
-const site = useRuntimeConfig().public.site;
+const { site, version } = useRuntimeConfig().public;
 useSeoMeta({
   title,
   description,
@@ -68,7 +68,7 @@ onBeforeUnmount(() => clearInterval(turning));
         </nav>
       </header>
       <main>
-        <p class="badge"><span class="dot" />v0.1.0 · beta</p>
+        <p class="badge"><span class="dot" />v{{ version }} · beta</p>
         <h1>Stop checking<br>every tab.</h1>
         <p class="pitch">Run several coding agents, each on its own branch and ports. Pulpo marks the one waiting for you and takes you straight to it.</p>
         <div class="install">
