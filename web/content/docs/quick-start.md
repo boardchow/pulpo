@@ -19,7 +19,7 @@ Pulpo opens in three columns. The repository shows under Projects on the left, a
 
 2. **Create a workspace.** A workspace is a copy of your project on its own branch, so an agent's edits stay out of everything else. Press :kp[w] to go to Workspaces, then :kp[n]. Type `add-tests` and press :k[⏎]. `add-tests` shows in Workspaces with the number 1, and a shell opens in it, on the branch `<you>/add-tests` (shown bottom right), where `<you>` is your git user name in lowercase. If Pulpo asks whether to run the repository's setup script, press :k[y] to run it or :k[n] to skip it.
 
-3. **Start an agent.** Type `claude` or `codex`, press :k[⏎], and give it a task.
+3. **Start an agent.** Type `claude` or `codex`, press :k[⏎], and give it a task. While it works, its workspace shows a spinner.
 
 4. **Start a second agent.** Repeat steps 2 and 3 with the name `update-readme`. Two agents now work on two branches, each in its own folder.
 

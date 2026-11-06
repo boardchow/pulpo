@@ -2,7 +2,7 @@
 title: Configuration
 description: "Every file Pulpo reads, every setting in them, and their defaults. Pulpo works without any of them."
 section: Reference
-order: 15
+order: 16
 ---
 
 ## Files

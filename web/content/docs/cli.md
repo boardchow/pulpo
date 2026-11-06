@@ -2,7 +2,7 @@
 title: CLI
 description: "Every pulpo command and flag. Everything else happens in the app."
 section: Reference
-order: 16
+order: 17
 ---
 
 | Command | Does |
@@ -28,7 +28,7 @@ In a project's folder, Pulpo opens on the workspace of that project you were on 
 
 ## pulpo hooks
 
-Without an agent, `install` and `status` cover each agent installed and say which they skipped, and `remove` covers each agent with a settings file. An agent counts as installed when its command is on your `PATH` or its settings folder exists. Name `claude` or `codex` for that one only.
+See [Agents](/docs/agents) for what the hooks do. Without an agent, `install` and `status` cover each agent installed and say which they skipped, and `remove` covers each agent with a settings file. An agent counts as installed when its command is on your `PATH` or its settings folder exists. Name `claude` or `codex` for that one only.
 
 | Agent | The hooks go in | Events |
 | --- | --- | --- |
