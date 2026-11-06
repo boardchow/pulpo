@@ -99,7 +99,6 @@ impl Kind {
         dir.join(self.file)
     }
 
-    /// Installed, or used before: on the PATH, or its config folder exists.
     pub fn found(&self) -> bool {
         let on_path = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(self.name).is_file()));
         on_path || self.settings().parent().is_some_and(Path::is_dir)
@@ -156,7 +155,6 @@ pub fn emit(agent: Option<&str>) {
     }
 }
 
-/// The last file an `apply_patch` (Codex's edit) adds or updates.
 fn patched_file(patch: &str) -> Option<&str> {
     patch.lines().rev().find_map(|l| l.strip_prefix("*** Update File: ").or_else(|| l.strip_prefix("*** Add File: "))).map(str::trim)
 }
@@ -186,7 +184,6 @@ fn hook_entry(command: &str, matcher: Option<&str>) -> Value {
     entry
 }
 
-/// `pulpo hooks [install|status|remove] [agent] [--dry-run]`; without an agent, every one found.
 pub fn hooks(args: &[String]) -> anyhow::Result<()> {
     let dry_run = args.iter().any(|a| a == "--dry-run");
     let mut words = args.iter().map(String::as_str).filter(|a| *a != "--dry-run").peekable();

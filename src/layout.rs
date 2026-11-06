@@ -20,7 +20,6 @@ pub struct Layout {
 pub struct Open {
     pub cwd: PathBuf,
     pub tag: String,
-    /// An agent's session, to resume.
     #[serde(alias = "claude")]
     pub session: Option<String>,
     /// Its agent's name; none for Claude, from before Pulpo knew others.
