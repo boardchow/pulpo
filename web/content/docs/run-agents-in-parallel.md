@@ -29,7 +29,7 @@ Pulpo creates the branch. If a branch of that name already has commits of its ow
 
 ## Start an agent
 
-Type `claude`, or any agent's command, in the workspace's shell. To run something next to it, like tests or a dev server, press :kp[n] from the terminal to open another tab. :kp{k="["} and :kp{k="]"} switch between tabs.
+Type your agent's command, like `claude` or `codex`, in the workspace's shell. To run something next to it, like tests or a dev server, press :kp[n] from the terminal to open another tab. :kp{k="["} and :kp{k="]"} switch between tabs.
 
 ## Move between workspaces
 

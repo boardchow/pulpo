@@ -23,7 +23,7 @@ The bottom line says how many terminals came back, and how many agent sessions r
 
 ## Tabs
 
-Each project and workspace has its own terminals, as tabs. A tab shows the program running in it, like `claude`, and its [mark](/docs/agent-status#read-the-marks).
+Each project and workspace has its own terminals, as tabs. A tab shows the program running in it, like `claude` or `codex`, and its [mark](/docs/agent-status#read-the-marks).
 
 | To | Press | Or |
 | --- | --- | --- |
