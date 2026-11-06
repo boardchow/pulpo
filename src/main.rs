@@ -100,7 +100,7 @@ fn main() -> Result<()> {
             if let Some(repo) = launch.as_deref().filter(|_| !copy).and_then(git::main_repo) {
                 project::register(&repo);
             }
-            run(launch, start)?;
+            run(launch)?;
         }
     }
     Ok(())
@@ -115,7 +115,7 @@ fn update() -> Result<()> {
     Ok(())
 }
 
-fn run(launch: Option<PathBuf>, scratch: PathBuf) -> Result<()> {
+fn run(launch: Option<PathBuf>) -> Result<()> {
     let (tx, rx) = mpsc::channel();
 
     let state_dir = agents::state_dir();
@@ -139,7 +139,7 @@ fn run(launch: Option<PathBuf>, scratch: PathBuf) -> Result<()> {
 
     viewer::warm_up();
     let link = client::connect(tx.clone())?;
-    let mut app = App::new(launch, scratch, tx, link)?;
+    let mut app = App::new(launch, tx, link)?;
     let mut terminal = ratatui::init();
     // Kitty keyboard protocol, so Ghostty reports keys like Shift+Enter; others ignore it.
     let keys = PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES);
@@ -153,9 +153,6 @@ fn run(launch: Option<PathBuf>, scratch: PathBuf) -> Result<()> {
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>) -> Result<()> {
     // Draw once so the terminal size is known before the server shows its terminals.
     terminal.draw(|frame| ui::draw(frame, app))?;
-    if project::registered().is_empty() {
-        app.open_repo_picker();
-    }
 
     let mut last_fs_refresh = Instant::now();
     let (mut drawn, mut typed) = (Instant::now(), Instant::now());
@@ -222,3 +219,4 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
         }
     }
 }
+
