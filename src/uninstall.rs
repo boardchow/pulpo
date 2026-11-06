@@ -30,7 +30,7 @@ pub fn uninstall() -> Result<()> {
         let kept = worktree::kept_branch(wt).map(|b| format!("; branch {b} stays")).unwrap_or_default();
         println!("  · deletes workspace {}: its folder, containers and database{lost}{kept}", wt.name);
     }
-    println!("  · removes the hooks from Claude Code");
+    println!("  · removes the hooks from Claude Code and Codex");
     for folder in folders.iter().filter(|f| f.exists()) {
         println!("  · deletes {}", shorten(folder));
     }

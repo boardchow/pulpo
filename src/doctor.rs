@@ -60,12 +60,19 @@ pub fn doctor(_args: &[String]) -> anyhow::Result<()> {
 
     println!("  `pulpo keytest` shows what reaches Pulpo when you press a key.");
 
-    println!("Claude Code");
-    if crate::agents::hooks_installed() {
-        println!("  ✓ hooks installed: Pulpo sees what Claude runs and asks");
-    } else {
-        ok = false;
-        println!("  ✗ hooks missing: pulpo hooks install");
+    let found: Vec<_> = crate::agents::KINDS.iter().filter(|k| k.found()).collect();
+    if found.is_empty() {
+        println!("Agents");
+        println!("  · no Claude Code or Codex: Pulpo guesses what agents do from what they print");
+    }
+    for kind in found {
+        println!("{}", kind.title);
+        if kind.installed() {
+            println!("  ✓ hooks installed: Pulpo sees what {} runs and asks", kind.title);
+        } else {
+            ok = false;
+            println!("  ✗ hooks missing: pulpo hooks install {}", kind.name);
+        }
     }
     if ok {
         println!("All good.");

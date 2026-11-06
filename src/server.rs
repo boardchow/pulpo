@@ -62,7 +62,7 @@ struct Stopping {
     groups: Vec<i32>,
     stage: Stage,
     since: Instant,
-    /// Claude quits on a second ctrl-c instead of waiting out the grace.
+    /// Claude and Codex quit on a second ctrl-c instead of waiting out the grace.
     agent: Option<Instant>,
 }
 
@@ -570,7 +570,7 @@ impl Server {
                     groups.dedup();
                     // A shell at its prompt has nothing to interrupt.
                     let front = front.filter(|&g| g != shell && groups.contains(&g));
-                    let agent = front.and_then(|g| term::process_name(g as u32)).filter(|name| name == "claude").map(|_| Instant::now());
+                    let agent = front.and_then(|g| term::process_name(g as u32)).filter(|name| crate::agents::KINDS.iter().any(|k| k.name == name)).map(|_| Instant::now());
                     let mut stopping = Stopping { front, groups, stage: Stage::Interrupt, since: Instant::now(), agent };
                     stopping.signal(if front.is_some() { Stage::Interrupt } else { Stage::HangUp });
                     // With a program to interrupt, the shell is hung up after

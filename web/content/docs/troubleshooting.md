@@ -19,7 +19,7 @@ order: 17
 
 | Problem | Fix |
 | --- | --- |
-| No status, or no notifications, for Claude | Run `pulpo hooks status`. If a hook is `missing` or `outdated`, run `pulpo hooks install`, then start a new Claude session |
+| No status, or no notifications, for Claude Code or Codex | Run `pulpo hooks status`. If a hook is `missing` or `outdated`, run `pulpo hooks install`, then start a new session. In Codex, also type `/hooks` and trust Pulpo's |
 | *run `pulpo hooks install`* | The hooks aren't installed. Run `pulpo hooks install` |
 | *no terminal has anything to read* | No terminal waits for you, so :kp[a] has nowhere to go |
 

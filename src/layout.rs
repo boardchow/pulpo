@@ -20,7 +20,11 @@ pub struct Layout {
 pub struct Open {
     pub cwd: PathBuf,
     pub tag: String,
-    pub claude: Option<String>,
+    /// An agent's session, to resume.
+    #[serde(alias = "claude")]
+    pub session: Option<String>,
+    /// Its agent's name; none for Claude, from before Pulpo knew others.
+    pub agent: String,
     /// Waiting for you when Pulpo closed.
     pub unread: bool,
 }
@@ -44,10 +48,11 @@ pub fn save(layout: &Layout) {
 }
 
 pub fn reopen(open: &Open, shell: &str) -> Vec<String> {
-    match &open.claude {
-        // Ids come from Claude's hooks; keep anything else out of the shell.
+    match &open.session {
+        // Ids come from the agents' hooks; keep anything else out of the shell.
         Some(id) if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') => {
-            vec!["-l".into(), "-c".into(), format!("claude --resume {id}; exec {shell} -l")]
+            let resume = crate::agents::kind(&open.agent).resume;
+            vec!["-l".into(), "-c".into(), format!("{resume} {id}; exec {shell} -l")]
         }
         _ => Vec::new(),
     }
@@ -58,9 +63,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resumes_claude_then_leaves_a_shell() {
-        let open = |claude: Option<&str>| Open { cwd: "/code".into(), tag: "1-2".into(), claude: claude.map(String::from), unread: false };
+    fn resumes_the_agent_then_leaves_a_shell() {
+        let open = |session: Option<&str>| Open { cwd: "/code".into(), tag: "1-2".into(), session: session.map(String::from), ..Default::default() };
         assert_eq!(reopen(&open(Some("0f1e-a2")), "/bin/zsh")[2], "claude --resume 0f1e-a2; exec /bin/zsh -l");
+        let codex = Open { agent: "codex".into(), ..open(Some("0f1e-a2")) };
+        assert_eq!(reopen(&codex, "/bin/zsh")[2], "codex resume 0f1e-a2; exec /bin/zsh -l");
         assert!(reopen(&open(None), "/bin/zsh").is_empty());
         assert!(reopen(&open(Some("x; rm -rf ~")), "/bin/zsh").is_empty());
     }
