@@ -1160,6 +1160,20 @@ impl App {
             'f' => self.set_focus(Focus::Files),
             'c' => self.set_focus(Focus::Changes),
             'h' => self.set_focus(Focus::History),
+            'F' => {
+                self.set_focus(Focus::Files);
+                self.files_expanded = true;
+            }
+            'C' => {
+                self.set_focus(Focus::Changes);
+                self.changes_expanded = true;
+            }
+            'H' => {
+                self.set_focus(Focus::History);
+                // A commit already full screen gives the workspace's changes back first.
+                self.settle();
+                self.open_commit();
+            }
             'n' => self.new_here(),
             'N' => self.pick_project(),
             'x' => self.close_here(),

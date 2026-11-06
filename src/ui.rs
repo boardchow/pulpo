@@ -659,6 +659,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
             vec![
                 (prefixed("p w t"), "projects, workspaces, the terminal"),
                 (prefixed("f c h"), "files, changes, history"),
+                (prefixed("F C H"), "files, changes full screen; the selected commit"),
                 (prefixed("< >"), "hide or show the left side, the right side"),
                 (prefixed("[ ]"), "previous, next terminal tab"),
                 (prefixed("a"), "the next terminal waiting for you"),
