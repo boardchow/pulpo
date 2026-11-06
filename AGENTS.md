@@ -75,12 +75,13 @@ Good, when the why isn't visible:
 - `make test` passes.
 - Fix what the change makes wrong in the docs. Before adding anything, ask: does this really need to be in the public docs? Usually it doesn't. See [web/content/AGENTS.md](web/content/AGENTS.md).
 - For a code change, once its tests pass: read [.agents/review.md](.agents/review.md) and have it reviewed as it says.
+- Ship it, without waiting to be asked: commit and push, then release if users will notice it.
 - End your reply with one or two lines: what you skipped or didn't check, and any risk the user must know.
 
 ## Committing
 
-Commit only when the user asks, and never push without asking. To commit, read [.agents/commit.md](.agents/commit.md) and follow it.
+Once the change is reviewed and its tests pass, commit it and push to `main`. Read [.agents/commit.md](.agents/commit.md) and follow it.
 
 ## Releasing
 
-Release only when the user asks. To release, read [.agents/release.md](.agents/release.md) and follow it.
+Once pushed, release every change users will notice: anything that goes under `New` or `Fixed` in the notes. Changes to docs or agent rules alone wait for the next release. Read [.agents/release.md](.agents/release.md) and follow it.
