@@ -13,23 +13,21 @@ order: 2
 
 ## Install
 
-1. Run the install script:
+Run the install script:
 
-   ```sh
-   curl -fsSL https://pulpo.sh/install | sh
-   ```
+```sh
+curl -fsSL https://pulpo.sh/install | sh
+```
 
-   It builds Pulpo into `~/.cargo/bin`, which takes a minute or two. It installs Rust if you don't have it, and updates it if yours is older than 1.88. If Claude Code is installed, it also adds Pulpo's [hooks](#connect-claude-code). If the Xcode Command Line Tools are missing, the script opens their installer and stops: accept the dialog, wait for the install to finish, then run the command again.
+It builds Pulpo into `~/.cargo/bin`, which takes a minute or two. It installs Rust if you don't have it, and updates it if yours is older than 1.88. If Claude Code is installed, it also adds Pulpo's [hooks](#connect-claude-code). If the Xcode Command Line Tools are missing, the script opens their installer and stops: accept the dialog, wait for the install to finish, then run the command again.
 
-2. Open a new terminal window, so your shell finds `pulpo`.
+Then open a new terminal window, so your shell finds `pulpo`, and check the install:
 
-3. Check the install:
+```sh
+pulpo doctor
+```
 
-   ```sh
-   pulpo doctor
-   ```
-
-   The last line says `All good.` If something is missing, the line marked `✗` says how to fix it.
+The last line says `All good.` If something is missing, the line marked `✗` says how to fix it.
 
 ### From source
 
