@@ -165,7 +165,7 @@ or the focus going elsewhere) brings them back, on History. Read-only, like the 
 - [x] `pulpo hooks install | status | remove` instead of pasting the hooks config.
 - [x] Program status (OSC 7501, and OSC 9;4 progress until a program reports it): what a program says beats the heuristics.
 - [x] Terminal: links (ctrl-click: URLs open, `path:line` shows in the viewer), scrollback search, copying lines from it (`v`, `y`; wrapped lines come back whole). Clipboard, OSC 52.
-- [x] The review layout: the file pane follows the file the tab's agents last edited (the hooks record `tool_input.file_path`), unless you're reading or editing.
+- [x] The review layout: the file pane follows the file the tab's agents last edited, unless you're reading or editing. Gone since: the hooks no longer record edited files.
 - [x] Notification (OSC 9 to Ghostty) when an agent waits for input or finishes, at most one per terminal every 10 s.
 - [x] Two modes, one key (Zellij's unlock-first): in a terminal every key is the program's but ⌘p (Ghostty leaves it free, and sends it with the kitty keyboard protocol); in Pulpo, plain keys, `space` for everything (one palette), `r` to review every change in one scroll. Replaced a first try with a prefix, chords and over a hundred bindings.
 - [x] Tabs and panes: each workspace's tabs, each a tree of splits of terminals and the file pane, kept across restarts. The sidebar in one box: the pulpo with who waits and works, the lists, and the workspace's tabs with the modes on (BOARD, SCROLL). A top bar came and went: the sidebar already said it all.

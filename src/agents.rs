@@ -125,14 +125,6 @@ pub fn emit(agent: Option<&str>) {
         "PermissionRequest" => text("/tool_input/description").unwrap_or(""),
         _ => field("message"),
     };
-    let file = text("/tool_input/file_path")
-        .or_else(|| text("/tool_input/notebook_path"))
-        .map(String::from)
-        .or_else(|| {
-            let patch = text("/tool_input/command").filter(|_| field("tool_name") == "apply_patch")?;
-            Some(Path::new(field("cwd")).join(patched_file(patch)?).display().to_string())
-        })
-        .unwrap_or_default();
     let record = json!({
         "ts": now(),
         "agent": agent.unwrap_or("claude"),
@@ -141,7 +133,6 @@ pub fn emit(agent: Option<&str>) {
         "event": field("hook_event_name"),
         "tool": field("tool_name"),
         "message": message,
-        "file": file,
         "tab": std::env::var("PULPO_TAB").unwrap_or_default(),
     });
 
@@ -153,10 +144,6 @@ pub fn emit(agent: Option<&str>) {
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = file.write_all(format!("{record}\n").as_bytes());
     }
-}
-
-fn patched_file(patch: &str) -> Option<&str> {
-    patch.lines().rev().find_map(|l| l.strip_prefix("*** Update File: ").or_else(|| l.strip_prefix("*** Add File: "))).map(str::trim)
 }
 
 fn emit_command(kind: &Kind) -> anyhow::Result<String> {
@@ -388,8 +375,6 @@ pub struct Agent {
     pub state: State,
     pub detail: String,
     pub ts: u64,
-    /// The file it last edited, numbered in the order of all edits.
-    pub edited: Option<(u64, PathBuf)>,
 }
 
 #[derive(Deserialize, Default)]
@@ -402,14 +387,12 @@ struct Record {
     event: String,
     tool: String,
     message: String,
-    file: String,
 }
 
 #[derive(Default)]
 pub struct Agents {
     offset: u64,
     sessions: HashMap<String, Agent>,
-    edits: u64,
 }
 
 impl Agents {
@@ -446,13 +429,8 @@ impl Agents {
             state: State::Idle,
             detail: String::new(),
             ts: r.ts,
-            edited: None,
         });
         agent.ts = r.ts;
-        if r.event == "PostToolUse" && !r.file.is_empty() && matches!(r.tool.as_str(), "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "apply_patch") {
-            self.edits += 1;
-            agent.edited = Some((self.edits, PathBuf::from(&r.file)));
-        }
         let (state, detail) = match r.event.as_str() {
             "SessionStart" => (State::Idle, String::new()),
             "UserPromptSubmit" => (State::Running, "thinking".into()),
@@ -495,10 +473,6 @@ mod tests {
         let agent = agents.for_tab("t1").unwrap();
         assert!(agent.state == State::Running);
         assert_eq!(agent.detail, "Bash");
-        let mut edit = record("a", "PostToolUse", "Edit");
-        edit.file = "/code/src/main.rs".into();
-        agents.apply(edit);
-        assert_eq!(agents.for_tab("t1").unwrap().edited, Some((1, PathBuf::from("/code/src/main.rs"))));
         agents.apply(record("a", "Stop", ""));
         assert!(agents.for_tab("t1").unwrap().state == State::Done);
         agents.apply(record("a", "SessionEnd", ""));
@@ -511,24 +485,13 @@ mod tests {
         let mut start = record("c", "SessionStart", "");
         start.agent = "codex".into();
         agents.apply(start);
-        let mut patch = record("c", "PostToolUse", "apply_patch");
-        patch.file = "/code/src/lib.rs".into();
-        agents.apply(patch);
         agents.apply(record("c", "PermissionRequest", "Bash"));
         let agent = agents.for_tab("t1").unwrap();
         assert!(agent.state == State::Waiting);
         assert_eq!(agent.detail, "Bash");
-        assert_eq!(agent.edited, Some((1, PathBuf::from("/code/src/lib.rs"))));
         assert_eq!(agents.session_for_tab("t1").map(|(id, k)| (id, k.name)), Some(("c", "codex")));
         agents.apply(record("c", "Interrupt", ""));
         assert!(agents.for_tab("t1").unwrap().state == State::Idle);
-    }
-
-    #[test]
-    fn reads_the_file_a_patch_edits() {
-        let patch = "*** Begin Patch\n*** Update File: src/a.rs\n@@\n-x\n+y\n*** Add File: src/b.rs\n+z\n*** End Patch";
-        assert_eq!(patched_file(patch), Some("src/b.rs"));
-        assert_eq!(patched_file("*** Begin Patch\n*** Delete File: a\n*** End Patch"), None);
     }
 
     #[test]
