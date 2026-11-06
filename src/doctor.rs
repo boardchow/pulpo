@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::process::Command;
 
 use crate::keymap::{self, Key, Keymap};
@@ -74,10 +73,6 @@ pub fn doctor(_args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn home() -> PathBuf {
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-}
-
 fn input_switch_on_ctrl_space() -> Option<usize> {
     let read = |domain: &str, key: &str| {
         Command::new("defaults").args(["read", domain, key]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
@@ -95,14 +90,4 @@ fn input_switch_on_ctrl_space() -> Option<usize> {
     let on = entry.contains("enabled = 1");
     let ctrl_space = entry.contains("49,") && entry.contains("262144");
     (on && ctrl_space).then_some(layouts)
-}
-
-/// Ghostty's config files, in the order it reads them.
-pub fn ghostty_configs() -> Vec<PathBuf> {
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
-    let support = home().join("Library/Application Support/com.mitchellh.ghostty");
-    [xdg.join("ghostty/config"), xdg.join("ghostty/config.ghostty"), support.join("config"), support.join("config.ghostty")]
-        .into_iter()
-        .filter(|p| p.is_file())
-        .collect()
 }

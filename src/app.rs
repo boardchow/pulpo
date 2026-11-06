@@ -28,7 +28,7 @@ use crate::workspace::Workspace;
 
 const NOTICE_EVERY: Duration = Duration::from_secs(10);
 const MESSAGE_FOR: Duration = Duration::from_secs(5);
-const UNSAVED: &str = "unsaved changes in the editor: ⌘s saves them, esc twice throws them away";
+const UNSAVED: &str = "unsaved changes in the editor: ⌃s saves them, esc twice throws them away";
 const PREFIX_FOR: Duration = Duration::from_secs(3);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Another workspace only shows how many changes it has: its `git status` can wait this long.
@@ -70,15 +70,6 @@ pub enum Confirm {
     CloseTerminal(usize),
     DeleteFile(PathBuf),
     StopAll,
-    TrustSetup(Box<PendingSetup>),
-}
-
-/// Exactly what was shown is what's trusted and run.
-pub struct PendingSetup {
-    root: PathBuf,
-    config: worktree::Config,
-    notes: Vec<String>,
-    asked: Vec<(&'static str, String)>,
 }
 
 #[derive(Default, Clone)]
@@ -136,7 +127,6 @@ pub struct App {
     pub right_hidden: bool,
     pub prompt: Option<Prompt>,
     pub asking: Option<(String, Confirm)>,
-    asking_from: Option<Instant>,
     pub message: Option<String>,
     message_since: Option<(String, Instant)>,
     pub search: Option<Search>,
@@ -214,7 +204,6 @@ impl App {
         agents.load();
         let layout = layout::load();
         let (keymap, keys_error) = Keymap::load();
-        let theme_error = crate::theme::apply(&crate::theme::chosen()).err().map(|e| format!("theme: {e}; using Pulpo Dark"));
         let mut app = App {
             workspaces: Vec::new(),
             worktrees: Vec::new(),
@@ -234,8 +223,7 @@ impl App {
             right_hidden: false,
             prompt: None,
             asking: None,
-            asking_from: None,
-            message: keys_error.or(theme_error).or_else(|| {
+            message: keys_error.or_else(|| {
                 (!crate::agents::hooks_installed())
                     .then(|| "run `pulpo hooks install` to see what Claude runs and asks in each terminal".into())
             }),
@@ -1076,10 +1064,7 @@ impl App {
         let pressed = Key::of(key);
         let open = self.repos.is_some() || self.search.is_some() || self.prompt.is_some() || self.asking.is_some() || self.help;
         if open && !self.prefixed && self.keymap.is_prefix(pressed) {
-            if let Some((_, confirm)) = self.asking.take() {
-                self.declined(confirm);
-            }
-            (self.repos, self.search, self.prompt, self.help) = (None, None, None, false);
+            (self.repos, self.search, self.prompt, self.asking, self.help) = (None, None, None, None, false);
             self.prefixed = true;
             self.prefixed_at = Some(Instant::now());
             return false;
@@ -1100,19 +1085,9 @@ impl App {
             self.prompt_key(key);
             return false;
         }
-        // A question that came on its own ignores keys until a second without typing,
-        // so what you were typing never answers it.
-        let settling = self.asking.is_some() && self.asking_from.is_some_and(|from| Instant::now() < from);
-        if settling {
-            self.asking_from = Some(Instant::now() + Duration::from_secs(1));
-        }
-        if !settling && let Some((_, confirm)) = self.asking.take() {
+        if let Some((_, confirm)) = self.asking.take() {
             self.message = None;
-            if matches!(key.code, KeyCode::Char('y' | 'Y')) {
-                return self.confirmed(confirm);
-            }
-            self.declined(confirm);
-            return false;
+            return matches!(key.code, KeyCode::Char('y' | 'Y')) && self.confirmed(confirm);
         }
         if std::mem::take(&mut self.prefixed) {
             // Twice: the key itself, for the program (Claude's ⌃b).
@@ -1199,18 +1174,7 @@ impl App {
         false
     }
 
-    fn declined(&mut self, confirm: Confirm) {
-        if let Confirm::TrustSetup(pending) = confirm {
-            self.trust_setup(*pending, false);
-        }
-    }
-
     fn ask(&mut self, question: String, confirm: Confirm) {
-        // A question already waiting is answered no, never dropped (a setup would never run).
-        if let Some((_, waiting)) = self.asking.take() {
-            self.declined(waiting);
-        }
-        self.asking_from = None;
         self.message = None;
         self.asking = Some((question, confirm));
     }
@@ -1226,7 +1190,6 @@ impl App {
             Confirm::DeleteWorkspace(root) => self.remove_workspace(&root),
             Confirm::CloseTerminal(id) => self.close_terminal(id),
             Confirm::DeleteFile(path) => self.delete(&path),
-            Confirm::TrustSetup(pending) => self.trust_setup(*pending, true),
             Confirm::StopAll => {
                 for &pid in self.setting_up.values() {
                     unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
@@ -1679,7 +1642,7 @@ impl App {
             KeyCode::Esc if editor.find.is_some() => editor.find = None,
             KeyCode::Esc if editor.dirty && !discard => {
                 self.discard = true;
-                self.message = Some("unsaved changes: esc again throws them away, ⌘s saves them".into());
+                self.message = Some("unsaved changes: esc again throws them away, ⌃s saves them".into());
                 return;
             }
             KeyCode::Esc => return self.close_editor(),
@@ -1938,12 +1901,11 @@ impl App {
             if matches!(mouse.kind, MouseEventKind::Down(_)) {
                 let pos = Position::new(mouse.column, mouse.row);
                 self.prompt = None;
-                if let Some((_, confirm)) = self.asking.take() {
-                    if !self.areas.yes.contains(pos) {
-                        self.declined(confirm);
-                    } else if self.confirmed(confirm) {
-                        self.quit = true;
-                    }
+                if let Some((_, confirm)) = self.asking.take()
+                    && self.areas.yes.contains(pos)
+                    && self.confirmed(confirm)
+                {
+                    self.quit = true;
                 }
             }
             return;
@@ -2295,36 +2257,6 @@ impl App {
                 return;
             }
         };
-        // A script from a committed file runs once you've trusted it.
-        let asked = worktree::untrusted(&wt.repo, &config);
-        if !asked.is_empty() {
-            let shown: Vec<String> = asked
-                .iter()
-                .map(|(what, script)| {
-                    let start = script.lines().next().unwrap_or_default();
-                    let short: String = start.chars().take(30).collect();
-                    let more = if short.len() < start.len() || script.lines().count() > 1 { "…" } else { "" };
-                    format!("{what}: {short}{more} ({} lines)", script.lines().count())
-                })
-                .collect();
-            let question = format!("workspace {}: run the repository's committed {}? y trusts it here", wt.name, shown.join("; "));
-            self.ask(question, Confirm::TrustSetup(Box::new(PendingSetup { root, config, notes, asked })));
-            self.asking_from = Some(Instant::now() + Duration::from_secs(1));
-            return;
-        }
-        self.set_up(&wt, config, notes);
-    }
-
-    fn trust_setup(&mut self, pending: PendingSetup, yes: bool) {
-        let PendingSetup { root, mut config, mut notes, asked } = pending;
-        let Some(wt) = self.worktrees.iter().find(|s| s.root == root).cloned() else { return };
-        if yes {
-            if let Err(e) = worktree::trust(&wt.repo, &asked) {
-                notes.push(format!("! couldn't record the trust: {e:#}"));
-            }
-        } else {
-            notes.extend(config.without(&asked));
-        }
         self.set_up(&wt, config, notes);
     }
 
@@ -2495,7 +2427,6 @@ fn scroll_term(term: &mut Term, rows: isize) {
     }
 }
 
-/// OSC 9, which Ghostty shows as a macOS notification.
 fn notify(text: &str) {
     let text: String = text.chars().filter(|c| !c.is_control()).take(200).collect();
     crate::term::to_host(format!("\x1b]9;{text}\x07").as_bytes());

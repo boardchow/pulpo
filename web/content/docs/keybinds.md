@@ -5,7 +5,7 @@ section: Reference
 order: 14
 ---
 
-Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌘p] or :k[⌃b], then the key. In Pulpo, :kp[?] lists them.
+Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌃b], then the key. In Pulpo, :kp[?] lists them.
 
 ## Go to
 
@@ -123,22 +123,22 @@ Full screen, reading the file:
 
 | Keys | Does |
 | --- | --- |
-| :k[⌘s] | Save |
+| :k[⌃s] | Save |
 | :k[esc] | Leave. With unsaved changes, press twice to throw them away |
-| :k[⌘z] | Undo |
-| :k[⌘⇧z] or :k[⌃y] | Redo |
-| :k[⌘a] | Select all |
-| :k[⌘c] :k[⌘x] :k[⌘v] | Copy, cut, paste |
-| :k[⌘f] | Find. Then :k[⏎] next, :k[⇧⏎] previous, :k[esc] done |
-| :k[⌘g], :k[⌘⇧g] | Next, previous match |
-| :k[⌥←] :k[⌥→] | A word left, right |
-| :k[⌘←] :k[⌘→] or :k[home] :k[end] | Start, end of the line |
-| :k[⌘↑] :k[⌘↓] | Start, end of the file |
+| :k[⌃z] | Undo |
+| :k[⌃y] | Redo |
+| :k[⌃a] | Select all |
+| :k[⌃c] :k[⌃x] :k[⌃v] | Copy, cut, paste |
+| :k[⌃f] | Find. Then :k[⏎] next, :k[⇧⏎] previous, :k[esc] done |
+| :k[⌃g] | Next match |
+| :k[⌃←] :k[⌃→] or :k[⌥←] :k[⌥→] | A word left, right |
+| :k[home] :k[end] | Start, end of the line |
+| :k[⌃home] :k[⌃end] | Start, end of the file |
 | :k[pgup] :k[pgdn] | A page up, down |
 | :k[tab], :k[⇧tab] | Indent, unindent |
 | :k[⌥⌫] | Delete the word before the cursor |
 
-Hold :k[shift] with a move to select. :k[⌃] works in place of :k[⌘] for save, undo, redo, select all, copy, cut, paste and find. :k[⌃←] and :k[⌃→] move by word.
+Hold :k[shift] with a move to select.
 
 ## Search
 
@@ -169,8 +169,6 @@ In the new project list, :k[↓] :k[↑], :k[pgdn] :k[pgup] and :k[esc] work the
 | --- | --- |
 | :k[y] | Yes |
 | Any other key | No |
-
-A question Pulpo asks on its own, like trusting a setup script, ignores keys until you've stopped typing for a second.
 
 ## Mouse
 

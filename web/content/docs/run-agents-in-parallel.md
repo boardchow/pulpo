@@ -42,9 +42,7 @@ Each of these goes to the workspace's terminal:
 | Pick from the list | :kp[w], then :k[↑] :k[↓] and :k[⏎] |
 | Find a workspace by name | :kp[/], type part of its name, then :k[⏎] |
 
-The numbers follow the list. A workspace moves to the top when its agent starts waiting for you, and above the quiet ones when it starts working. It stays where it is once you've read it, so rows only move up.
-
-Moving through the list shows each workspace right away: its terminal, its files and its changes.
+The numbers follow the list, which moves the workspaces that wait for you to the top. See [the two lists](/docs/projects-and-workspaces#the-two-lists).
 
 ## Add another repository
 
