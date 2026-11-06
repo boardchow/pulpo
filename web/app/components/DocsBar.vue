@@ -1,7 +1,6 @@
 <script setup>
 defineEmits(["menu"]);
-// Cargo.toml's version, shown by the name.
-const VERSION = "0.1.0";
+const { version } = useRuntimeConfig().public;
 </script>
 
 <template>
@@ -10,7 +9,7 @@ const VERSION = "0.1.0";
     <NuxtLink class="brand" to="/">
       <img src="/favicon.svg" alt="">
       <span>Pulpo</span>
-      <span class="version">v{{ VERSION }}</span>
+      <span class="version">v{{ version }}</span>
       <span class="label">Docs</span>
     </NuxtLink>
     <div class="spacer" />

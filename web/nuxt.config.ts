@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+
+const version = readFileSync(new URL("../Cargo.toml", import.meta.url), "utf8").match(/^version = "(.+)"/m)![1];
+
 export default defineNuxtConfig({
   compatibilityDate: "2026-11-01",
   modules: ["@nuxt/content"],
@@ -13,7 +17,7 @@ export default defineNuxtConfig({
       link: [{ rel: "icon", href: "/favicon.svg", type: "image/svg+xml" }],
     },
   },
-  runtimeConfig: { public: { site: "https://pulpo.sh" } },
+  runtimeConfig: { public: { site: "https://pulpo.sh", version } },
   content: {
     // Node's own SQLite, for the docs' index at build time.
     experimental: { sqliteConnector: "native" },
