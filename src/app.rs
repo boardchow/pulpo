@@ -225,7 +225,7 @@ impl App {
             asking: None,
             message: keys_error.or_else(|| {
                 (!crate::agents::hooks_installed())
-                    .then(|| "run `pulpo hooks install` to see what Claude runs and asks in each terminal".into())
+                    .then(|| "run `pulpo hooks install` to see what agents run and ask in each terminal".into())
             }),
             message_since: None,
             search: None,
@@ -659,7 +659,7 @@ impl App {
             terminals += 1;
         }
         if terminals > 0 {
-            let agents = if agents > 0 { format!(", resuming {agents} Claude session(s)") } else { String::new() };
+            let agents = if agents > 0 { format!(", resuming {agents} agent session(s)") } else { String::new() };
             self.message = Some(format!("reopened {terminals} terminal(s) from before the restart{agents}"));
         }
     }
@@ -668,11 +668,15 @@ impl App {
         let open = self
             .terms
             .iter()
-            .map(|t| layout::Open {
-                cwd: t.info.cwd.clone(),
-                tag: t.info.tag.clone(),
-                claude: self.agents.session_for_tab(&t.info.tag).map(String::from),
-                unread: t.unread(),
+            .map(|t| {
+                let session = self.agents.session_for_tab(&t.info.tag);
+                layout::Open {
+                    cwd: t.info.cwd.clone(),
+                    tag: t.info.tag.clone(),
+                    session: session.map(|(id, _)| id.to_string()),
+                    agent: session.map(|(_, kind)| kind.name.to_string()).unwrap_or_default(),
+                    unread: t.unread(),
+                }
             })
             .collect();
         Layout {

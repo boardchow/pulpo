@@ -42,9 +42,11 @@ use app::App;
 
 const USAGE: &str = "usage:
   pulpo [path]   open Pulpo; a repository at path (default: .) joins the project list
-  pulpo hooks install|status|remove [--dry-run]
-                 add Pulpo's hooks to Claude Code, for what agents run and ask
-  pulpo hooks    print those hooks instead
+  pulpo hooks install|status|remove [claude|codex] [--dry-run]
+                 add Pulpo's hooks to Claude Code and Codex, for what agents run and ask;
+                 without an agent, to each one installed
+  pulpo hooks [claude|codex]
+                 print those hooks instead
   pulpo keytest  show what reaches Pulpo for each key (⌃b is the prefix)
   pulpo doctor   check that the prefix reaches Pulpo, and the hooks
   pulpo update   build and install the latest Pulpo
@@ -80,7 +82,7 @@ pub enum Msg {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("emit") => agents::emit(),
+        Some("emit") => agents::emit(args.get(1).map(String::as_str)),
         Some("serve") => server::serve(&args[1..])?,
         // Run by a workspace's removal script.
         Some("forget-workspace") if args.len() == 2 => worktree::forget(std::path::Path::new(&args[1]))?,

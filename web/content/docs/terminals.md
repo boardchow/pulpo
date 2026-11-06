@@ -17,9 +17,9 @@ When you install a new build, the server switches to it the next time you open P
 
 ## After a reboot
 
-A reboot stops the server and its terminals. The next time you open Pulpo, it reopens each terminal in its folder. Terminals that ran Claude Code run `claude --resume` for that session, then leave you a shell. This needs the [hooks](/docs/installation#connect-claude-code).
+A reboot stops the server and its terminals. The next time you open Pulpo, it reopens each terminal in its folder. Terminals that ran Claude Code or Codex resume that session, with `claude --resume` or `codex resume`, then leave you a shell. This needs the [hooks](/docs/installation#connect-your-agents).
 
-The bottom line says how many terminals came back, and how many Claude sessions resumed. What they printed before the reboot doesn't come back.
+The bottom line says how many terminals came back, and how many agent sessions resumed. What they printed before the reboot doesn't come back.
 
 ## Tabs
 

@@ -94,7 +94,8 @@ Pulpo reads these:
 | --- | --- |
 | `XDG_CONFIG_HOME` | Where `pulpo/` settings are, instead of `~/.config` |
 | `XDG_STATE_HOME` | Where `pulpo/` state is, instead of `~/.local/state` |
-| `CLAUDE_CONFIG_DIR` | Where the hooks go, instead of `~/.claude` |
+| `CLAUDE_CONFIG_DIR` | Where the Claude Code hooks go, instead of `~/.claude` |
+| `CODEX_HOME` | Where the Codex hooks go, instead of `~/.codex` |
 | `SHELL` | The shell new terminals run, `/bin/zsh` without it |
 
 ## Files Pulpo writes
@@ -104,9 +105,10 @@ Pulpo reads these:
 | `~/.config/pulpo/projects` | The list of projects |
 | `~/.config/pulpo/repos/` | Workspace settings, one file per repository |
 | `~/.local/state/pulpo/workspaces.json` | The workspaces Pulpo made |
-| `~/.local/state/pulpo/events.jsonl` | What the Claude Code hooks reported |
+| `~/.local/state/pulpo/events.jsonl` | What the agents' hooks reported |
 | `~/.local/state/pulpo/logs/` | Workspace setup and removal logs |
 | `~/.local/state/pulpo/server/` | The server's socket, its `log`, and which terminals were open |
 | `~/.local/state/pulpo/compose/` | The Compose files Pulpo adds to workspaces |
 | `~/.pulpo/workspaces/<repo>/<name>` | The workspaces |
-| `~/.claude/settings.json` | The hooks, next to yours |
+| `~/.claude/settings.json` | The Claude Code hooks, next to yours |
+| `~/.codex/hooks.json` | The Codex hooks, next to yours |

@@ -21,15 +21,15 @@ A workspace being [set up](/docs/workspace-setup) shows the spinner, then ✓ or
 
 Press :kp[a]. Pulpo goes first to a workspace whose setup ended, then to the terminal that has waited longest, in any workspace. Terminals that asked something come before those that finished. Press :kp[a] again for the next one.
 
-## Get exact status from Claude Code
+## Get exact status from your agents
 
-Without help, Pulpo guesses from what the terminal prints. With Pulpo's hooks installed, Claude reports exactly when it works, asks something, or finishes:
+Without help, Pulpo guesses from what the terminal prints. With Pulpo's hooks installed, Claude Code and Codex report exactly when they work, ask something, or finish:
 
 ```sh
 pulpo hooks install
 ```
 
-Then start a new Claude session; sessions started before don't report. To check the hooks, run `pulpo hooks status`: every hook should say `current`.
+Then start a new session; sessions started before don't report. Codex runs the hooks once you trust them: type `/hooks` in Codex. To check the hooks, run `pulpo hooks status`: every hook should say `current`.
 
 ## Get notified
 
