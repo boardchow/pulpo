@@ -35,12 +35,12 @@ Select the file in Files and press :kp[e]. The editor opens at the line you were
 
 | To | Press |
 | --- | --- |
-| Save | :k[⌘s] |
-| Undo, redo | :k[⌘z], :k[⌘⇧z] |
-| Find | :k[⌘f], then :k[⏎] for the next match and :k[⇧⏎] for the previous one |
+| Save | :k[⌃s] |
+| Undo, redo | :k[⌃z], :k[⌃y] |
+| Find | :k[⌃f], then :k[⏎] for the next match and :k[⇧⏎] for the previous one |
 | Leave | :k[esc]. With unsaved changes, press it twice to throw them away |
 
-Copy, cut, paste and select all use the usual keys, and :k[⌃] works wherever :k[⌘] does. See [Keybinds](/docs/keybinds) for every key.
+Copy, cut, paste and select all are :k[⌃c], :k[⌃x], :k[⌃v] and :k[⌃a]. See [Keybinds](/docs/keybinds) for every key.
 
 While you have unsaved changes, Pulpo won't switch workspace or quit. If the file changes on disk and you haven't edited it, the editor reloads it.
 

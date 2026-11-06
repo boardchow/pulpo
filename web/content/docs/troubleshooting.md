@@ -9,11 +9,11 @@ order: 17
 
 | Problem | Fix |
 | --- | --- |
-| The prefix does nothing | Run `pulpo keytest` and press it. If :k[⌘p] doesn't show up, use :k[⌃b], or [choose another prefix](/docs/configuration#keys) |
+| The prefix does nothing | Run `pulpo keytest` and press it. If :k[⌃b] doesn't show up, [choose another prefix](/docs/configuration#keys) |
 | :k[⌃␣] as the prefix does nothing | macOS uses it to switch input sources. Run `pulpo doctor`: it says how to free it |
-| *`⌘p f` first: that's for files* | :kp[e], :kp[r] and :kp[d] work in Files only. Press :kp[f] first |
+| *`⌃b f` first: that's for files* | :kp[e], :kp[r] and :kp[d] work in Files only. Press :kp[f] first |
 | *using the default keys* | `keys.toml` has an error. Fix it, or run `pulpo doctor` to see it |
-| *unsaved changes in the editor* | Save with :k[⌘s], or press :k[esc] twice to throw the changes away. Until then, Pulpo won't switch workspace or quit |
+| *unsaved changes in the editor* | Save with :k[⌃s], or press :k[esc] twice to throw the changes away. Until then, Pulpo won't switch workspace or quit |
 
 ## Agent status
 
@@ -51,7 +51,6 @@ The setup log lists what went wrong, on lines starting with `!`. Each line conta
 | --- | --- |
 | *couldn't fetch origin* | The workspace starts from origin's default branch as last fetched |
 | *default branch isn't known* | Run `git remote set-head origin --auto` in the project. Until then, workspaces start from the project's last commit |
-| *script isn't trusted* | You didn't press :k[y] when Pulpo asked. Run the script by hand in the workspace's terminal |
 | *fixed port*, *fixed container name*, *fixed name* | Two workspaces can't both run it. See [what can't be isolated](/docs/docker#fix-what-cant-be-isolated) |
 | *git won't work in its containers* | `docker compose config` failed, so Pulpo couldn't add the project's `.git` to the containers |
 | *compose files with -f* | Those `make` commands skip the Compose file Pulpo adds, so git doesn't work in their containers |
@@ -64,10 +63,3 @@ If a setup fails, its *setup* tab ends with what went wrong. Fix the cause, then
 | --- | --- |
 | *could not delete workspace* | Open the log it names, in `~/.local/state/pulpo/logs/`. Fix the cause, then delete the workspace again |
 | *this is the project itself* | Projects aren't deleted, only taken off the list: :kp[p], then :kp[x] |
-
-## Display
-
-| Problem | Fix |
-| --- | --- |
-| Pulpo's mascot shows as boxes or garbled | Your terminal's font lacks the Unicode 16 block characters. Use Ghostty |
-| *theme: …; using Pulpo Dark* | Pulpo couldn't load the theme in `config.toml`. Check its name against [Theme](/docs/configuration#theme) |

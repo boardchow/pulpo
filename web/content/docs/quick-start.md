@@ -17,7 +17,7 @@ You need Pulpo [installed](/docs/installation), Claude Code, and a git repositor
 
    Pulpo opens in three columns. The repository shows under Projects on the left, a shell runs in the middle, and the repository's files and changes are on the right. The repository is now a [project](/docs/projects-and-workspaces).
 
-2. **Try the prefix.** Every Pulpo action is :k[⌘p], released, then one key. It works even while a program runs in the terminal. Press :k[⌘p], release it, then press :k[?]. The list of every key opens; press any key to close it. To learn more, see [the prefix key](/docs/prefix-key).
+2. **Try the prefix.** Every Pulpo action is :k[⌃b], released, then one key. It works even while a program runs in the terminal. Press :k[⌃b], release it, then press :k[?]. The list of every key opens; press any key to close it. To learn more, see [the prefix key](/docs/prefix-key).
 
 3. **Create a workspace.** A workspace is a copy of your project on its own branch, so an agent's edits stay out of everything else. Press :kp[w] to go to Workspaces, then :kp[n]. Type `add-tests` and press :k[⏎]. `add-tests` shows in Workspaces with the number 1, and a shell opens in it, on the branch `<you>/add-tests` (shown bottom right), where `<you>` is your git user name in lowercase. If Pulpo asks whether to run the repository's setup script, press :k[y] to run it or :k[n] to skip it.
 
@@ -27,7 +27,7 @@ You need Pulpo [installed](/docs/installation), Claude Code, and a git repositor
 
 6. **Switch between them.** Press :kp[1] for the first workspace and :kp[2] for the second. A workspace moves up the list when its agent starts working or waits for you, so the numbers can change. Check the number next to its name.
 
-7. **Answer the agent that needs you.** When an agent finishes or asks something, its workspace shows ◆ and Ghostty shows a notification. Press :kp[a] to go to it.
+7. **Answer the agent that needs you.** When an agent finishes or asks something, its workspace shows ◆ and your terminal app shows a notification. Press :kp[a] to go to it.
 
 8. **Review what it changed.** Press :kp[c]. Changes lists every file the agent changed and hasn't committed. Move with :k[↑] and :k[↓], then press :k[⏎] to open a file full screen, with its changes in place. Press :k[esc] to step back: to the list, to the three columns, then to the terminal.
 

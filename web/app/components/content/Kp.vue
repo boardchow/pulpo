@@ -6,5 +6,5 @@ const keys = () => (props.k ?? slotText(slots.default?.())).trim().split(/\s+/).
 </script>
 
 <template>
-  <span class="keys"><kbd class="prefix">⌘p</kbd><kbd v-for="(key, i) in keys()" :key="i">{{ key }}</kbd></span>
+  <span class="keys"><kbd class="prefix">⌃b</kbd><kbd v-for="(key, i) in keys()" :key="i">{{ key }}</kbd></span>
 </template>

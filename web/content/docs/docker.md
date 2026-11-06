@@ -13,18 +13,7 @@ Pulpo keeps ten free ports for each workspace, from 20000 up. The first one is i
 python3 -m http.server "$PULPO_PORT"
 ```
 
-Every terminal of a workspace Pulpo made has these variables:
-
-| Variable | Value |
-| --- | --- |
-| `PULPO_PORT` | The first of the workspace's ten ports |
-| `PORT` | The same port, when the project has no Compose file |
-| Each port variable of the Compose file | A port of its own, right after the ten |
-| `COMPOSE_PROJECT_NAME` | `<project>-<workspace>` |
-| `COMPOSE_FILE` | The Compose files, with the one Pulpo adds for git (only when it adds one) |
-| `PULPO_WORKSPACE_NAME` | The workspace's name |
-| `PULPO_ROOT_PATH` | The project's folder |
-| `PULPO_WORKSPACE_PATH` | The workspace's folder |
+Every terminal of the workspace also has `PULPO_WORKSPACE_NAME`, `PULPO_ROOT_PATH` (the project's folder) and `PULPO_WORKSPACE_PATH`. See [every variable](/docs/configuration#environment-variables).
 
 ## Use Docker Compose
 
