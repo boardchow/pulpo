@@ -74,4 +74,9 @@ Good, when the why isn't visible:
 
 - `make test` passes.
 - If the change alters what users see, type or configure, update the docs too, following [web/content/AGENTS.md](web/content/AGENTS.md).
+- For a code change, once its tests pass: read [.agents/review.md](.agents/review.md) and have it reviewed as it says.
 - End your reply with one or two lines: what you skipped or didn't check, and any risk the user must know.
+
+## Committing
+
+Commit only when the user asks, and never push without asking. To commit, read [.agents/commit.md](.agents/commit.md) and follow it.
