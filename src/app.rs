@@ -18,7 +18,7 @@ use crate::keymap::{Key, Keymap};
 use crate::layout::{self, Layout};
 use crate::proto::{Info, PROTOCOL, ToClient, ToServer};
 use crate::review::Changes;
-use crate::search::{Hit, Kind, Mode, Search};
+use crate::search::{Hit, Kind, Mode, Search, expand_home};
 use crate::worktree;
 use crate::status::Status;
 use crate::term::Term;
@@ -114,7 +114,7 @@ pub struct App {
     pub current: usize,
     pub projects_state: ListState,
     pub workspaces_state: ListState,
-    scratch: PathBuf,
+    pub no_projects: bool,
     pub focus: Focus,
     pub agents: Agents,
     pub terms: Vec<Term>,
@@ -193,7 +193,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(launch: Option<PathBuf>, scratch: PathBuf, tx: Sender<Msg>, link: Link) -> anyhow::Result<Self> {
+    pub fn new(launch: Option<PathBuf>, tx: Sender<Msg>, link: Link) -> anyhow::Result<Self> {
         let fs_tx = tx.clone();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(event) = res {
@@ -210,7 +210,7 @@ impl App {
             current: 0,
             projects_state: ListState::default().with_selected(Some(0)),
             workspaces_state: ListState::default().with_selected(Some(0)),
-            scratch,
+            no_projects: false,
             focus: Focus::Terminal,
             agents,
             terms: Vec::new(),
@@ -334,9 +334,13 @@ impl App {
         }
         // All marked before any goes: each removal lists them again.
         self.gone.extend(gone.iter().map(|s| s.root.clone()));
-        if self.workspaces.is_empty() {
-            let scratch = self.scratch.clone();
-            self.workspaces.push(reuse(scratch.clone(), &scratch));
+        self.no_projects = self.workspaces.is_empty();
+        if self.no_projects {
+            // No folder, so nothing is watched or run until a project is added.
+            self.workspaces.push(reuse(PathBuf::new(), Path::new("")));
+            if self.repos.is_none() {
+                self.open_repo_picker();
+            }
         }
         for i in 0..self.workspaces.len() {
             if !known.contains(&self.workspaces[i].root) {
@@ -605,20 +609,33 @@ impl App {
         }
     }
 
-    fn add_repo(&mut self, input: &str) {
-        let path = match input.strip_prefix("~/") {
-            Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
-            None => PathBuf::from(input),
-        };
+    fn add_repo(&mut self, input: &str, typed: bool) -> bool {
+        let path = expand_home(input);
+        if typed
+            && path.is_absolute()
+            && !path.exists()
+            && let Err(e) = git::init(&path)
+        {
+            self.message = Some(e);
+            if !path.exists() {
+                return false;
+            }
+        }
         match git::toplevel(&path).and_then(|top| git::main_repo(&top)) {
             Some(repo) => {
                 project::register(&repo);
                 self.load_workspaces();
-                if let Some(i) = self.workspaces.iter().position(|w| w.root == repo) {
-                    self.set_current(i);
-                }
+                let Some(i) = self.workspaces.iter().position(|w| w.root == repo) else {
+                    self.message = Some("couldn't save the project list".into());
+                    return false;
+                };
+                self.set_current(i);
+                true
             }
-            None => self.message = Some(format!("not a git repository: {}", path.display())),
+            None => {
+                self.message = Some(format!("not a git repository: {}", path.display()));
+                false
+            }
         }
     }
 
@@ -1065,6 +1082,9 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> bool {
+        if self.no_projects {
+            return self.repos_key(key);
+        }
         let pressed = Key::of(key);
         let open = self.repos.is_some() || self.search.is_some() || self.prompt.is_some() || self.asking.is_some() || self.help;
         if open && !self.prefixed && self.keymap.is_prefix(pressed) {
@@ -1078,8 +1098,7 @@ impl App {
             return false;
         }
         if self.repos.is_some() {
-            self.repos_key(key);
-            return false;
+            return self.repos_key(key);
         }
         if self.search.is_some() {
             self.search_key(key);
@@ -1724,7 +1743,7 @@ impl App {
         self.search = Some(Search::new(Mode::Everything, self.ws().root.clone(), places, &self.tx));
     }
 
-    pub fn open_repo_picker(&mut self) {
+    fn open_repo_picker(&mut self) {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         self.repos = Some(Search::new(Mode::Repos, home, Vec::new(), &self.tx));
     }
@@ -1796,15 +1815,16 @@ impl App {
         self.viewer.open_at(path, line);
     }
 
-    fn repos_key(&mut self, key: KeyEvent) {
-        let Some(search) = &mut self.repos else { return };
+    fn repos_key(&mut self, key: KeyEvent) -> bool {
+        let Some(search) = &mut self.repos else { return false };
         match key.code {
+            KeyCode::Esc if self.no_projects => return true,
             KeyCode::Esc => self.repos = None,
             KeyCode::Enter => {
                 let picked = search.selected().map(|h| h.rel.clone()).or_else(|| (!search.query.is_empty()).then(|| search.query.clone()));
-                self.repos = None;
-                if let Some(picked) = picked {
-                    self.add_repo(&picked);
+                let typed = picked.as_ref() == Some(&search.query);
+                if picked.is_some_and(|picked| self.add_repo(&picked, typed)) {
+                    self.repos = None;
                 }
             }
             KeyCode::Up => search.step(-1),
@@ -1813,10 +1833,12 @@ impl App {
             KeyCode::PageDown => search.step(10),
             _ => {
                 if input::edit(&mut search.query, key) {
+                    self.message = None;
                     search.update(&self.tx);
                 }
             }
         }
+        false
     }
 
     fn changes_key(&mut self, key: KeyEvent) {
@@ -2129,7 +2151,7 @@ impl App {
                 };
                 (pos.y - list.y) as isize + offset_and_at.0 as isize - offset_and_at.1 as isize
             }
-            _ if down && !popup.contains(pos) => {
+            _ if down && !popup.contains(pos) && !self.no_projects => {
                 (self.search, self.repos) = (None, None);
                 return;
             }

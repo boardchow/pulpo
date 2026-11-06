@@ -40,6 +40,19 @@ pub fn toplevel(dir: &Path) -> Option<PathBuf> {
     git(dir, &["rev-parse", "--show-toplevel"]).ok().map(|out| PathBuf::from(out.trim()))
 }
 
+/// With an empty first commit, for workspaces to branch off.
+pub fn init(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("couldn't make {}: {e}", dir.display()))?;
+    if let Err(e) = git(dir, &["init", "-q"]) {
+        let _ = std::fs::remove_dir(dir);
+        return Err(format!("git init failed: {e}"));
+    }
+    // Without it, git makes up an email from the Mac's name.
+    git(dir, &["-c", "user.useConfigOnly=true", "commit", "-q", "--allow-empty", "-m", "Initial commit"])
+        .map(drop)
+        .map_err(|e| format!("no first commit, so no workspaces yet: {}", e.lines().last().unwrap_or_default()))
+}
+
 pub fn main_repo(dir: &Path) -> Option<PathBuf> {
     let common = git(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok()?;
     let common = PathBuf::from(common.trim());
@@ -187,6 +200,17 @@ pub fn parse(out: &str) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_makes_a_repository_in_a_new_folder() {
+        let dir = std::env::temp_dir().join(format!("pulpo-init-{}", std::process::id())).join("new");
+        match init(&dir) {
+            Ok(()) => assert!(git(&dir, &["rev-parse", "HEAD"]).is_ok()),
+            Err(e) => assert!(e.starts_with("no first commit")),
+        }
+        assert_eq!(main_repo(&dir).unwrap().canonicalize().unwrap(), dir.canonicalize().unwrap());
+        std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
 
     #[test]
     fn parses_numstat() {

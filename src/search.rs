@@ -124,7 +124,7 @@ impl Search {
             Mode::Repos => {
                 self.found = fuzzy(Kind::Repo, &self.files, MAX_HITS);
                 if self.query.starts_with('/') || self.query.starts_with('~') {
-                    let typed = Hit { kind: Kind::Repo, rel: self.query.clone(), line: None, text: String::new(), path: PathBuf::new() };
+                    let typed = Hit { kind: Kind::Repo, rel: self.query.clone(), line: None, text: String::new(), path: expand_home(&self.query) };
                     self.found.insert(0, typed);
                 }
             }
@@ -234,6 +234,13 @@ fn list_files(root: &Path) -> Vec<String> {
         .filter_map(|e| e.path().strip_prefix(root).ok().map(|p| p.to_string_lossy().into_owned()))
         .take(MAX_FILES)
         .collect()
+}
+
+pub fn expand_home(path: &str) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
+        None => PathBuf::from(path),
+    }
 }
 
 fn find_repos(home: &Path) -> Vec<String> {

@@ -17,6 +17,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.reorder();
     frame.render_widget(Block::new().style(Style::new().fg(theme::fg()).bg(theme::bg())), frame.area());
     let [main, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
+    if app.no_projects {
+        draw_welcome(frame, app, main);
+        draw_footer(frame, app, footer);
+        return;
+    }
     let left = if app.left_hidden { 0 } else { app.left_width.unwrap_or((main.width * 18 / 100).clamp(26, 36)).clamp(20.min(main.width / 3), main.width / 3) };
     let rest = main.width - left;
     let least = 24.min(rest);
@@ -84,8 +89,11 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), art);
 
     let [_, title, _] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)]).areas(text);
-    let name = Line::from(vec![Span::from("Pulpo").fg(theme::fg()).bold(), Span::from(concat!(" v", env!("CARGO_PKG_VERSION"))).fg(theme::muted())]);
-    frame.render_widget(name, title);
+    frame.render_widget(name(), title);
+}
+
+fn name() -> Line<'static> {
+    Line::from(vec![Span::from("Pulpo").fg(theme::fg()).bold(), Span::from(concat!(" v", env!("CARGO_PKG_VERSION"))).fg(theme::muted())])
 }
 
 fn panel(frame: &mut Frame, block: Block<'static>, area: Rect, focused: bool, items: Vec<ListItem>, state: &mut ListState) -> Rect {
@@ -718,16 +726,39 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
+fn draw_welcome(frame: &mut Frame, app: &mut App, area: Rect) {
+    let width = (area.width * 6 / 10).max(60).min(area.width);
+    let height = (area.height / 2).clamp(8, 12);
+    let [_, logo, _, title, _, picker, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(PULPO.len() as u16),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Length(height),
+        Constraint::Fill(2),
+    ])
+    .areas(area);
+    let lines: Vec<Line> = pulpo(false).into_iter().map(|row| Line::from(row).fg(theme::blue())).collect();
+    frame.render_widget(Paragraph::new(lines).centered(), logo);
+    frame.render_widget(name().centered(), title);
+    draw_repos_in(frame, app, Rect { x: area.x + (area.width - width) / 2, width, ..picker });
+}
+
 fn draw_repos(frame: &mut Frame, app: &mut App) {
-    let Some(search) = &mut app.repos else { return };
     let area = frame.area();
-    let popup = centered(area, (area.width * 6 / 10).max(40), (area.height * 6 / 10).max(10));
+    draw_repos_in(frame, app, centered(area, (area.width * 6 / 10).max(60), (area.height * 6 / 10).max(10)));
+}
+
+fn draw_repos_in(frame: &mut Frame, app: &mut App, popup: Rect) {
+    let esc = if app.no_projects { "quit" } else { "close" };
+    let Some(search) = &mut app.repos else { return };
     frame.render_widget(Clear, popup);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(" New project ")
         .title_style(Style::new().fg(theme::fg()).bold())
-        .title_bottom(Line::from(" git repositories in your home folder · type to filter, or a path (~/…) · ⏎ add · esc close ").fg(theme::dim()))
+        .title_bottom(Line::from(format!(" a new folder's path (~/…) starts one · ⏎ add · esc {esc} ")).fg(theme::dim()))
         .border_style(border(true))
         .style(Style::new().bg(theme::bg()));
     let inner = block.inner(popup);
@@ -744,7 +775,18 @@ fn draw_repos(frame: &mut Frame, app: &mut App) {
         ]),
         input,
     );
-    let items: Vec<ListItem> = search.rows.iter().filter_map(|row| match row { Entry::Hit(hit) => Some(hit), Entry::Header(_) => None }).map(|hit| ListItem::new(Line::from(format!(" {}", hit.rel)))).collect();
+    let items: Vec<ListItem> = search
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Entry::Hit(hit) => Some(hit),
+            Entry::Header(_) => None,
+        })
+        .map(|hit| {
+            let new = hit.path.is_absolute() && !hit.path.exists();
+            ListItem::new(Line::from(vec![Span::from(format!(" {}", hit.rel)), Span::from(if new { "  new folder" } else { "" }).fg(theme::muted())]))
+        })
+        .collect();
     frame.render_stateful_widget(List::new(items).highlight_style(highlight(true)), results, &mut search.state);
 }
 
