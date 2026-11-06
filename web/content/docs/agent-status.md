@@ -33,7 +33,7 @@ Then start a new Claude session; sessions started before don't report. To check 
 
 ## Get notified
 
-With the hooks installed, Ghostty shows a notification when an agent asks something or finishes. It names the terminal, its workspace, and what the agent asked. Each terminal notifies at most once every 10 seconds.
+With the hooks installed, Pulpo asks your terminal app to show a notification when an agent asks something or finishes. Not every terminal app shows them. It names the terminal, its workspace, and what the agent asked. Each terminal notifies at most once every 10 seconds.
 
 ## Report status from other programs
 

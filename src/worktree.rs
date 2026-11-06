@@ -66,8 +66,6 @@ pub struct Config {
     pub teardown: String,
     pub include: Vec<String>,
     pub branch_prefix: String,
-    /// (setup, teardown) came from a committed file: run only once trusted.
-    pub committed: (bool, bool),
 }
 
 /// `None` says nothing; an empty value turns a guess off.
@@ -83,27 +81,6 @@ struct Layer {
     teardown: Option<String>,
     include: Option<Vec<String>>,
     branch_prefix: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Conductor {
-    file_include_globs: String,
-    scripts: ConductorScripts,
-    git: ConductorGit,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct ConductorScripts {
-    setup: String,
-    archive: String,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct ConductorGit {
-    branch_prefix: String,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -273,29 +250,7 @@ pub fn config(repo: &Path, checkout: &Path) -> Result<(Config, Vec<String>)> {
     };
     let include = if rails { vec!["config/master.key".to_string(), "config/credentials/*.key".to_string()] } else { Vec::new() };
     let mut config = Config { ports: guessed.ports.clone(), images: guessed.images.clone(), db, db_service, setup, include, ..Config::default() };
-    let mut warnings = guessed.warnings;
-
-    for (dir, name) in [(checkout, "settings.toml"), (repo, "settings.local.toml")] {
-        let file = dir.join(".conductor").join(name);
-        let Ok(text) = fs::read_to_string(&file) else { continue };
-        let conductor: Conductor = match toml::from_str(&text) {
-            Ok(c) => c,
-            Err(e) => {
-                warnings.push(format!("{} doesn't read: {e}", file.display()));
-                continue;
-            }
-        };
-        let said = |text: String| Some(text).filter(|t| !t.trim().is_empty());
-        let globs: Vec<String> = conductor.file_include_globs.split([',', '\n']).map(str::trim).filter(|g| !g.is_empty()).map(String::from).collect();
-        let layer = Layer {
-            setup: said(conductor.scripts.setup),
-            teardown: said(conductor.scripts.archive),
-            include: Some(globs).filter(|g| !g.is_empty()),
-            branch_prefix: said(conductor.git.branch_prefix.trim_end_matches('/').to_string()),
-            ..Layer::default()
-        };
-        config.overlay(layer, !yours(dir, &file));
-    }
+    let warnings = guessed.warnings;
 
     let path = config_path(repo);
     match fs::read_to_string(&path) {
@@ -305,7 +260,7 @@ pub fn config(repo: &Path, checkout: &Path) -> Result<(Config, Vec<String>)> {
             if text.contains("compose file; edit freely.") {
                 mine.forget_empty();
             }
-            config.overlay(mine, false);
+            config.overlay(mine);
         }
         Err(_) => {
             fs::create_dir_all(config_dir())?;
@@ -313,29 +268,6 @@ pub fn config(repo: &Path, checkout: &Path) -> Result<(Config, Vec<String>)> {
         }
     }
     Ok((config, warnings))
-}
-
-/// Yours only by this exact name, as a real folder and file (a case-insensitive disk or a
-/// link can fool git), and untracked or ignored per git. Anything unsure is the repository's.
-fn yours(dir: &Path, file: &Path) -> bool {
-    let Ok(rel) = file.strip_prefix(dir) else { return false };
-    let parts: Vec<_> = rel.components().collect();
-    let mut at = dir.to_path_buf();
-    for (i, part) in parts.iter().enumerate() {
-        let last = i + 1 == parts.len();
-        let exact = fs::read_dir(&at).into_iter().flatten().flatten().any(|e| {
-            e.file_name() == part.as_os_str() && e.file_type().is_ok_and(|t| if last { t.is_file() } else { t.is_dir() })
-        });
-        if !exact {
-            return false;
-        }
-        at.push(part);
-    }
-    let rel = rel.to_string_lossy();
-    // Case-insensitive as the disk is: else a committed `.Conductor/...`
-    // pulled over your ignored file shows that file as ignored.
-    git(dir, &["-c", "core.ignorecase=true", "status", "--porcelain", "--ignored", "--untracked-files=all", "--", &rel], None)
-        .is_ok_and(|out| out == format!("?? {rel}") || out == format!("!! {rel}"))
 }
 
 impl Layer {
@@ -354,7 +286,7 @@ impl Layer {
 }
 
 impl Config {
-    fn overlay(&mut self, layer: Layer, committed: bool) {
+    fn overlay(&mut self, layer: Layer) {
         let set = |mine: &mut String, theirs: Option<String>| {
             if let Some(theirs) = theirs {
                 *mine = theirs;
@@ -367,33 +299,12 @@ impl Config {
             self.images = images;
         }
         self.include.extend(layer.include.unwrap_or_default());
-        if layer.setup.is_some() {
-            self.committed.0 = committed;
-        }
-        if layer.teardown.is_some() {
-            self.committed.1 = committed;
-        }
         set(&mut self.db, layer.db);
         set(&mut self.db_service, layer.db_service);
         set(&mut self.fresh, layer.fresh);
         set(&mut self.setup, layer.setup);
         set(&mut self.teardown, layer.teardown);
         set(&mut self.branch_prefix, layer.branch_prefix);
-    }
-
-    fn committed_scripts(&self) -> Vec<(&'static str, String)> {
-        let scripts = [(self.committed.0, "setup", &self.setup), (self.committed.1, "teardown", &self.teardown)];
-        scripts.into_iter().filter(|(c, _, s)| *c && !s.is_empty()).map(|(_, what, s)| (what, s.clone())).collect()
-    }
-
-    pub fn without(&mut self, scripts: &[(&'static str, String)]) -> Vec<String> {
-        let mut notes = Vec::new();
-        for (what, _) in scripts {
-            let script = if *what == "setup" { &mut self.setup } else { &mut self.teardown };
-            script.clear();
-            notes.push(format!("! the committed {what} script isn't trusted: skipped"));
-        }
-        notes
     }
 }
 
@@ -419,8 +330,8 @@ fn starter(c: &Config) -> String {
         "# How Pulpo sets up a workspace of this repository: a git worktree on its
 # own branch, with its own ports and Docker project. Below, each setting as
 # Pulpo found it when writing this file (guessed from the compose file and
-# lockfiles, or read from .conductor/settings.toml). Uncomment one to set
-# it; an empty value (\"\" or []) turns it off, but for include.
+# lockfiles). Uncomment one to set it; an empty value (\"\" or []) turns
+# it off, but for include.
 
 # Main's ignored files each workspace gets (gitignore patterns), added to its
 # .env files, those .worktreeinclude names and these found ones: [{}].
@@ -452,30 +363,6 @@ fn starter(c: &Config) -> String {
         c.teardown,
         c.branch_prefix
     )
-}
-
-/// A workspace starts from the remote, so whoever can push could otherwise run code here.
-pub fn untrusted(repo: &Path, config: &Config) -> Vec<(&'static str, String)> {
-    let trusted = trusted();
-    config.committed_scripts().into_iter().filter(|(_, script)| !trusted.iter().any(|(r, s)| r == repo && s == script)).collect()
-}
-
-pub fn trust(repo: &Path, scripts: &[(&'static str, String)]) -> Result<()> {
-    let mut trusted = trusted();
-    trusted.extend(scripts.iter().map(|(_, script)| (repo.to_path_buf(), script.clone())));
-    fs::create_dir_all(trust_path().parent().expect("has a parent"))?;
-    // The old hash-based file, replaced by exact text.
-    let _ = fs::remove_file(crate::agents::state_dir().join("trusted-scripts"));
-    Ok(fs::write(trust_path(), serde_json::to_vec_pretty(&trusted)?)?)
-}
-
-/// Exact text, not a hash: nothing to forge.
-fn trusted() -> Vec<(PathBuf, String)> {
-    fs::read(trust_path()).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
-}
-
-fn trust_path() -> PathBuf {
-    crate::agents::state_dir().join("trusted-scripts.json")
 }
 
 /// FNV-1a: the same in every build, unlike std's hasher.
@@ -937,7 +824,6 @@ pub fn setup_script(wt: &Worktree, config: &Config, notes: &[String]) -> String 
     let main = &wt.main_project;
     let mut s = String::from("step() { printf '\\n\\033[1m%s\\033[0m\\n' \"$1\"; }\nsetup() (\nset -e\nset -o pipefail\n");
     s += &format!("cd {root}\n");
-    s += &conductor_exports(wt);
     let what = match &wt.branch {
         Some(branch) => format!("Workspace {}: branch {branch}, a worktree of {}", wt.name, wt.repo.display()),
         None => format!("Workspace {}: a copy of {}", wt.name, wt.repo.display()),
@@ -1040,25 +926,10 @@ done
 )
 "#;
 
-/// Only in Pulpo's scripts, not its terminals, where tools would think they run in Conductor.
-fn conductor_exports(wt: &Worktree) -> String {
-    let Some(port) = wt.port else { return String::new() };
-    let vars = [
-        ("CONDUCTOR_PORT", port.to_string()),
-        ("CONDUCTOR_ROOT_PATH", wt.repo.to_string_lossy().into_owned()),
-        ("CONDUCTOR_WORKSPACE_NAME", wt.name.clone()),
-        ("CONDUCTOR_WORKSPACE_PATH", wt.root.to_string_lossy().into_owned()),
-    ];
-    vars.iter().map(|(var, value)| format!("export {var}={}\n", quote(value))).collect()
-}
-
-/// The teardown script, less the repository's steps that aren't trusted yet.
 pub fn removal_script(wt: &Worktree, exe: &Path) -> String {
     let checkout = if wt.root.is_dir() { &wt.root } else { &wt.repo };
-    let mut settings = config(&wt.repo, checkout).map(|(c, _)| c).unwrap_or_default();
-    let untrusted = untrusted(&wt.repo, &settings);
-    let skipped: String = settings.without(&untrusted).iter().map(|n| format!("echo {}\n", quote(n))).collect();
-    skipped + &teardown_script(wt, &settings, exe)
+    let settings = config(&wt.repo, checkout).map(|(c, _)| c).unwrap_or_default();
+    teardown_script(wt, &settings, exe)
 }
 
 pub fn teardown_script(wt: &Worktree, config: &Config, exe: &Path) -> String {
@@ -1075,7 +946,7 @@ pub fn teardown_script(wt: &Worktree, config: &Config, exe: &Path) -> String {
     let root = quote(&wt.root.to_string_lossy());
     let mut s = String::from("remove() (\nset -e\n");
     if !config.teardown.is_empty() {
-        s += &format!("if [ -d {root} ]; then\ncd {root}\n{}{}\nfi\n", conductor_exports(wt), config.teardown);
+        s += &format!("if [ -d {root} ]; then\ncd {root}\n{}\nfi\n", config.teardown);
     }
     s += "cd /\n";
     if compose_file(&wt.repo).is_some() || compose_file(&wt.root).is_some() || !wt.images.is_empty() {
@@ -1362,114 +1233,31 @@ mod tests {
     }
 
     #[test]
-    fn layers_settings_and_asks_for_committed_scripts() {
+    fn layers_settings() {
         let t = Scratch::new("layers");
         let repo = t.join("layered");
-        fs::create_dir_all(repo.join(".conductor")).unwrap();
+        fs::create_dir_all(&repo).unwrap();
         run_git(&repo, &["init", "-q"]);
         fs::write(repo.join("Gemfile.lock"), "").unwrap();
         fs::write(repo.join("package-lock.json"), "").unwrap();
         let (c, _) = config(&repo, &repo).unwrap();
         assert_eq!(c.setup, "bundle install && npm ci");
-        assert_eq!(c.committed, (false, false));
         let written = fs::read_to_string(config_path(&repo)).unwrap();
         assert!(written.contains("# setup = \"bundle install && npm ci\""));
         assert_eq!(toml::from_str::<Layer>(&written).unwrap(), Layer::default());
-
-        fs::write(
-            repo.join(".conductor/settings.toml"),
-            "file_include_globs = \"/config/master.key, .secrets\"\n[scripts]\nsetup = \"bin/setup\"\narchive = \"bin/down\"\n[scripts.run.dev]\ncommand = \"bin/dev\"\n[git]\nbranch_prefix = \"team/\"\n",
-        )
-        .unwrap();
-        run_git(&repo, &["add", ".conductor/settings.toml"]);
-        fs::write(repo.join(".conductor/settings.local.toml"), "[scripts]\nsetup = \"bin/mine\"\n").unwrap();
-        let (c, _) = config(&repo, &repo).unwrap();
-        assert_eq!((c.setup.as_str(), c.teardown.as_str(), c.branch_prefix.as_str()), ("bin/mine", "bin/down", "team"));
-        assert_eq!(c.include, ["/config/master.key", ".secrets"]);
-        assert_eq!(c.committed, (false, true));
-        assert_eq!(branch_name(&repo, "fix", &c.branch_prefix), "team/fix");
-
-        assert_eq!(untrusted(&repo, &c), [("teardown", "bin/down".to_string())]);
-        trust(&repo, &untrusted(&repo, &c)).unwrap();
-        assert!(untrusted(&repo, &c).is_empty());
-        let mut other = c.clone();
-        let asked = untrusted(&t.join("elsewhere"), &other);
-        assert_eq!(other.without(&asked).len(), 1);
-        assert_eq!((other.setup.as_str(), other.teardown.as_str()), ("bin/mine", ""));
-        run_git(&repo, &["add", "-f", ".conductor/settings.local.toml"]);
-        assert_eq!(config(&repo, &repo).unwrap().0.committed, (true, true));
 
         for header in [
             "# with its own Docker project. Guessed from its compose file; edit freely.",
             "# own branch, with its own ports and Docker project. Guessed from its\n# compose file; edit freely.",
         ] {
             fs::write(config_path(&repo), format!("{header}\nports = []\nsetup = \"\"\nteardown = \"\"\n")).unwrap();
-            let (c, _) = config(&repo, &repo).unwrap();
-            assert_eq!((c.setup.as_str(), c.teardown.as_str()), ("bin/mine", "bin/down"));
+            assert_eq!(config(&repo, &repo).unwrap().0.setup, "bundle install && npm ci");
         }
 
-        fs::write(config_path(&repo), "teardown = \"make down\"\nsetup = \"\"\n").unwrap();
+        fs::write(config_path(&repo), "teardown = \"make down\"\nsetup = \"\"\nbranch_prefix = \"team\"\n").unwrap();
         let (c, _) = config(&repo, &repo).unwrap();
-        assert_eq!((c.setup.as_str(), c.teardown.as_str(), c.committed), ("", "make down", (false, false)));
-    }
-
-    #[test]
-    fn a_settings_file_is_yours_only_when_git_says_so() {
-        let t = Scratch::new("yours");
-        fs::create_dir_all(t.join("repo/evil")).unwrap();
-        let repo = t.join("repo");
-        run_git(&repo, &["init", "-q"]);
-        fs::write(repo.join("evil/settings.toml"), "").unwrap();
-        // Committed behind a committed link: git calls it untracked.
-        std::os::unix::fs::symlink("evil", repo.join(".conductor")).unwrap();
-        run_git(&repo, &["add", "-A"]);
-        run_git(&repo, &["commit", "-q", "-m", "a"]);
-        assert!(run_git(&repo, &["ls-files", "--", ".conductor/settings.toml"]).is_empty());
-        assert!(!yours(&repo, &repo.join(".conductor/settings.toml")));
-        fs::remove_file(repo.join(".conductor")).unwrap();
-        fs::create_dir_all(repo.join(".conductor")).unwrap();
-        fs::write(repo.join(".conductor/settings.local.toml"), "").unwrap();
-        assert!(yours(&repo, &repo.join(".conductor/settings.local.toml")));
-        fs::create_dir_all(t.join("plain/.conductor")).unwrap();
-        fs::write(t.join("plain/.conductor/settings.toml"), "").unwrap();
-        assert!(!yours(&t.join("plain"), &t.join("plain/.conductor/settings.toml")));
-        // Committed under another case: the same file on a case-insensitive disk.
-        fs::remove_dir_all(repo.join(".conductor")).unwrap();
-        fs::create_dir_all(repo.join(".Conductor")).unwrap();
-        fs::write(repo.join(".Conductor/Settings.toml"), "").unwrap();
-        run_git(&repo, &["add", "-A"]);
-        run_git(&repo, &["commit", "-q", "-m", "b"]);
-        assert!(repo.join(".conductor/settings.toml").is_file(), "a case-insensitive disk opens it");
-        assert!(!yours(&repo, &repo.join(".conductor/settings.toml")));
-        // Your ignored file, then a committed `.Conductor/...` pulled over it
-        // with git's ignorecase off: the file looks ignored, yet isn't yours.
-        let up = t.join("up");
-        fs::create_dir_all(up.join(".Conductor")).unwrap();
-        run_git(&up, &["init", "-q"]);
-        run_git(&up, &["commit", "-q", "--allow-empty", "-m", "base"]);
-        run_git(&t, &["clone", "-q", "up", "down"]);
-        fs::write(up.join(".Conductor/settings.local.toml"), "[scripts]\nsetup = \"evil\"\n").unwrap();
-        let down = t.join("down");
-        run_git(&down, &["config", "core.ignorecase", "false"]);
-        fs::write(down.join(".git/info/exclude"), "settings.local.toml\n").unwrap();
-        run_git(&up, &["add", "-A"]);
-        run_git(&up, &["commit", "-q", "-m", "evil"]);
-        fs::create_dir_all(down.join(".conductor")).unwrap();
-        fs::write(down.join(".conductor/settings.local.toml"), "mine").unwrap();
-        run_git(&down, &["pull", "-q", "origin", "main"]);
-        assert!(fs::read_to_string(down.join(".conductor/settings.local.toml")).unwrap().contains("evil"));
-        assert!(!yours(&down, &down.join(".conductor/settings.local.toml")));
-        // A submodule's file: git says nothing about it, so not yours.
-        fs::create_dir_all(t.join("sub/.conductor")).unwrap();
-        run_git(&t.join("sub"), &["init", "-q"]);
-        fs::write(t.join("sub/settings.toml"), "").unwrap();
-        run_git(&t.join("sub"), &["add", "-A"]);
-        run_git(&t.join("sub"), &["commit", "-q", "-m", "s"]);
-        fs::remove_dir_all(repo.join(".Conductor")).unwrap();
-        run_git(&repo, &["rm", "-rq", "--cached", ".Conductor"]);
-        run_git(&repo, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &t.join("sub").to_string_lossy(), ".conductor"]);
-        assert!(repo.join(".conductor/settings.toml").is_file());
-        assert!(!yours(&repo, &repo.join(".conductor/settings.toml")));
+        assert_eq!((c.setup.as_str(), c.teardown.as_str()), ("", "make down"));
+        assert_eq!(branch_name(&repo, "fix", &c.branch_prefix), "team/fix");
     }
 
     #[test]

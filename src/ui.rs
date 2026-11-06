@@ -57,9 +57,17 @@ const PULPO: [&str; 3] = [
     "𜴁𜴄🮂𜴁𜴄🮂𜴁𜴄",
 ];
 
+const PULPO_QUADRANTS: [&str; 3] = ["▗▄████▄▖", "▝▙▄██▄▟▘", "▞▚▀▞▚▀▞▚"];
+
+/// Fonts rarely have octants; Ghostty and kitty draw them themselves.
+static OCTANTS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    std::env::var("TERM_PROGRAM").is_ok_and(|t| t == "ghostty") || std::env::var("TERM").is_ok_and(|t| t == "xterm-kitty")
+});
+
 fn pulpo(wiggle: bool) -> Vec<String> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let mut rows: Vec<String> = PULPO.iter().map(|row| row.to_string()).collect();
+    let art = if *OCTANTS { PULPO } else { PULPO_QUADRANTS };
+    let mut rows: Vec<String> = art.iter().map(|row| row.to_string()).collect();
     if wiggle && (now.as_millis() / 300) % 2 == 1 {
         let mut legs: Vec<char> = rows[2].chars().collect();
         legs.rotate_right(1);
@@ -634,7 +642,6 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
     }
     let p = app.keymap.label();
     let prefixed = |keys: &str| format!("{p} {keys}");
-    // A ⌃ prefix pressed twice goes to the program (⌘ never does).
     let twice = app.keymap.prefix.iter().find(|k| k.mods.contains(ratatui::crossterm::event::KeyModifiers::CONTROL)).map(|k| format!("{k} {k}"));
     let sections: Vec<(&str, Vec<(String, &str)>)> = vec![
         (
@@ -675,7 +682,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
                 ("⏎ in history".into(), "the commit: its files and their changes"),
                 ("⏎ tab".into(), "from the tree into the file, and back"),
                 ("pgup pgdn".into(), "scroll the file"),
-                ("⌘s esc".into(), "editing: save, leave (twice to throw changes away)"),
+                ("⌃s esc".into(), "editing: save, leave (twice to throw changes away)"),
             ],
         ),
         (

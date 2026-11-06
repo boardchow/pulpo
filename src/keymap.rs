@@ -97,8 +97,7 @@ pub struct Keymap {
 
 impl Default for Keymap {
     fn default() -> Self {
-        // ⌘p is free in Ghostty, macOS and every program; ⌃b for terminals that keep ⌘ to themselves.
-        Keymap { prefix: ["cmd-p", "ctrl-b"].iter().filter_map(|k| Key::parse(k)).collect() }
+        Keymap { prefix: Key::parse("ctrl-b").into_iter().collect() }
     }
 }
 
@@ -193,7 +192,7 @@ mod tests {
         let keymap = Keymap::from_toml("prefix = \"ctrl-a\"").unwrap();
         assert_eq!(keymap.prefix, vec![key("ctrl-a")]);
         assert_eq!(Keymap::from_toml("pulpo = [\"cmd-j\"]").unwrap().prefix, vec![key("cmd-j")]);
-        assert_eq!(Keymap::default().label(), "⌘p");
+        assert_eq!(Keymap::default().label(), "⌃b");
         assert!(Keymap::default().is_prefix(key("ctrl-b")));
         assert!(Keymap::from_toml("leader = \"ctrl-b\"").is_err());
         let old = "prefix = \"ctrl-a\"\nlegacy_ctrl_keys = true\n[after_prefix]\nn = \"new\"\n[chords]\nx = \"alt-1\"\n";
