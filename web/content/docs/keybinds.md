@@ -2,7 +2,7 @@
 title: Keybinds
 description: "Every key and mouse action in Pulpo, by where you are."
 section: Reference
-order: 14
+order: 15
 ---
 
 Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌃b], then the key. In Pulpo, :kp[?] lists them.

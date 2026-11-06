@@ -9,7 +9,7 @@ Each copy is a [workspace](/docs/projects-and-workspaces): a git worktree on its
 
 ## Who it's for
 
-Developers who give coding agents more than one task at a time. Pulpo runs any agent that works in a terminal, and shows exactly what [Claude Code and Codex](/docs/agent-status) are doing.
+Developers who give coding agents more than one task at a time. Pulpo runs any [agent](/docs/agents) that works in a terminal, like Claude Code or Codex.
 
 ## Why not tmux and worktrees by hand
 
@@ -21,4 +21,4 @@ Developers who give coding agents more than one task at a time. Pulpo runs any a
 | Review the work | Run `git diff` | Changes shows each edited file whole, with its changes in place |
 | Restart your Mac | Start every session again | Terminals reopen and agent sessions resume |
 
-Pulpo never commits, pushes or merges. Your agents, or you, do that in the terminal.
+Pulpo never commits, pushes or merges: your agents, or you, do that.

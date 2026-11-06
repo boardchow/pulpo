@@ -2,7 +2,7 @@
 title: The prefix key
 description: "Every Pulpo action is the prefix, then one key. It works everywhere, terminals included."
 section: Concepts
-order: 13
+order: 14
 ---
 
 ## How it works

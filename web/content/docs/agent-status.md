@@ -21,20 +21,16 @@ A workspace being [set up](/docs/workspace-setup) shows the spinner, then ✓ or
 
 Press :kp[a]. Pulpo goes first to a workspace whose setup ended, then to the terminal that has waited longest, in any workspace. Terminals that asked something come before those that finished. Press :kp[a] again for the next one.
 
-## Get exact status from your agents
+## Get exact status
 
-Without help, Pulpo guesses from what the terminal prints. With Pulpo's hooks installed, Claude Code and Codex report exactly when they work, ask something, or finish:
+Without [hooks](/docs/agents), Pulpo guesses from what the terminal prints. Install them, so Claude Code and Codex report exactly when they work, ask something, or finish:
 
 ```sh
 pulpo hooks install
 ```
 
-Then start a new session; sessions started before don't report. Codex runs the hooks once you trust them: type `/hooks` in Codex. To check the hooks, run `pulpo hooks status`: every hook should say `current`.
+Each hook shows as `added`. Start a new session to see its status: sessions started before don't report. In Codex, also type `/hooks` and trust Pulpo's.
 
 ## Get notified
 
 With the hooks installed, Pulpo asks your terminal app to show a notification when an agent asks something or finishes. Not every terminal app shows them. It names the terminal, its workspace, and what the agent asked. Each terminal notifies at most once every 10 seconds.
-
-## Report status from other programs
-
-Other programs can report their status with [OSC 7501](https://mitchellh.com/writing/program-status-osc7501). Pulpo shows `working` as working and `blocked` as waiting for you.

@@ -42,7 +42,7 @@ pulpo hooks install
 
 ## Connect your agents
 
-The hooks tell Pulpo when an agent works, waits for you or stops. They also let Pulpo resume agent sessions after a reboot. The install script adds them to each agent it finds; to add them yourself, run:
+The [hooks](/docs/agents) tell Pulpo when an agent works, waits for you or stops. They also let Pulpo resume agent sessions after a reboot. The install script adds them to each agent it finds; to add them yourself, run:
 
 ```sh
 pulpo hooks install
