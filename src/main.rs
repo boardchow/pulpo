@@ -49,7 +49,7 @@ const USAGE: &str = "usage:
                  print those hooks instead
   pulpo keytest  show what reaches Pulpo for each key (⌃b is the prefix)
   pulpo doctor   check that the prefix reaches Pulpo, and the hooks
-  pulpo update   build and install the latest Pulpo
+  pulpo update   download and install the latest Pulpo
   pulpo uninstall
                  stop every terminal, delete the workspaces, the hooks and Pulpo itself
   pulpo emit     record a hook event from stdin (called by the hooks)
@@ -106,7 +106,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Runs the install script again, so an update gets its Rust and hook steps too.
+/// Runs the install script again, so an update gets its hook step too.
 fn update() -> Result<()> {
     let status = std::process::Command::new("sh").args(["-c", "set -o pipefail; curl -fsSL https://pulpo.sh/install | sh"]).status()?;
     if !status.success() {

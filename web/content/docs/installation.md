@@ -19,7 +19,7 @@ Run the install script:
 curl -fsSL https://pulpo.sh/install | sh
 ```
 
-It builds Pulpo into `~/.cargo/bin`, which takes a minute or two. It installs Rust if you don't have it, and updates it if yours is older than 1.88. If Claude Code or Codex is installed, it also adds Pulpo's [hooks](#connect-your-agents) to it. If the Xcode Command Line Tools are missing, the script opens their installer and stops: accept the dialog, wait for the install to finish, then run the command again.
+It downloads the latest Pulpo into `~/.local/bin`. If Claude Code or Codex is installed, it also adds Pulpo's [hooks](#connect-your-agents) to it.
 
 Then open a new terminal window, so your shell finds `pulpo`, and check the install:
 
@@ -76,7 +76,7 @@ To check or remove the hooks, see the [CLI reference](/docs/cli).
 pulpo update
 ```
 
-It runs the install script again: it builds the latest Pulpo, updates Rust if it needs to, and refreshes the hooks. The next time you open Pulpo, its server switches to the new build. Your terminals keep running.
+It runs the install script again: it downloads the latest Pulpo and refreshes the hooks. The next time you open Pulpo, its server switches to the new build. Your terminals keep running.
 
 ## Uninstall
 
