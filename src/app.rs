@@ -175,6 +175,8 @@ pub struct App {
     placed: HashMap<PathBuf, u8>,
     next_token: u64,
     upgrade_asked: bool,
+    pub release: Option<String>,
+    pub updating: bool,
     /// The terminal the server sends output for: the one on screen.
     watching: Option<usize>,
     watched_at: Instant,
@@ -267,6 +269,8 @@ impl App {
             // Far above any terminal id, so the two never mix.
             next_token: 1 << 40,
             upgrade_asked: false,
+            release: None,
+            updating: false,
             watching: None,
             watched_at: Instant::now(),
             reconnected: None,
@@ -1181,10 +1185,15 @@ impl App {
             'd' => self.ask_delete(),
             'e' => self.edit(),
             'r' => self.start_rename(),
-            'q' | 'Q' if self.editing() => {
+            'q' | 'Q' | 'u' if self.editing() => {
                 self.message = Some(UNSAVED.into());
             }
             'q' => return true,
+            'u' if self.release.is_some() => {
+                self.updating = true;
+                return true;
+            }
+            'u' => self.message = Some("no update found".into()),
             'Q' => {
                 let n = self.terms.len();
                 self.ask(format!("stop {n} terminal(s) and quit?"), Confirm::StopAll);

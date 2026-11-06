@@ -548,6 +548,8 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         input("find", editor.find.as_deref().unwrap_or_default(), "⏎ next · ⇧⏎ previous · esc done")
     } else if let Some(message) = &app.message {
         Line::from(format!(" {message}")).fg(theme::yellow()).bold()
+    } else if let Some(version) = app.release.as_ref().filter(|_| !app.no_projects) {
+        Line::from(format!(" Pulpo {version} is out · {} u to update", app.keymap.label())).fg(theme::blue()).bold()
     } else {
         Line::default()
     };
@@ -702,7 +704,14 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
                 ("ctrl-click".into(), "open a link, or a path:line"),
             ],
         ),
-        ("Quit", vec![(prefixed("q"), "quit, terminals keep running"), (prefixed("Q"), "quit and stop every terminal")]),
+        (
+            "Quit",
+            vec![
+                (prefixed("q"), "quit, terminals keep running"),
+                (prefixed("Q"), "quit and stop every terminal"),
+                (prefixed("u"), "update to the new release, terminals keep running"),
+            ],
+        ),
     ];
     let mut lines = Vec::new();
     for (title, keys) in sections {

@@ -25,6 +25,7 @@ mod viewer;
 mod workspace;
 
 use std::io::stdout;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -77,6 +78,7 @@ pub enum Msg {
     Changes(Box<review::Read>),
     Status(PathBuf, Box<git::Status>),
     Viewed(Box<viewer::Loaded>),
+    Release(String),
 }
 
 fn main() -> Result<()> {
@@ -128,6 +130,13 @@ fn run(launch: Option<PathBuf>) -> Result<()> {
     })?;
     agent_watcher.watch(&state_dir, RecursiveMode::NonRecursive)?;
 
+    let release_tx = tx.clone();
+    std::thread::spawn(move || {
+        if let Some(version) = newer_release() {
+            let _ = release_tx.send(Msg::Release(version));
+        }
+    });
+
     let input_tx = tx.clone();
     std::thread::spawn(move || {
         while let Ok(event) = event::read() {
@@ -147,7 +156,26 @@ fn run(launch: Option<PathBuf>) -> Result<()> {
     let result = event_loop(&mut terminal, &mut app, &rx);
     execute!(stdout(), PopKeyboardEnhancementFlags, DisableMouseCapture, DisableBracketedPaste)?;
     ratatui::restore();
-    result
+    result?;
+    if app.updating {
+        update()?;
+        // The server upgrades to the new build when it connects, and keeps its terminals.
+        // shortcut: a build outside the install script's folder restarts as itself, fine while Pulpo installs there.
+        return Err(std::process::Command::new(std::env::current_exe()?).args(std::env::args_os().skip(1)).exec().into());
+    }
+    Ok(())
+}
+
+fn newer_release() -> Option<String> {
+    let url = concat!(env!("CARGO_PKG_REPOSITORY"), "/releases/latest");
+    let out = std::process::Command::new("curl").args(["-fsS", "-m", "10", "-o", "/dev/null", "-w", "%{redirect_url}", url]).output().ok()?;
+    let latest = String::from_utf8(out.stdout).ok()?.rsplit_once("/tag/v")?.1.trim().to_string();
+    newer(&latest, env!("CARGO_PKG_VERSION")).then_some(latest)
+}
+
+fn newer(version: &str, than: &str) -> bool {
+    let parse = |v: &str| v.split('.').map(|n| n.parse::<u64>().ok()).collect::<Option<Vec<u64>>>();
+    matches!((parse(version), parse(than)), (Some(a), Some(b)) if a > b)
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>) -> Result<()> {
@@ -209,6 +237,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
                 Msg::Changes(read) => app.on_changes(*read),
                 Msg::Status(root, status) => app.on_status(root, *status),
                 Msg::Viewed(loaded) => app.on_viewed(*loaded),
+                Msg::Release(version) => app.release = Some(version),
             }
             app.settle();
         }
@@ -220,3 +249,16 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::newer;
+
+    #[test]
+    fn compares_versions_by_number() {
+        assert!(newer("0.10.0", "0.9.3"));
+        assert!(newer("0.1.1", "0.1.0"));
+        assert!(!newer("0.1.0", "0.1.0"));
+        assert!(!newer("0.1.0", "0.2.0"));
+        assert!(!newer("", "0.1.0"));
+    }
+}
