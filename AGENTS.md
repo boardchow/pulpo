@@ -80,3 +80,7 @@ Good, when the why isn't visible:
 ## Committing
 
 Commit only when the user asks, and never push without asking. To commit, read [.agents/commit.md](.agents/commit.md) and follow it.
+
+## Releasing
+
+Release only when the user asks. To release, read [.agents/release.md](.agents/release.md) and follow it.
