@@ -1,6 +1,8 @@
 # Writing Pulpo's docs
 
-The docs are the Markdown pages in `docs/`. Follow these rules for every change to them, and update them in the same change whenever the code changes what users see, type or configure.
+The docs are the Markdown pages in `docs/`. Follow these rules for every change to them.
+
+Fix what a change makes wrong. Before adding anything, ask: does this really need to be in the public docs? Usually it doesn't. Something new isn't a reason to write about it, and what Pulpo already shows, like a hint, the footer or the keybinds list, stays out.
 
 Pulpo is a Mac terminal app that runs several coding agents side by side, each in its own workspace. A new reader should understand what Pulpo is in 10 seconds, and have two agents running in 5 minutes. Aim for the clarity of the best developer tool docs, like Linear, Vercel, Stripe or Zed.
 

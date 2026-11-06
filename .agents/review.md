@@ -65,6 +65,10 @@ callers of anything whose behavior changed.
    a dependency added for a few lines, comments that only narrate the code.
 7. Users' machines: compatibility with files and state written by earlier
    versions, performance on real repositories, failures that would be silent.
+8. The repository's rules, not just the code: AGENTS.md for code, comments
+   and words, web/content/AGENTS.md for the docs. Flag every comment the
+   rules don't call for, and every doc line that doesn't really need to be
+   in the public docs.
 
 ## Severity
 - Critical: bugs, security issues, data loss, broken functionality.
