@@ -9,7 +9,7 @@ Each copy is a [workspace](/docs/projects-and-workspaces): a git worktree on its
 
 ## Who it's for
 
-Developers who give Claude Code, or any agent that runs in a terminal, more than one task at a time.
+Developers who give coding agents more than one task at a time. Pulpo runs any agent that works in a terminal, and shows exactly what [Claude Code and Codex](/docs/agent-status) are doing.
 
 ## Why not tmux and worktrees by hand
 
