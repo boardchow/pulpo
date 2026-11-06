@@ -17,6 +17,8 @@ Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌃b], then the key. 
 | :kp[f] | Files |
 | :kp[c] | Changes |
 | :kp[h] | History |
+| :kp[F], :kp[C] | Files, Changes, full screen |
+| :kp[H] | The selected commit, full screen |
 | :kp[1] to :kp[9] | The workspace with that number, in its terminal |
 | :kp[a] | The terminal that has waited longest for you |
 | :kp{k="["}, :kp{k="]"} | The previous, next terminal tab |
