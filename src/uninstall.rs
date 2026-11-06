@@ -60,8 +60,8 @@ pub fn uninstall() -> Result<()> {
         std::fs::remove_dir_all(folder)?;
         println!("Deleted {}.", shorten(folder));
     }
-    if !Command::new("cargo").args(["uninstall", "pulpo"]).status().is_ok_and(|s| s.success()) {
-        bail!("the pulpo command is still there: run cargo uninstall pulpo");
+    if let Err(e) = std::fs::remove_file(&exe) {
+        bail!("the pulpo command is still there: delete {} ({e})", exe.display());
     }
     println!("Pulpo is uninstalled.");
     Ok(())

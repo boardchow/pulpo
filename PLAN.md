@@ -204,8 +204,8 @@ for drawing and for encoding keys and the mouse.
   parent, and the open terminals stay the same. If the check or the exec
   fails, it carries on as it was. `Hello` and `Upgrade` never change, so
   any two builds can do this. Both must keep installing by rename
-  (`cargo install`): overwriting the running binary in place gets it
-  killed on macOS.
+  (`cargo install`, `mv` in the install script): overwriting the
+  running binary in place gets it killed on macOS.
 - **Stop.** Closing a terminal, or `Q`, sends Ctrl-C to the program in
   front and gives it up to 10 s (`docker compose up` stops its
   containers; Claude gets Ctrl-C again every half second, since it quits
