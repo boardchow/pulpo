@@ -45,7 +45,7 @@ const USAGE: &str = "usage:
   pulpo hooks install|status|remove [--dry-run]
                  add Pulpo's hooks to Claude Code, for what agents run and ask
   pulpo hooks    print those hooks instead
-  pulpo keytest  show what reaches Pulpo for each key (⌘p and ⌃b are the prefix)
+  pulpo keytest  show what reaches Pulpo for each key (⌃b is the prefix)
   pulpo doctor   check that the prefix reaches Pulpo, and the hooks
   pulpo update   build and install the latest Pulpo
   pulpo uninstall

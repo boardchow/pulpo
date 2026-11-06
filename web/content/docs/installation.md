@@ -8,7 +8,7 @@ order: 2
 ## Requirements
 
 - macOS, with git.
-- [Ghostty](https://ghostty.org). Other terminals may work, but aren't tested.
+- Any terminal app.
 - [Claude Code](https://claude.com/claude-code). Optional: without it, Pulpo still runs any agent, and guesses its status from the terminal's output.
 
 ## Install

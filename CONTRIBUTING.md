@@ -9,7 +9,7 @@ Open an issue. Tell me:
 - what you did
 - what you expected
 - what happened instead
-- your macOS version and your terminal (Ghostty, kitty, whatever)
+- your macOS version and your terminal app
 
 A screenshot helps a lot. It's a terminal app, half the bugs are visual lol.
 
