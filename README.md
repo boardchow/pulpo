@@ -18,7 +18,7 @@ curl -fsSL https://pulpo.sh/install | sh
 
 Then run `pulpo` inside a git repository.
 
-Pulpo needs macOS and runs in any terminal app. Claude Code lets Pulpo show what each agent is doing. See [Installation](https://pulpo.sh/docs/installation) for details.
+Pulpo needs macOS and runs in any terminal app. Claude Code or Codex lets Pulpo show what each agent is doing. See [Installation](https://pulpo.sh/docs/installation) for details.
 
 ## Docs
 

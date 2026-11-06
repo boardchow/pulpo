@@ -19,6 +19,6 @@ Developers who give Claude Code, or any agent that runs in a terminal, more than
 | Run the app in each task | Change ports by hand | Each workspace gets its own ports, and with Docker Compose its own containers and database |
 | See who needs you | Check every pane | A ◆ marks the agent that waits, and one key goes to it |
 | Review the work | Run `git diff` | Changes shows each edited file whole, with its changes in place |
-| Restart your Mac | Start every session again | Terminals reopen and Claude sessions resume |
+| Restart your Mac | Start every session again | Terminals reopen and agent sessions resume |
 
 Pulpo never commits, pushes or merges. Your agents, or you, do that in the terminal.

@@ -8,10 +8,10 @@ order: 16
 | Command | Does |
 | --- | --- |
 | `pulpo [path]` | Open Pulpo. The repository at `path` joins the project list. `path` defaults to `.` |
-| `pulpo hooks` | Print the hooks Pulpo adds to Claude Code, as JSON, without changing anything |
-| `pulpo hooks install` | Add the hooks to Claude Code's settings |
-| `pulpo hooks status` | Show whether each hook is installed |
-| `pulpo hooks remove` | Remove the hooks, leaving yours |
+| `pulpo hooks [agent]` | Print the hooks Pulpo adds, as JSON, without changing anything |
+| `pulpo hooks install [agent]` | Add the hooks to each agent installed, or only to `claude` or `codex` |
+| `pulpo hooks status [agent]` | Show whether each hook is installed |
+| `pulpo hooks remove [agent]` | Remove the hooks, leaving yours |
 | `pulpo doctor` | Check the prefix and the hooks |
 | `pulpo update` | Build and install the latest Pulpo |
 | `pulpo uninstall` | Remove Pulpo, its workspaces and its hooks |
@@ -28,7 +28,12 @@ In a project's folder, Pulpo opens on the workspace of that project you were on 
 
 ## pulpo hooks
 
-The hooks go in `~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`. They report these Claude Code events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop` and `SessionEnd`.
+Without an agent, `install` and `status` cover each agent installed and say which they skipped, and `remove` covers each agent with a settings file. An agent counts as installed when its command is on your `PATH` or its settings folder exists. Name `claude` or `codex` for that one only.
+
+| Agent | The hooks go in | Events |
+| --- | --- | --- |
+| Claude Code | `~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json` | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd` |
+| Codex | `~/.codex/hooks.json`, or `$CODEX_HOME/hooks.json` | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Interrupt`, `Stop`, `SessionEnd` |
 
 | Flag | For | Does |
 | --- | --- | --- |
@@ -36,7 +41,7 @@ The hooks go in `~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`
 
 `install` and `remove` print each event and what changed: `added`, `updated`, `unchanged`, `removed` or `not installed`. `status` prints each event as `current`, `outdated` or `missing`. Run `pulpo hooks install` again after updating Pulpo if a hook is `outdated`.
 
-Only Claude sessions started after installing report to Pulpo.
+Only sessions started after installing report to Pulpo. Codex also runs new hooks only once you trust them, with `/hooks` in Codex.
 
 ## pulpo doctor
 
@@ -44,13 +49,13 @@ Checks:
 
 - That `keys.toml` reads, and which keys are the prefix.
 - Whether macOS switches input sources on :k[⌃␣], when it's a prefix, since Pulpo would never receive it.
-- That the hooks are installed.
+- That the hooks are installed, for each agent installed.
 
 It ends with `All good.` when nothing is wrong. A line marked `✗` says what to fix.
 
 ## pulpo update
 
-Runs the [install script](/docs/installation#install) again, so it builds the latest Pulpo into `~/.cargo/bin`, updates Rust if it's older than 1.88, and refreshes the hooks if Claude Code is installed. The next time you open Pulpo, its server switches to the new build. Your terminals keep running.
+Runs the [install script](/docs/installation#install) again, so it builds the latest Pulpo into `~/.cargo/bin`, updates Rust if it's older than 1.88, and refreshes the hooks of each agent installed. The next time you open Pulpo, its server switches to the new build. Your terminals keep running.
 
 ## pulpo uninstall
 
