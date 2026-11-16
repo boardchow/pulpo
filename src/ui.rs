@@ -120,6 +120,7 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
     .areas(area);
     draw_header(frame, app, header);
     let focused = app.focus == Focus::Projects;
+    app.areas.panels.extend([(Focus::Projects, projects), (Focus::Workspaces, workspaces)]);
     let block = framed("Projects", focused);
     let rows = block.inner(projects);
     frame.render_widget(block, projects);
@@ -279,6 +280,7 @@ fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.areas.panels.push((Focus::History, area));
     let focused = app.focus == Focus::History;
     let Some(changes) = &mut app.changes else { return };
     let history = &changes.history;
@@ -340,6 +342,7 @@ fn title(name: &str, focused: bool, rest: Vec<Span<'static>>) -> Line<'static> {
 }
 
 fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.areas.panels.push((Focus::Files, area));
     let focused = app.focus == Focus::Files;
     let root = app.ws().root.clone();
     let mut rest = Vec::new();
@@ -394,6 +397,7 @@ fn tree_item(row: &Row, kind: Option<char>) -> ListItem<'static> {
 }
 
 fn draw_changes(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.areas.panels.push((Focus::Changes, area));
     let focused = app.focus == Focus::Changes;
     let Some(changes) = &app.changes else { return };
     let mut rest = vec![Span::from(format!("{} ", changes.files.len())).fg(theme::blue())];
@@ -699,7 +703,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
         (
             "Mouse",
             vec![
-                ("click".into(), "go there; double-click a file: full screen"),
+                ("click".into(), "go there; double-click Files or Changes: full screen"),
                 ("drag".into(), "select to copy in a terminal; a border to resize"),
                 ("wheel swipe".into(), "scroll, and sideways in files"),
                 ("ctrl-click".into(), "open a link, or a path:line"),

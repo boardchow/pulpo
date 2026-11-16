@@ -84,6 +84,7 @@ pub struct Areas {
     pub changes_file: Rect,
     pub changes_ruler: Rect,
     pub history: Rect,
+    pub panels: Vec<(Focus, Rect)>,
     pub editor: Rect,
     pub left_divider: Rect,
     pub divider: Rect,
@@ -2069,6 +2070,8 @@ impl App {
                         Some((false, _)) if double => (self.files_expanded, self.reading) = (true, true),
                         _ => {}
                     }
+                } else if double {
+                    self.files_expanded = !self.files_expanded;
                 }
             } else if wheel != 0 && self.editor.is_none() {
                 self.tree_step(wheel.signum() as isize);
@@ -2094,9 +2097,9 @@ impl App {
                 self.viewer.scroll_by(wheel as isize);
             } else if sideways != 0 {
                 self.viewer.scroll_sideways(sideways);
-            } else if double && self.viewer.is_open() {
+            } else if double {
                 self.files_expanded = !self.files_expanded;
-                self.reading = self.files_expanded;
+                self.reading = self.files_expanded && self.viewer.is_open();
             }
         } else if areas.changes_tree.contains(pos) {
             if down {
@@ -2117,6 +2120,8 @@ impl App {
                         Some((false, _)) if double => (self.changes_expanded, self.reading) = (true, true),
                         _ => {}
                     }
+                } else if double {
+                    self.changes_expanded = !self.changes_expanded;
                 }
             } else if wheel != 0 {
                 changes.step(wheel.signum() as isize);
@@ -2137,9 +2142,9 @@ impl App {
                     changes.scroll_sideways(sideways);
                 } else if wheel != 0 {
                     changes.scroll_by(wheel as isize);
-                } else if double && changes.diff.is_some() {
+                } else if double {
                     self.changes_expanded = !self.changes_expanded;
-                    self.reading = self.changes_expanded;
+                    self.reading = self.changes_expanded && changes.diff.is_some();
                 }
             }
         } else if areas.history.contains(pos) {
@@ -2156,6 +2161,17 @@ impl App {
                 }
             } else if wheel != 0 {
                 self.history_step(wheel.signum() as isize);
+            }
+        } else if let Some(&(focus, _)) = areas.panels.iter().find(|(_, r)| r.contains(pos)) {
+            match focus {
+                Focus::Projects | Focus::Workspaces if down => self.set_focus(focus),
+                _ if down => (self.focus, self.reading) = (focus, false),
+                _ => {}
+            }
+            match focus {
+                Focus::Files if double => self.files_expanded = !self.files_expanded,
+                Focus::Changes if double => self.changes_expanded = !self.changes_expanded,
+                _ => {}
             }
         }
     }
