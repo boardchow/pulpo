@@ -178,7 +178,7 @@ In the new project list, :k[↓] :k[↑], :k[pgdn] :k[pgup] and :k[esc] work the
 | --- | --- |
 | Click | Focus a panel, select a row, go to a tab. `+` opens a terminal |
 | Click a selected folder | Fold or unfold it |
-| Double-click | A file: full screen. A workspace: its terminal. A commit: open it |
+| Double-click | Files or Changes: full screen, and back. A workspace: its terminal. A commit: open it |
 | Drag in a terminal | Select text and copy it. Hold :k[shift] if the program uses the mouse |
 | Drag a border | Resize the columns, or the tree |
 | Wheel | Scroll. With :k[shift], scroll sideways in files |
