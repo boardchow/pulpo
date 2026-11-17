@@ -40,7 +40,6 @@ Each of these goes to the workspace's terminal:
 | Go to workspace 1 to 9 | :kp[1] to :kp[9] |
 | Go to the agent that waits for you, or a workspace whose setup ended | :kp[a] |
 | Pick from the list | :kp[w], then :k[↑] :k[↓] and :k[⏎] |
-| Find a workspace by name | :kp[/], type part of its name, then :k[⏎] |
 
 The numbers follow the list, which moves the workspaces that wait for you to the top. See [the two lists](/docs/projects-and-workspaces#the-two-lists).
 

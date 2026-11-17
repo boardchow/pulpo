@@ -174,7 +174,8 @@ Hold :k[shift] with a move to select.
 | :k[↓] :k[↑] | Next, previous result |
 | :k[⌃j] :k[⌃k], :k[⌃n] :k[⌃p] | Next, previous result |
 | :k[pgdn] :k[pgup] | Ten results down, up |
-| :k[⏎] | Open: a file full screen at the line, a project or workspace in its terminal |
+| :k[tab] | Switch between file names and inside files |
+| :k[⏎] | Open the file full screen, at the line |
 | :k[esc] | Close |
 
 In the new project list, :k[↓] :k[↑], :k[pgdn] :k[pgup] and :k[esc] work the same, and :k[⏎] adds the selected repository, or the path you typed.

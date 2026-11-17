@@ -11,7 +11,7 @@ use crate::agents::State;
 use crate::app::{App, Areas, Ask, Focus};
 use crate::review::{CURSOR, Shown};
 use crate::theme;
-use crate::search::{Entry, Kind};
+use crate::search::Mode;
 use crate::tree::Row;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -646,20 +646,25 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let popup = centered(area, (area.width * 7 / 10).max(40), (area.height * 7 / 10).max(10));
     frame.render_widget(Clear, popup);
+    let (name, hint) = match search.mode {
+        Mode::Text => (" Search inside files ", " tab: file names · ↑↓ move · ⏎ open · esc close "),
+        _ => (" Files ", " tab: search inside files · ↑↓ move · ⏎ open · esc close "),
+    };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .title(" Search ")
+        .title(name)
         .title_style(Style::new().fg(theme::fg()).bold())
-        .title_bottom(Line::from(" projects, workspaces, then files · ↑↓ move · ⏎ go · esc close ").fg(theme::dim()))
+        .title_bottom(Line::from(hint).fg(theme::dim()))
         .border_style(border(true))
         .style(Style::new().bg(theme::bg()));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let [input, _, results] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(inner);
     (app.areas.popup, app.areas.popup_list) = (popup, results);
-    let status = match search.hit_count() {
+    let status = match search.rows.len() {
         _ if search.busy => "searching…".to_string(),
-        _ if search.query.is_empty() => format!("{} files · type to search", search.file_count()),
+        _ if search.mode == Mode::Text && search.query.chars().count() < 2 => "type at least 2 characters".to_string(),
+        _ if search.query.is_empty() => format!("{} files · type to filter", search.file_count()),
         n if n >= 500 => "500+ matches".to_string(),
         n => format!("{n} matches"),
     };
@@ -672,28 +677,16 @@ fn draw_search(frame: &mut Frame, app: &mut App) {
         ]),
         input,
     );
-    let files_of = &app.workspaces[app.current].name;
     let items: Vec<ListItem> = search
         .rows
         .iter()
-        .map(|row| match row {
-            Entry::Header(kind) => {
-                let title = match kind {
-                    Kind::Project => "Projects".to_string(),
-                    Kind::Workspace => "Workspaces".to_string(),
-                    Kind::File => format!("Files in {files_of}"),
-                    _ => format!("Inside files in {files_of}"),
-                };
-                ListItem::new(Line::from(format!(" {title}")).bold())
-            }
-            Entry::Hit(hit) => ListItem::new(Line::from(match hit.kind {
-                Kind::Text => vec![
-                    Span::from(format!("   {}", hit.rel)).fg(theme::muted()),
-                    Span::from(format!(":{}", hit.line.unwrap_or(0) + 1)).fg(theme::yellow()),
-                    Span::from(format!("  {}", hit.text)),
-                ],
-                _ => vec![Span::from(format!("   {}", hit.rel)), Span::from(format!("  {}", hit.text)).fg(theme::muted())],
-            })),
+        .map(|hit| match hit.line {
+            Some(line) => ListItem::new(Line::from(vec![
+                Span::from(format!(" {}", hit.rel)).fg(theme::muted()),
+                Span::from(format!(":{}", line + 1)).fg(theme::yellow()),
+                Span::from(format!("  {}", hit.text)),
+            ])),
+            None => ListItem::new(format!(" {}", hit.rel)),
         })
         .collect();
     frame.render_stateful_widget(List::new(items).highlight_style(highlight(true)), results, &mut search.state);
@@ -733,7 +726,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
         (
             "Files",
             vec![
-                (prefixed("/"), "search projects, workspaces, file names, then inside files"),
+                (prefixed("/"), "search file names, tab for inside files"),
                 (prefixed("n"), "new file (ending with / for a folder)"),
                 (prefixed("e r d"), "edit, rename, delete"),
                 ("↑↓ ←→ ⏎".into(), "move, fold, open full screen"),
@@ -831,7 +824,7 @@ fn draw_repos_in(frame: &mut Frame, app: &mut App, popup: Rect) {
     frame.render_widget(block, popup);
     let [input, _, results] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(inner);
     (app.areas.popup, app.areas.popup_list) = (popup, results);
-    let status = if search.busy { "looking for git repositories in your home folder…".to_string() } else { format!("{} found", search.hit_count()) };
+    let status = if search.busy { "looking for git repositories in your home folder…".to_string() } else { format!("{} found", search.rows.len()) };
     frame.render_widget(
         Line::from(vec![
             Span::from(" › ").fg(theme::blue()).bold(),
@@ -844,10 +837,6 @@ fn draw_repos_in(frame: &mut Frame, app: &mut App, popup: Rect) {
     let items: Vec<ListItem> = search
         .rows
         .iter()
-        .filter_map(|row| match row {
-            Entry::Hit(hit) => Some(hit),
-            Entry::Header(_) => None,
-        })
         .map(|hit| {
             let new = hit.path.is_absolute() && !hit.path.exists();
             ListItem::new(Line::from(vec![Span::from(format!(" {}", hit.rel)), Span::from(if new { "  new folder" } else { "" }).fg(theme::muted())]))

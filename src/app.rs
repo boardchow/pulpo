@@ -18,7 +18,7 @@ use crate::keymap::{Key, Keymap};
 use crate::layout::{self, Layout};
 use crate::proto::{Info, PROTOCOL, ToClient, ToServer};
 use crate::review::{Changes, Comment, Shown};
-use crate::search::{Hit, Kind, Mode, Search, expand_home};
+use crate::search::{Mode, Search, expand_home};
 use crate::worktree;
 use crate::status::Status;
 use crate::term::Term;
@@ -1924,22 +1924,12 @@ impl App {
     }
 
     fn start_search(&mut self) {
-        let place = |kind, i: usize, text: String| {
-            let w = &self.workspaces[i];
-            Hit { kind, rel: w.name.clone(), line: None, text, path: w.root.clone() }
-        };
-        let projects = self.projects().into_iter().map(|i| place(Kind::Project, i, String::new()));
-        let workspaces = self.workspace_order().into_iter().map(|i| {
-            let repo = self.workspaces[i].repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            place(Kind::Workspace, i, repo)
-        });
-        let places = projects.chain(workspaces).collect();
-        self.search = Some(Search::new(Mode::Everything, self.ws().root.clone(), places, &self.tx));
+        self.search = Some(Search::new(Mode::Files, self.ws().root.clone(), &self.tx));
     }
 
     fn open_repo_picker(&mut self) {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-        self.repos = Some(Search::new(Mode::Repos, home, Vec::new(), &self.tx));
+        self.repos = Some(Search::new(Mode::Repos, home, &self.tx));
     }
 
     pub fn on_search(&mut self, generation: usize, hits: Vec<crate::search::Hit>) {
@@ -1960,6 +1950,7 @@ impl App {
         match key.code {
             KeyCode::Esc => self.search = None,
             KeyCode::Enter => self.open_hit(),
+            KeyCode::Tab | KeyCode::BackTab => search.toggle(&self.tx),
             KeyCode::Up => self.search_step(-1),
             KeyCode::Down => self.search_step(1),
             KeyCode::Char('k' | 'p') if ctrl => self.search_step(-1),
@@ -1982,15 +1973,6 @@ impl App {
 
     fn open_hit(&mut self) {
         let Some(hit) = self.search.as_ref().and_then(Search::selected).cloned() else { return };
-        if matches!(hit.kind, Kind::Project | Kind::Workspace) {
-            self.search = None;
-            if let Some(i) = self.workspaces.iter().position(|w| w.root == hit.path)
-                && self.set_current(i)
-            {
-                self.set_focus(Focus::Terminal);
-            }
-            return;
-        }
         let (path, line) = (hit.path, hit.line);
         if self.editing() {
             self.message = Some(UNSAVED.into());

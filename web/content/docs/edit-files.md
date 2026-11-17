@@ -7,18 +7,14 @@ order: 7
 
 ## Search
 
-Press :kp[/] and type. One list shows, in this order:
-
-- **Projects** and **workspaces** whose names match, the best three of each.
-- **Files** whose names match, the best ten.
-- **Text** inside files, once you've typed two characters.
+Press :kp[/] and type part of a file's name. Press :k[tab] to search inside files instead, and :k[tab] again to go back to names.
 
 Search covers the files of the workspace on screen, except the ones git ignores. Text in lowercase matches any case; type a capital letter to match case exactly. Files over 1 MB and binary files are skipped.
 
 | To | Press |
 | --- | --- |
 | Move | :k[↑] :k[↓], or :k[⌃k] :k[⌃j], or :k[⌃p] :k[⌃n] |
-| Open | :k[⏎]: a file full screen at the line, a project or workspace in its terminal |
+| Open | :k[⏎]: the file full screen, at the line |
 | Close | :k[esc] |
 
 ## Browse files

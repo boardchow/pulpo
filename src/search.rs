@@ -5,7 +5,7 @@ use std::sync::mpsc::Sender;
 
 use ignore::WalkBuilder;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Config, Matcher, Utf32Str};
+use nucleo_matcher::{Config, Matcher};
 use ratatui::widgets::ListState;
 
 use crate::Msg;
@@ -13,51 +13,30 @@ use crate::Msg;
 const MAX_FILES: usize = 100_000;
 const MAX_HITS: usize = 500;
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
-/// Once something is typed, so what's further down still shows.
-const MAX_PLACES: usize = 3;
-const MAX_NAMES: usize = 10;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Mode {
-    Everything,
-    Repos,
-}
-
-/// In the order they're listed.
-#[derive(Clone, Copy, PartialEq)]
-pub enum Kind {
-    Project,
-    Workspace,
-    File,
+    Files,
     Text,
-    Repo,
+    Repos,
 }
 
 #[derive(Clone)]
 pub struct Hit {
-    pub kind: Kind,
     pub rel: String,
     /// 0-based line of a text match.
     pub line: Option<usize>,
     pub text: String,
-    /// Where it goes: a workspace's folder, or the file.
     pub path: PathBuf,
-}
-
-pub enum Entry {
-    Header(Kind),
-    Hit(Hit),
 }
 
 pub struct Search {
     pub mode: Mode,
     pub query: String,
-    pub rows: Vec<Entry>,
+    pub rows: Vec<Hit>,
     pub state: ListState,
     pub busy: bool,
     pub root: PathBuf,
-    places: Vec<Hit>,
-    found: Vec<Hit>,
     files: Arc<Vec<String>>,
     scanning: bool,
     /// Bumped on every new text search so stale ones stop early.
@@ -65,8 +44,7 @@ pub struct Search {
 }
 
 impl Search {
-    /// Everything: `places` are the projects and workspaces, `root` the one whose files are searched.
-    pub fn new(mode: Mode, root: PathBuf, places: Vec<Hit>, tx: &Sender<Msg>) -> Self {
+    pub fn new(mode: Mode, root: PathBuf, tx: &Sender<Msg>) -> Self {
         let scanning = mode == Mode::Repos;
         let files = if scanning {
             let (home, tx) = (root.clone(), tx.clone());
@@ -83,8 +61,6 @@ impl Search {
             rows: Vec::new(),
             state: ListState::default(),
             busy: false,
-            places,
-            found: Vec::new(),
             files: Arc::new(files),
             scanning,
             root,
@@ -102,83 +78,53 @@ impl Search {
         }
     }
 
+    pub fn toggle(&mut self, tx: &Sender<Msg>) {
+        self.mode = if self.mode == Mode::Files { Mode::Text } else { Mode::Files };
+        self.rows.clear();
+        self.update(tx);
+    }
+
     pub fn update(&mut self, tx: &Sender<Msg>) {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         self.busy = self.scanning;
-        let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
-        let pattern = Pattern::parse(&self.query, CaseMatching::Smart, Normalization::Smart);
-        let fuzzy = |kind: Kind, names: &[String], max: usize| -> Vec<Hit> {
-            let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
-            pattern
-                .match_list(names.iter(), &mut matcher)
-                .into_iter()
-                .take(max)
-                .map(|(rel, _)| {
-                    let path = if kind == Kind::File { self.root.join(rel) } else { PathBuf::new() };
-                    Hit { kind, rel: rel.clone(), line: None, text: String::new(), path }
-                })
-                .collect()
-        };
-        self.found.clear();
         match self.mode {
-            Mode::Repos => {
-                self.found = fuzzy(Kind::Repo, &self.files, MAX_HITS);
-                if self.query.starts_with('/') || self.query.starts_with('~') {
-                    let typed = Hit { kind: Kind::Repo, rel: self.query.clone(), line: None, text: String::new(), path: expand_home(&self.query) };
-                    self.found.insert(0, typed);
+            Mode::Files if self.query.is_empty() => self.rows.clear(),
+            Mode::Files | Mode::Repos => {
+                let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+                let pattern = Pattern::parse(&self.query, CaseMatching::Smart, Normalization::Smart);
+                let root = if self.mode == Mode::Files { self.root.as_path() } else { Path::new("") };
+                self.rows = (pattern.match_list(self.files.iter(), &mut matcher).into_iter().take(MAX_HITS))
+                    .map(|(rel, _)| Hit { rel: rel.clone(), line: None, text: String::new(), path: root.join(rel) })
+                    .collect();
+                if self.mode == Mode::Repos && (self.query.starts_with('/') || self.query.starts_with('~')) {
+                    let typed = Hit { rel: self.query.clone(), line: None, text: String::new(), path: expand_home(&self.query) };
+                    self.rows.insert(0, typed);
                 }
             }
-            Mode::Everything if self.query.is_empty() => self.found = self.places.clone(),
-            Mode::Everything => {
-                let mut buf = Vec::new();
-                for kind in [Kind::Project, Kind::Workspace] {
-                    let mut scored: Vec<(u32, &Hit)> = (self.places.iter().filter(|p| p.kind == kind))
-                        .filter_map(|p| Some((pattern.score(Utf32Str::new(&p.rel, &mut buf), &mut matcher)?, p)))
-                        .collect();
-                    scored.sort_by_key(|&(score, _)| std::cmp::Reverse(score));
-                    self.found.extend(scored.into_iter().take(MAX_PLACES).map(|(_, p)| p.clone()));
-                }
-                self.found.extend(fuzzy(Kind::File, &self.files, MAX_NAMES));
-                if self.query.chars().count() >= 2 {
-                    self.busy = true;
-                    let (root, files, query, current, tx) =
-                        (self.root.clone(), self.files.clone(), self.query.clone(), self.generation.clone(), tx.clone());
-                    std::thread::spawn(move || {
-                        let hits = grep(&root, &files, &query, || current.load(Ordering::Relaxed) != generation);
-                        if let Some(hits) = hits {
-                            let _ = tx.send(Msg::Search(generation, hits));
-                        }
-                    });
-                }
+            Mode::Text if self.query.chars().count() < 2 => self.rows.clear(),
+            // Kept until the new results come, so the list doesn't blink.
+            Mode::Text => {
+                self.busy = true;
+                let (root, files, query, current, tx) =
+                    (self.root.clone(), self.files.clone(), self.query.clone(), self.generation.clone(), tx.clone());
+                std::thread::spawn(move || {
+                    let hits = grep(&root, &files, &query, || current.load(Ordering::Relaxed) != generation);
+                    if let Some(hits) = hits {
+                        let _ = tx.send(Msg::Search(generation, hits));
+                    }
+                });
             }
         }
-        self.rebuild();
-        self.state.select(None);
-        self.step(0);
+        if !(self.mode == Mode::Text && self.busy) {
+            self.state.select((!self.rows.is_empty()).then_some(0));
+        }
     }
 
-    /// Text matches come last, so the rows above them stay where they were.
     pub fn on_results(&mut self, generation: usize, hits: Vec<Hit>) {
         if generation == self.generation.load(Ordering::Relaxed) {
-            self.found.extend(hits);
+            self.rows = hits;
             self.busy = false;
-            self.rebuild();
-            if self.state.selected().is_none() {
-                self.step(0);
-            }
-        }
-    }
-
-    /// A header over each kind there is, none for repositories.
-    fn rebuild(&mut self) {
-        self.rows.clear();
-        let mut last = None;
-        for hit in &self.found {
-            if hit.kind != Kind::Repo && last != Some(hit.kind) {
-                self.rows.push(Entry::Header(hit.kind));
-            }
-            last = Some(hit.kind);
-            self.rows.push(Entry::Hit(hit.clone()));
+            self.state.select((!self.rows.is_empty()).then_some(0));
         }
     }
 
@@ -193,27 +139,13 @@ impl Search {
         self.files.len()
     }
 
-    pub fn hit_count(&self) -> usize {
-        self.found.len()
-    }
-
-    /// Headers are skipped, onward in the direction of travel.
     pub fn step(&mut self, delta: isize) {
-        let hits: Vec<usize> = (0..self.rows.len()).filter(|&i| matches!(self.rows[i], Entry::Hit(_))).collect();
-        let to = self.state.selected().map_or(0, |from| from.saturating_add_signed(delta));
-        let at = if delta < 0 {
-            hits.iter().rev().find(|&&i| i <= to).or(hits.first())
-        } else {
-            hits.iter().find(|&&i| i >= to).or(hits.last())
-        };
-        self.state.select(at.copied());
+        let last = self.rows.len().saturating_sub(1);
+        self.state.select((!self.rows.is_empty()).then(|| self.state.selected().unwrap_or(0).saturating_add_signed(delta).min(last)));
     }
 
     pub fn selected(&self) -> Option<&Hit> {
-        match self.rows.get(self.state.selected()?)? {
-            Entry::Hit(hit) => Some(hit),
-            Entry::Header(_) => None,
-        }
+        self.rows.get(self.state.selected()?)
     }
 }
 
@@ -301,7 +233,7 @@ fn grep(root: &Path, files: &[String], query: &str, cancelled: impl Fn() -> bool
             let found = if ignore_case { line.to_lowercase().contains(&needle) } else { line.contains(&needle) };
             if found {
                 let text: String = line.trim().chars().take(200).collect();
-                hits.push(Hit { kind: Kind::Text, rel: rel.clone(), line: Some(i), text, path: path.clone() });
+                hits.push(Hit { rel: rel.clone(), line: Some(i), text, path: path.clone() });
                 if hits.len() >= MAX_HITS {
                     return Some(hits);
                 }
@@ -328,30 +260,22 @@ mod tests {
     }
 
     #[test]
-    fn lists_places_before_files_and_steps_over_headers() {
+    fn tab_switches_between_names_and_text() {
         let dir = std::env::temp_dir().join(format!("pulpo-search-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("pulpo.md"), "").unwrap();
-        let place = |kind, name: &str| Hit { kind, rel: name.into(), line: None, text: String::new(), path: PathBuf::new() };
-        let places = vec![place(Kind::Project, "pulpo"), place(Kind::Project, "other"), place(Kind::Workspace, "ui-polish")];
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let mut search = Search::new(Mode::Everything, dir.clone(), places, &tx);
+        std::fs::write(dir.join("pulpo.md"), "an octopus\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "pulpo\n").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut search = Search::new(Mode::Files, dir.clone(), &tx);
         search.query = "pulp".into();
         search.update(&tx);
-        let rows: Vec<String> = search
-            .rows
-            .iter()
-            .map(|r| match r {
-                Entry::Header(_) => "#".into(),
-                Entry::Hit(h) => h.rel.clone(),
-            })
-            .collect();
-        assert_eq!(rows, ["#", "pulpo", "#", "pulpo.md"]);
-        assert_eq!(search.selected().unwrap().rel, "pulpo");
-        search.step(1);
-        assert_eq!(search.selected().unwrap().rel, "pulpo.md");
-        search.step(-1);
-        assert_eq!(search.selected().unwrap().rel, "pulpo");
+        assert_eq!(search.rows.iter().map(|h| h.rel.as_str()).collect::<Vec<_>>(), ["pulpo.md"]);
+        search.toggle(&tx);
+        assert!(search.rows.is_empty() && search.busy);
+        let Ok(Msg::Search(generation, hits)) = rx.recv_timeout(std::time::Duration::from_secs(10)) else { panic!() };
+        search.on_results(generation, hits);
+        let hit = search.selected().unwrap();
+        assert_eq!((hit.rel.as_str(), hit.line), ("notes.txt", Some(0)));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
