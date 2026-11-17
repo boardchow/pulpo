@@ -111,24 +111,21 @@ Full screen, reading the file:
 
 | Keys | Does |
 | --- | --- |
-| :k[↓] :k[↑] or :k[j] :k[k] | Scroll a line |
-| :k[d] or :k[space], :k[u] | Scroll half a page down, up |
 | :k[pgdn] :k[pgup] | Scroll half a page down, up |
-| :k[g] :k[G] or :k[home] :k[end] | Top, bottom |
 | :k[→] :k[←] or :k[l] :k[h] | Scroll sideways |
 | :k[0] | Back to the left edge |
 | :k[tab] | Go between the file and the tree |
 | :k[esc] | To the tree, then to the three columns |
 
-Full screen in Changes, a line cursor moves instead of the file:
+A line cursor moves in the file. In Files, its line ends with who changed it last:
 
 | Keys | Does |
 | --- | --- |
 | :k[↓] :k[↑] or :k[j] :k[k] | Next, previous line |
 | :k[d] or :k[space], :k[u] | Half a page down, up |
 | :k[g] :k[G] or :k[home] :k[end] | First, last line |
-| :k[shift] :k[↓] :k[↑] or :k[J] :k[K] | Select lines |
-| :k[esc] | Drop the selection |
+| :k[shift] :k[↓] :k[↑] or :k[J] :k[K] | Select lines, in Changes |
+| :k[esc] | Drop the selection, in Changes |
 
 Writing a comment:
 
@@ -211,7 +208,7 @@ In the new project list, :k[↓] :k[↑], :k[pgdn] :k[pgup] and :k[esc] work the
 | Drag a border | Resize the columns, or the tree |
 | Wheel | Scroll. With :k[shift], scroll sideways in files |
 | Click the marks beside a change | Jump to that change |
-| Click a line in Changes, full screen | Put the line cursor there. Drag or :k[shift]-click selects lines |
+| Click a line in Files or Changes, full screen | Put the line cursor there. In Changes, drag or :k[shift]-click selects lines |
 | Click a comment in Changes, full screen | Edit it |
 | Click *send review* | Send the comments to the workspace's agent, after asking |
 | Ctrl-click in a terminal | Open a link, or a path like `src/app.rs:120` in Files |
