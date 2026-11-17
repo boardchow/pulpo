@@ -51,6 +51,13 @@ const fn mix(fg: u32, bg: u32, alpha: u32) -> u32 {
     (channel(fg, bg, 16, alpha) << 16) | (channel(fg, bg, 8, alpha) << 8) | channel(fg, bg, 0, alpha)
 }
 
+pub fn veiled(color: Color, fallback: Color) -> Color {
+    match color {
+        Color::Rgb(r, g, b) => rgb(mix(u32::from_be_bytes([0, r, g, b]), PULPO_DARK.bg, 0x70)),
+        _ => fallback,
+    }
+}
+
 pub fn bg() -> Color {
     rgb(PULPO_DARK.bg)
 }
