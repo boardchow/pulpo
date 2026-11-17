@@ -40,7 +40,7 @@ The code speaks for itself. A comment is the exception, not the default.
 - Comment only what the code cannot say: a non-obvious why, a workaround for another program's bug, a hidden constraint (order, timing, a spec), or a `shortcut:` note.
 - One line, one short sentence. If it needs more, simplify the code, or put the explanation in the commit message.
 - Never write comments that describe what the next line does, restate a name, narrate your steps, or record your edit ("added", "fixed", "updated to", "changed from"). No section banners, no commented-out code.
-- Write `///` doc comments only where the code around it has them on that kind of item, in the shortest form.
+- `///` doc comments follow the same rule: only what the item's name and type can't say. Code around having them is no reason to add one.
 - Leave existing comments alone unless your change makes them wrong. Then fix or delete them.
 
 Bad:
@@ -73,6 +73,7 @@ Good, when the why isn't visible:
 ### Before you finish
 
 - `make test` passes.
+- List every comment you added (`git diff -U0 | grep '^+.*//'`) and cut each one the code already says. Usually that's all of them.
 - Fix what the change makes wrong in the docs. Before adding anything, ask: does this really need to be in the public docs? Usually it doesn't. See [web/content/AGENTS.md](web/content/AGENTS.md).
 - For a code change, once its tests pass: read [.agents/review.md](.agents/review.md) and have it reviewed as it says.
 - Ship it, without waiting to be asked: commit and push, then release if users will notice it.
