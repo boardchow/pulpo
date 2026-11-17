@@ -78,6 +78,7 @@ pub enum Msg {
     Changes(Box<review::Read>),
     Status(PathBuf, Box<git::Status>),
     Viewed(Box<viewer::Loaded>),
+    Blamed(PathBuf, viewer::Stamp, Vec<String>),
     Release(String),
 }
 
@@ -237,6 +238,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
                 Msg::Changes(read) => app.on_changes(*read),
                 Msg::Status(root, status) => app.on_status(root, *status),
                 Msg::Viewed(loaded) => app.on_viewed(*loaded),
+                Msg::Blamed(path, stamp, blame) => app.viewer.on_blame(path, stamp, blame),
                 Msg::Release(version) => app.release = Some(version),
             }
             app.settle();

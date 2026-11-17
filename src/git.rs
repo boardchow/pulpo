@@ -116,6 +116,53 @@ pub fn history(root: &Path, base: &str, limit: usize) -> History {
     History { commits, remote, behind, more }
 }
 
+pub fn blame(path: &Path) -> Vec<String> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else { return Vec::new() };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    git(dir, &["--no-optional-locks", "blame", "--porcelain", "--", &name.to_string_lossy()])
+        .map(|out| parse_blame(&out, now))
+        .unwrap_or_default()
+}
+
+fn parse_blame(out: &str, now: u64) -> Vec<String> {
+    let mut commits: std::collections::HashMap<&str, (&str, u64, &str)> = std::collections::HashMap::new();
+    let mut hash = "";
+    let mut lines = Vec::new();
+    for line in out.lines() {
+        if line.starts_with('\t') {
+            lines.push(match commits.get(hash) {
+                _ if !hash.is_empty() && hash.bytes().all(|b| b == b'0') => "not committed yet".to_string(),
+                Some((author, time, subject)) => format!("{author}, {} · {subject}", ago(now.saturating_sub(*time))),
+                None => String::new(),
+            });
+            continue;
+        }
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        let info = commits.entry(hash).or_default();
+        match key {
+            "author" => info.0 = value,
+            "author-time" => info.1 = value.parse().unwrap_or(0),
+            "summary" => info.2 = value,
+            _ if matches!(key.len(), 40 | 64) && key.bytes().all(|b| b.is_ascii_hexdigit()) => hash = key,
+            _ => {}
+        }
+    }
+    lines
+}
+
+fn ago(secs: u64) -> String {
+    let (n, unit) = match secs {
+        0..60 => return "just now".into(),
+        60..3600 => (secs / 60, "minute"),
+        3600..86_400 => (secs / 3600, "hour"),
+        86_400..1_209_600 => (secs / 86_400, "day"),
+        1_209_600..5_184_000 => (secs / 604_800, "week"),
+        5_184_000..31_536_000 => (secs / 2_592_000, "month"),
+        _ => (secs / 31_536_000, "year"),
+    };
+    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+}
+
 pub fn status(root: &Path) -> Status {
     // --no-optional-locks: rewriting the index would wake our own file watcher in a loop.
     let mut status = git(root, &["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"])
@@ -210,6 +257,21 @@ mod tests {
         }
         assert_eq!(main_repo(&dir).unwrap().canonicalize().unwrap(), dir.canonicalize().unwrap());
         std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn parses_blame() {
+        let a = "a".repeat(40);
+        let zero = "0".repeat(40);
+        let out = format!(
+            "{a} 1 1 2\nauthor Sam\nauthor-time 1000\nsummary Add status\nfilename x.rs\n\tone\n{a} 2 2\n\ttwo\n\
+             {zero} 3 3 1\nauthor Not Committed Yet\nauthor-time 4000\nsummary Version of x.rs from x.rs\nfilename x.rs\n\tthree\n"
+        );
+        let now = 1000 + 3 * 86_400;
+        assert_eq!(parse_blame(&out, now), ["Sam, 3 days ago · Add status", "Sam, 3 days ago · Add status", "not committed yet"]);
+        assert_eq!(ago(30), "just now");
+        assert_eq!(ago(3600), "1 hour ago");
+        assert_eq!(ago(40 * 86_400), "5 weeks ago");
     }
 
     #[test]

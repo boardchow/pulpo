@@ -539,8 +539,12 @@ fn draw_viewer(frame: &mut Frame, app: &mut App, area: Rect) {
         app.viewer.scroll = line.saturating_sub(area.height as usize / 3);
     }
     app.viewer.scroll_by(0);
+    let reading = app.focus == Focus::Files && app.reading;
+    if reading && app.viewer.mark.is_none() {
+        app.viewer.mark = Some(app.viewer.scroll);
+    }
     let (scroll, end) = (app.viewer.scroll, (app.viewer.scroll + area.height as usize).min(app.viewer.row_count()));
-    let lines: Vec<Line> = (scroll..end).map(|i| app.viewer.decorated(i)).collect();
+    let lines: Vec<Line> = (scroll..end).map(|i| app.viewer.decorated(i, reading)).collect();
     frame.render_widget(Paragraph::new(lines).style(Style::new().bg(theme::editor_bg())), area);
 }
 
