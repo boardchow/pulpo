@@ -26,7 +26,7 @@ pulpo (one binary)
 ├── doctor.rs   `pulpo doctor` (the prefix, the hooks) and `pulpo keytest` (what a key sends)
 ├── project.rs  the project list, `~/.config/pulpo/projects`
 ├── workspace.rs  per-checkout state (status, tree)
-├── search.rs   the search popup: the files as a tree filtered as you type (nucleo), or lines in files; the repositories to add
+├── search.rs   the search popup: file names filtered as you type (nucleo), tab for lines in files; the repositories to add
 ├── term.rs     the terminal as Pulpo shows it: a vt100 mirror; snapshots, key and mouse encoding, selections
 ├── server.rs   `pulpo serve`: owns every terminal (PTY + emulator + state), upgrades in place
 ├── client.rs   connect to the server, or start it; its messages into the event loop
