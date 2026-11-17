@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ratatui::style::Color;
+use ratatui::text::Span;
 use ratatui::widgets::ListState;
 
 use crate::git::{self, Commit, History};
@@ -14,6 +15,50 @@ pub struct File {
     pub path: PathBuf,
     /// git's status letter, or '?' for an untracked file.
     pub status: char,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Comment {
+    /// Two can end up on the same lines, so a comment is edited by this, not by its place.
+    pub id: u64,
+    pub path: PathBuf,
+    pub commit: Option<String>,
+    /// Whether they were deleted, the first and last line; none for the whole file.
+    pub lines: Option<(bool, usize, usize)>,
+    pub text: String,
+    /// What the lines said, to follow them.
+    pub code: Vec<String>,
+    pub outdated: bool,
+}
+
+impl Comment {
+    /// Where it is, as an agent reads it: `src/app.rs:12-14`.
+    pub fn at(&self, root: &Path) -> String {
+        let mut at = self.path.strip_prefix(root).unwrap_or(&self.path).display().to_string();
+        if let Some((deleted, first, last)) = self.lines {
+            at += &if first == last { format!(":{first}") } else { format!(":{first}-{last}") };
+            if deleted {
+                at += " (deleted)";
+            }
+        }
+        if let Some(commit) = &self.commit {
+            at += &format!(" in commit {commit}");
+        }
+        at
+    }
+
+    fn same_place(&self, other: &Comment) -> bool {
+        (&self.path, &self.commit, self.lines) == (&other.path, &other.commit, other.lines)
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub enum Shown {
+    Row(usize),
+    /// Its index in the comments; none for the one being written.
+    Note(Option<usize>, String),
+    /// Under the one being written.
+    Hint,
 }
 
 pub struct Changes {
@@ -41,6 +86,17 @@ pub struct Changes {
     pub height: usize,
     /// Old and new side by side; `scroll` and the ruler count its rows then.
     pub split: bool,
+    /// An index in the diff's lines, not its rows.
+    pub cursor: usize,
+    pub anchor: Option<usize>,
+    /// The workspace's comments, those on its commits too.
+    pub comments: Vec<Comment>,
+    pub shown: Vec<Shown>,
+    note_rows: usize,
+    /// The next draw brings the cursor, or the comment being written, into view.
+    pub reveal: bool,
+    /// Which comment above the file ⌃b e and d take next, so each press reaches another.
+    turn: usize,
     pub history: History,
     pub history_state: ListState,
     /// How many commits History reads: a page more each time the list nears its end.
@@ -69,6 +125,13 @@ impl Changes {
             hscroll: 0,
             height: 20,
             split: false,
+            cursor: 0,
+            anchor: None,
+            comments: Vec::new(),
+            shown: Vec::new(),
+            note_rows: 0,
+            reveal: false,
+            turn: 0,
             history: History::default(),
             history_state: ListState::default().with_selected(Some(0)),
             history_limit: HISTORY_PAGE,
@@ -130,8 +193,14 @@ impl Changes {
         }
         self.layout(selected);
         if let Some((path, diff)) = read.diff {
-            self.scroll = if was.as_ref() == Some(&path) { scroll } else { first_change(&diff, self.split) };
+            if was.as_ref() == Some(&path) {
+                self.scroll = scroll;
+                self.cursor = self.cursor.min(diff.lines.len().saturating_sub(1));
+            } else {
+                (self.scroll, self.cursor, self.anchor) = (first_change(&diff, self.split), diff.changes.first().copied().unwrap_or(0), None);
+            }
             self.diff = Some((path, diff));
+            self.follow_shown();
             self.scroll_by(0);
         }
         let selected_file = self.selected().filter(|r| !r.is_dir).map(|r| r.path.clone());
@@ -142,7 +211,12 @@ impl Changes {
     }
 
     fn layout(&mut self, selected: Option<PathBuf>) {
-        let all = tree::of_paths(&self.root, self.files.iter().map(|f| f.path.to_str().unwrap_or_default()));
+        // A file committed while it has comments stays, so they can still be read and sent.
+        let commented = self.comments.iter().filter(|c| self.in_view(c)).filter_map(|c| c.path.strip_prefix(&self.root).ok());
+        let mut paths: Vec<&Path> = self.files.iter().map(|f| f.path.as_path()).chain(commented).collect();
+        paths.sort();
+        paths.dedup();
+        let all = tree::of_paths(&self.root, paths.iter().map(|p| p.to_str().unwrap_or_default()));
         self.rows = all.into_iter().filter(|r| !r.path.ancestors().skip(1).any(|a| self.folded.contains(a))).collect();
         for row in &mut self.rows {
             row.expanded = row.is_dir && !self.folded.contains(&row.path);
@@ -170,8 +244,32 @@ impl Changes {
         let untracked = self.files.iter().any(|f| self.root.join(&f.path) == path && f.status == '?');
         let diff = viewer::review_diff(&self.root, &self.against, path, untracked);
         self.scroll = first_change(&diff, self.split);
+        (self.cursor, self.anchor) = (diff.changes.first().copied().unwrap_or(0), None);
         self.hscroll = 0;
         self.diff = Some((path.to_path_buf(), diff));
+        self.follow_shown();
+    }
+
+    fn follow_shown(&mut self) {
+        if let Some((path, diff)) = &self.diff {
+            follow_code(&mut self.comments, path, self.commit.as_ref().map(|c| c.hash.as_str()), diff);
+        }
+    }
+
+    pub fn follow_draft(&self, draft: &mut Comment) {
+        if let Some((path, diff)) = &self.diff {
+            follow_code(std::slice::from_mut(draft), path, self.commit.as_ref().map(|c| c.hash.as_str()), diff);
+        }
+    }
+
+    pub fn follow_all(&mut self) {
+        let mut paths: Vec<PathBuf> = self.comments.iter().filter(|c| c.commit.is_none() && c.lines.is_some()).map(|c| c.path.clone()).collect();
+        paths.sort();
+        paths.dedup();
+        for path in paths {
+            let diff = viewer::review_diff(&self.root, "HEAD", &path, !git::is_tracked(&self.root, &path));
+            follow_code(&mut self.comments, &path, None, &diff);
+        }
     }
 
     pub fn status_of(&self, path: &Path) -> Option<char> {
@@ -231,13 +329,15 @@ impl Changes {
             .map(|cell| {
                 let (start, end) = cell_lines(cell, cells, rows);
                 let in_view = start < self.scroll + self.height && end > self.scroll;
-                let kinds: Vec<Kind> = if self.split {
+                let lines: Vec<usize> = if self.split {
                     let pairs = diff.pairs.get(start..end).unwrap_or_default();
-                    pairs.iter().flat_map(|&(old, new)| [old, new]).flatten().map(|i| diff.kinds[i]).collect()
+                    pairs.iter().flat_map(|&(old, new)| [old, new]).flatten().collect()
                 } else {
-                    diff.kinds.get(start..end).unwrap_or_default().to_vec()
+                    (start..end.min(diff.kinds.len())).collect()
                 };
+                let kinds: Vec<Kind> = lines.iter().map(|&i| diff.kinds[i]).collect();
                 let color = match (kinds.contains(&Kind::Added), kinds.contains(&Kind::Removed)) {
+                    _ if lines.iter().any(|&i| self.commented(i)) => Some(theme::yellow()),
                     (true, true) => Some(theme::blue()),
                     (true, false) => Some(theme::green()),
                     (false, true) => Some(theme::red()),
@@ -254,8 +354,212 @@ impl Changes {
         self.scroll_by(0);
     }
 
+    /// From the cursor's row, or the nearest one in view after scrolling it out.
+    pub fn move_cursor(&mut self, rows: isize, extend: bool) {
+        let Some((_, diff)) = &self.diff else { return };
+        let row = row_of(diff, self.split, self.cursor).max(self.scroll).min(self.scroll + self.height.max(1) - 1);
+        let row = row.saturating_add_signed(rows).min(self.rows_len().saturating_sub(1));
+        let old_side = diff.kinds.get(self.cursor) == Some(&Kind::Removed);
+        self.select_row(row, old_side, extend);
+    }
+
+    /// The row on screen, on the old side when split.
+    pub fn click(&mut self, at: usize, old_side: bool, extend: bool) {
+        if let Some(&Shown::Row(row)) = self.shown.get(at) {
+            self.select_row(row, old_side, extend);
+        }
+    }
+
+    fn select_row(&mut self, row: usize, old_side: bool, extend: bool) {
+        let Some((_, diff)) = &self.diff else { return };
+        let line = match diff.pairs.get(row) {
+            Some(&(old, new)) if self.split => if old_side { old.or(new) } else { new.or(old) }.unwrap_or(0),
+            _ => row,
+        };
+        self.anchor = if extend { self.anchor.or(Some(self.cursor)) } else { None };
+        self.cursor = line;
+        self.scroll = self.scroll.min(row).max((row + 1).saturating_sub(self.height.max(1)));
+        self.scroll_by(0);
+        self.reveal = true;
+    }
+
+    pub fn selection(&self) -> (usize, usize) {
+        let anchor = self.anchor.unwrap_or(self.cursor);
+        (anchor.min(self.cursor), anchor.max(self.cursor))
+    }
+
+    /// The lines selected, or the file in the tree; a comment already there comes back to edit.
+    pub fn commenting(&self, reading: bool) -> Option<Comment> {
+        let (path, lines) = match self.diff.as_ref().filter(|_| reading) {
+            // A file with no lines to show, binary or too big, still takes a comment.
+            Some((path, diff)) => (path.clone(), if diff.kinds.is_empty() { None } else { Some(self.lines_selected()?) }),
+            None => (self.selected().filter(|r| !r.is_dir)?.path.clone(), None),
+        };
+        let code = self.diff.as_ref().zip(lines).map(|((_, diff), lines)| side(diff, lines.0).filter(|(n, _)| (lines.1..=lines.2).contains(n)).map(|(_, code)| code).collect());
+        let commit = self.commit.as_ref().map(|c| c.hash.clone());
+        let comment = Comment { id: next_id(), path, commit, lines, text: String::new(), code: code.unwrap_or_default(), outdated: false };
+        Some(self.comments.iter().find(|c| !c.outdated && c.same_place(&comment)).cloned().unwrap_or(comment))
+    }
+
+    /// At the cursor; in the tree, or on a file with no lines shown, the next of those above the file.
+    pub fn comment_at(&mut self, reading: bool) -> Option<Comment> {
+        if reading && self.diff.as_ref().is_some_and(|(_, diff)| !diff.kinds.is_empty()) {
+            let at = self.commenting(true)?;
+            return self.comments.iter().find(|c| c.id == at.id).cloned();
+        }
+        let above = self.above();
+        let comment = above.get(self.turn % above.len().max(1)).map(|c| (*c).clone());
+        self.turn = self.turn.wrapping_add(1);
+        comment
+    }
+
+    /// The shown file's own comments and those whose lines it doesn't show.
+    pub fn above(&self) -> Vec<&Comment> {
+        self.comments.iter().filter(|c| self.row_under(c) == Some(None)).collect()
+    }
+
+    fn lines_selected(&self) -> Option<(bool, usize, usize)> {
+        let (path, diff) = self.diff.as_ref()?;
+        let (first, last) = self.selection();
+        let at = |i| number(diff, i);
+        if self.anchor.is_none()
+            && let Some(comment) = self.comments.iter().find(|c| self.here(c, path) && at(first).is_some_and(|line| covers(c, line)))
+        {
+            return comment.lines;
+        }
+        let numbers = |deleted: bool| (first..=last).filter_map(at).filter(|&(d, _)| d == deleted).map(|(_, n)| n).collect::<Vec<_>>();
+        let (deleted, numbers) = match numbers(false) {
+            new if new.is_empty() => (true, numbers(true)),
+            new => (false, new),
+        };
+        Some((deleted, *numbers.first()?, *numbers.last()?))
+    }
+
+    fn here(&self, comment: &Comment, path: &Path) -> bool {
+        comment.path == path && self.in_view(comment)
+    }
+
+    fn in_view(&self, comment: &Comment) -> bool {
+        comment.commit.as_deref() == self.commit.as_ref().map(|c| c.hash.as_str())
+    }
+
+    /// Saves the text on the comment with its id, wherever it moved, or adds it; empty, deletes it.
+    pub fn keep(&mut self, comment: Comment) {
+        if comment.text.trim().is_empty() {
+            return self.delete(&comment);
+        }
+        match self.comments.iter_mut().find(|c| c.id == comment.id) {
+            Some(kept) => kept.text = comment.text,
+            None => self.comments.push(comment),
+        }
+        self.anchor = None;
+        self.relayout();
+    }
+
+    pub fn delete(&mut self, comment: &Comment) {
+        self.comments.retain(|c| c.id != comment.id);
+        self.relayout();
+    }
+
+    /// Deleting the last comment on a committed file takes the file out of the tree.
+    fn relayout(&mut self) {
+        self.layout(self.selected().map(|r| r.path.clone()));
+        self.follow();
+    }
+
+    pub fn commented(&self, line: usize) -> bool {
+        let Some((path, diff)) = &self.diff else { return false };
+        number(diff, line).is_some_and(|at| self.comments.iter().any(|c| self.here(c, path) && covers(c, at)))
+    }
+
+    pub fn count(&self, path: &Path) -> usize {
+        self.comments.iter().filter(|c| c.path.starts_with(path) && self.in_view(c)).count()
+    }
+
+    pub fn review(&self) -> String {
+        let one = |c: &Comment| match c.outdated {
+            true => format!("{} (outdated, it was on:)\n{}\n{}", c.at(&self.root), c.code.iter().map(|l| format!("> {l}")).collect::<Vec<_>>().join("\n"), c.text.trim()),
+            false => format!("{}\n{}", c.at(&self.root), c.text.trim()),
+        };
+        let mut comments: Vec<&Comment> = self.comments.iter().collect();
+        comments.sort_by_key(|c| (c.commit.clone(), c.path.clone(), c.lines.map(|(_, first, _)| first)));
+        let review = comments.into_iter().map(one).collect::<Vec<_>>().join("\n\n");
+        // Paths and pasted text could end the paste early and type into the agent.
+        review.chars().filter(|&c| matches!(c, '\n' | '\t') || !c.is_control()).collect()
+    }
+
+    /// The row a comment shows under: none above the file, for a file comment or one whose lines are gone.
+    fn row_under(&self, comment: &Comment) -> Option<Option<usize>> {
+        let (path, diff) = self.diff.as_ref()?;
+        if !self.here(comment, path) {
+            return None;
+        }
+        let last = (0..diff.lines.len()).rev().find(|&i| number(diff, i).is_some_and(|at| covers(comment, at)));
+        Some(last.map(|i| row_of(diff, self.split, i)))
+    }
+
+    /// The one being written shows `CURSOR` at its byte index.
+    pub fn fit(&mut self, width: usize, writing: Option<(&Comment, usize)>) {
+        let Some((_, diff)) = &self.diff else { return self.shown.clear() };
+        let (width, cursor) = (width.saturating_sub(diff.gutter + 2).max(10), row_of(diff, self.split, self.cursor));
+        let wrap = |text: &str, i: Option<usize>| -> Vec<Shown> { text.split('\n').flat_map(|line| wrap(line, width)).map(|line| Shown::Note(i, line)).collect() };
+        let mut notes: Vec<(Option<usize>, Vec<Shown>)> = Vec::new();
+        for (i, comment) in self.comments.iter().enumerate().filter(|(_, c)| writing.is_none_or(|(w, _)| w.id != c.id)) {
+            if let Some(row) = self.row_under(comment) {
+                let text = if comment.outdated { format!("outdated · {}", comment.text) } else { comment.text.clone() };
+                notes.push((row, wrap(&text, Some(i))));
+            }
+        }
+        let written = writing.and_then(|(w, at)| Some((self.row_under(w)?, w, at)));
+        if let Some((row, w, at)) = written {
+            let mut text = w.text.clone();
+            text.insert(at.min(text.len()), CURSOR);
+            let mut lines = wrap(&text, None);
+            lines.push(Shown::Hint);
+            notes.push((row, lines));
+        }
+        let target = written.map_or(cursor, |(row, _, _)| row.unwrap_or(0));
+        let writing = written.is_some();
+        self.note_rows = notes.iter().map(|(_, lines)| lines.len()).sum();
+        self.scroll_by(0);
+        loop {
+            self.shown = self.lay(&notes);
+            let seen = self.shown.contains(&Shown::Row(target)) || (target == 0 && self.scroll == 0);
+            if !self.reveal || (seen && (!writing || self.shown.contains(&Shown::Hint))) {
+                break;
+            }
+            match self.scroll.cmp(&target) {
+                std::cmp::Ordering::Greater => self.scroll = target,
+                std::cmp::Ordering::Less => self.scroll += 1,
+                std::cmp::Ordering::Equal => break,
+            }
+        }
+        self.reveal = false;
+    }
+
+    fn lay(&self, notes: &[(Option<usize>, Vec<Shown>)]) -> Vec<Shown> {
+        let mut shown = Vec::new();
+        let under = |row: Option<usize>, shown: &mut Vec<Shown>| {
+            for (_, lines) in notes.iter().filter(|(r, _)| *r == row) {
+                shown.extend(lines.iter().cloned());
+            }
+        };
+        if self.scroll == 0 {
+            under(None, &mut shown);
+        }
+        for row in self.scroll..self.rows_len() {
+            if shown.len() >= self.height {
+                break;
+            }
+            shown.push(Shown::Row(row));
+            under(Some(row), &mut shown);
+        }
+        shown.truncate(self.height);
+        shown
+    }
+
     pub fn scroll_by(&mut self, rows: isize) {
-        self.scroll = self.scroll.saturating_add_signed(rows).min(self.rows_len().saturating_sub(self.height.max(1)));
+        self.scroll = self.scroll.saturating_add_signed(rows).min((self.rows_len() + self.note_rows).saturating_sub(self.height.max(1)).min(self.rows_len().saturating_sub(1)));
     }
 }
 
@@ -299,6 +603,89 @@ impl Request {
         };
         Read { root: self.root, against: self.against, since, files, diff, history, generation: self.generation }
     }
+}
+
+/// A line's number in its file, and whether it was deleted.
+fn number(diff: &ReviewDiff, line: usize) -> Option<(bool, usize)> {
+    match diff.kinds.get(line)? {
+        Kind::Removed => Some((true, diff.old_numbers[line])),
+        Kind::Same | Kind::Added => Some((false, diff.new_numbers[line])),
+        Kind::Gap => None,
+    }
+}
+
+/// Marks the cursor in the comment being written: a private-use character, so no text has it.
+pub const CURSOR: char = '\u{E000}';
+
+fn next_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn wrap(line: &str, width: usize) -> Vec<String> {
+    let mut pieces = vec![String::new()];
+    let mut used = 0;
+    for c in line.chars() {
+        let cells = Span::raw(c.to_string()).width();
+        if used + cells > width && used > 0 {
+            pieces.push(String::new());
+            used = 0;
+        }
+        if let Some(piece) = pieces.last_mut() {
+            piece.push(c);
+        }
+        used += cells;
+    }
+    pieces
+}
+
+fn side(diff: &ReviewDiff, deleted: bool) -> impl Iterator<Item = (usize, String)> + '_ {
+    (0..diff.lines.len()).filter_map(move |i| {
+        let (d, n) = number(diff, i)?;
+        (d == deleted).then(|| (n, viewer::plain(&diff.lines[i], diff.gutter).trim_end().to_string()))
+    })
+}
+
+type Side = Option<Vec<(usize, String)>>;
+
+/// The new side's lines and the deleted ones, by number; none where they can't be read.
+fn sides(diff: &ReviewDiff, file: Option<&Path>) -> [Side; 2] {
+    if !diff.kinds.is_empty() {
+        return [Some(side(diff, false).collect()), Some(side(diff, true).collect())];
+    }
+    // No change left to read them in, as when the agent took it back: the file is the new side.
+    let small = |f: &&Path| std::fs::metadata(f).map_or(true, |m| m.len() <= viewer::MAX_BYTES as u64);
+    let lines = match file.filter(small).map(std::fs::read) {
+        Some(Ok(bytes)) => Some(String::from_utf8_lossy(&bytes).lines().enumerate().map(|(i, line)| (i + 1, viewer::clean(line).trim_end().to_string())).collect()),
+        Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
+        _ => None,
+    };
+    [lines, None]
+}
+
+/// Keeps each comment on its code: where it is, or where it went if it's there once; outdated otherwise.
+fn follow_code(comments: &mut [Comment], path: &Path, commit: Option<&str>, diff: &ReviewDiff) {
+    let mut both: Option<[Side; 2]> = None;
+    for comment in comments.iter_mut().filter(|c| c.path == path && c.commit.as_deref() == commit && !c.code.is_empty()) {
+        let Some((deleted, first, _)) = comment.lines else { continue };
+        let both = both.get_or_insert_with(|| sides(diff, commit.is_none().then_some(path)));
+        let Some(side) = &both[usize::from(deleted)] else { continue };
+        let n = comment.code.len();
+        let matches = |p: &usize| side.get(*p..*p + n).is_some_and(|w| w.iter().map(|(_, code)| code).eq(&comment.code));
+        let here = side.iter().position(|(number, _)| *number == first).filter(matches);
+        let found = here.or_else(|| match (0..side.len()).filter(matches).take(2).collect::<Vec<_>>()[..] {
+            [only] => Some(only),
+            _ => None,
+        });
+        comment.outdated = found.is_none();
+        if let Some(p) = found {
+            comment.lines = Some((deleted, side[p].0, side[p + n - 1].0));
+        }
+    }
+}
+
+fn covers(comment: &Comment, (deleted, line): (bool, usize)) -> bool {
+    !comment.outdated && comment.lines.is_some_and(|(d, first, last)| d == deleted && (first..=last).contains(&line))
 }
 
 fn row_of(diff: &ReviewDiff, split: bool, line: usize) -> usize {
@@ -447,6 +834,128 @@ mod tests {
         let mut start = Changes::of_commit(&t, &Changes::open(&t, None).history.commits[0]);
         start.load();
         assert_eq!(start.files.len(), 2);
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    fn comment(changes: &mut Changes, reading: bool, text: &str) {
+        let comment = changes.commenting(reading).unwrap();
+        changes.keep(Comment { text: text.into(), ..comment });
+    }
+
+    #[test]
+    fn comments_say_where_they_are_and_show_under_their_lines() {
+        let t = repo();
+        let mut changes = Changes::open(&t, None);
+        comment(&mut changes, true, "why?");
+        assert!(changes.commented(1) && !changes.commented(0));
+        changes.move_cursor(-1, true);
+        comment(&mut changes, true, "both");
+        comment(&mut changes, false, "the file");
+        assert_eq!(changes.review(), "src/b.txt\nthe file\n\nsrc/b.txt:1-2\nboth\n\nsrc/b.txt:2\nwhy?");
+        let both = changes.comment_at(true).unwrap();
+        assert_eq!(both.text, "both");
+        changes.delete(&both);
+        assert_eq!(changes.count(&t.join("src")), 2);
+        changes.height = 10;
+        changes.fit(80, None);
+        assert_eq!(changes.shown, [Shown::Note(Some(1), "the file".into()), Shown::Row(0), Shown::Row(1), Shown::Note(Some(0), "why?".into())]);
+        let writing = Comment { text: "a\nb".into(), ..changes.commenting(true).unwrap() };
+        changes.fit(80, Some((&writing, 1)));
+        assert_eq!(changes.shown[1..4], [Shown::Row(0), Shown::Note(None, format!("a{CURSOR}")), Shown::Note(None, "b".into())]);
+        assert_eq!(changes.shown[4], Shown::Hint);
+        assert_eq!(wrap("ab漢字", 4), ["ab漢", "字"]);
+        let mut agent = Changes::of_commit(&t, &changes.history.commits[0]);
+        agent.load();
+        let hash = agent.commit.as_ref().unwrap().hash.clone();
+        assert_eq!(agent.commenting(true).map(|c| c.at(&t)), Some(format!("a.txt:2 (deleted) in commit {hash}")));
+        agent.move_cursor(1, true);
+        assert_eq!(agent.commenting(true).map(|c| c.at(&t)), Some(format!("a.txt:2 in commit {hash}")));
+        agent.comments = std::mem::take(&mut changes.comments);
+        assert_eq!(agent.count(&t.join("src")), 0);
+        agent.keep(Comment { id: 0, path: t.join("a.txt"), commit: None, lines: None, text: "no\x1b[201~ escape\tok".into(), code: Vec::new(), outdated: false });
+        assert!(agent.review().starts_with("a.txt\nno[201~ escape\tok\n\nsrc/b.txt"));
+        let run = |args: &[&str]| assert!(Command::new("git").current_dir(&t).args(args).output().unwrap().status.success());
+        run(&["commit", "-qam", "b"]);
+        changes.comments = agent.comments.split_off(1);
+        changes.load();
+        assert_eq!(changes.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["src", "b.txt", "a.txt", "c.txt"]);
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    #[test]
+    fn comments_follow_their_code() {
+        let t = repo();
+        let b = t.join("src/b.txt");
+        let mut changes = Changes::open(&t, None);
+        comment(&mut changes, true, "why?");
+        let draft = Comment { text: "why now?".into(), ..changes.comments[0].clone() };
+        std::fs::write(&b, "b\nnew\nmore\n").unwrap();
+        changes.follow_all();
+        changes.keep(draft);
+        let kept = |c: &Changes| c.comments.iter().map(|c| (c.lines, c.outdated, c.text.clone())).collect::<Vec<_>>();
+        assert_eq!(kept(&changes), [(Some((false, 3, 3)), false, "why now?".into())]);
+        std::fs::write(&b, "b\nless\nx\n").unwrap();
+        changes.load();
+        assert!(changes.comments[0].outdated && !changes.commented(2));
+        assert!(changes.review().ends_with("src/b.txt:3 (outdated, it was on:)\n> more\nwhy now?"));
+        (changes.cursor, changes.anchor) = (2, None);
+        assert_eq!(changes.commenting(true).map(|c| c.text), Some(String::new()));
+        assert_eq!(changes.comment_at(false).map(|c| c.text), Some("why now?".into()));
+        std::fs::write(&b, "b\nmore\n").unwrap();
+        changes.load();
+        assert_eq!(kept(&changes), [(Some((false, 2, 2)), false, "why now?".into())]);
+
+        changes.comments.clear();
+        std::fs::write(&b, "b\n}\nx\n}\n").unwrap();
+        changes.load();
+        for (cursor, text) in [(1, "one"), (3, "two")] {
+            (changes.cursor, changes.anchor) = (cursor, None);
+            comment(&mut changes, true, text);
+        }
+        std::fs::write(&b, "b\nx\n}\n").unwrap();
+        changes.load();
+        let one = Comment { text: "one edited".into(), ..changes.comments[0].clone() };
+        changes.keep(one);
+        assert_eq!(kept(&changes), [(Some((false, 3, 3)), false, "one edited".into()), (Some((false, 3, 3)), false, "two".into())]);
+        std::fs::write(&b, "}\n}\n").unwrap();
+        changes.load();
+        assert_eq!(changes.comments.iter().map(|c| c.outdated).collect::<Vec<_>>(), [true, true]);
+        std::fs::write(&b, "b\n}\nx\n").unwrap();
+        changes.load();
+        assert_eq!(changes.comments.iter().map(|c| (c.lines, c.outdated)).collect::<Vec<_>>(), [(Some((false, 2, 2)), false); 2]);
+
+        let run = |args: &[&str]| assert!(Command::new("git").current_dir(&t).args(args).output().unwrap().status.success());
+        std::fs::write(&b, "b\nb\n}\nx\n").unwrap();
+        run(&["commit", "-qam", "b"]);
+        changes.follow_all();
+        assert_eq!(changes.comments.iter().map(|c| (c.lines, c.outdated)).collect::<Vec<_>>(), [(Some((false, 3, 3)), false); 2]);
+
+        changes.comments.clear();
+        std::fs::write(&b, "b\n\tmore\n").unwrap();
+        changes.load();
+        let added = changes.diff.as_ref().and_then(|(_, d)| d.kinds.iter().position(|k| *k == Kind::Added)).unwrap();
+        (changes.cursor, changes.anchor) = (added, None);
+        comment(&mut changes, true, "tabbed");
+        run(&["commit", "-qam", "tab"]);
+        changes.follow_all();
+        changes.load();
+        assert_eq!((changes.comments[0].outdated, changes.comments[0].lines), (false, Some((false, 2, 2))));
+        comment(&mut changes, false, "the file");
+        let mut taken: Vec<String> = (0..3).filter_map(|_| changes.comment_at(false).map(|c| c.text)).collect();
+        assert_eq!(taken[0], taken[2]);
+        taken[..2].sort();
+        assert_eq!(taken[..2], ["tabbed", "the file"]);
+        assert!(changes.comment_at(true).is_some());
+
+        let c = t.join("c.txt");
+        let row = changes.rows.iter().position(|r| r.path == c).unwrap();
+        changes.state.select(Some(row));
+        changes.follow();
+        (changes.cursor, changes.anchor) = (0, None);
+        comment(&mut changes, true, "new file");
+        std::fs::remove_file(&c).unwrap();
+        changes.follow_all();
+        assert!(changes.comments.iter().find(|c| c.text == "new file").unwrap().outdated);
         std::fs::remove_dir_all(&t).unwrap();
     }
 

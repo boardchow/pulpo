@@ -142,6 +142,7 @@ struct Content {
     counts: Option<(usize, usize)>,
     kinds: Vec<Kind>,
     old_numbers: Vec<usize>,
+    new_numbers: Vec<usize>,
 }
 
 impl Content {
@@ -201,6 +202,7 @@ pub struct ReviewDiff {
     pub pairs: Vec<(Option<usize>, Option<usize>)>,
     /// Each line's number in the old file, for the left side of an unchanged line.
     pub old_numbers: Vec<usize>,
+    pub new_numbers: Vec<usize>,
 }
 
 pub(crate) fn review_diff(root: &Path, base: &str, path: &Path, untracked: bool) -> ReviewDiff {
@@ -226,6 +228,7 @@ pub(crate) fn review_diff(root: &Path, base: &str, path: &Path, untracked: bool)
         kinds: content.kinds,
         pairs,
         old_numbers: content.old_numbers,
+        new_numbers: content.new_numbers,
     }
 }
 
@@ -306,6 +309,7 @@ fn diff_content(text: &str, path: &Path) -> Content {
             content.lines.push(note("⋯"));
             content.kinds.push(Kind::Gap);
             content.old_numbers.push(0);
+            content.new_numbers.push(0);
             continue;
         }
         let number = if kind == Kind::Removed { old_number } else { new_number };
@@ -344,6 +348,7 @@ fn diff_content(text: &str, path: &Path) -> Content {
         content.lines.push(line);
         content.kinds.push(kind);
         content.old_numbers.push(old_number);
+        content.new_numbers.push(new_number);
     }
     content.counts = Some((added, removed));
     content
@@ -413,7 +418,7 @@ pub(crate) fn styled(ranges: Option<Vec<(syntect::highlighting::Style, &str)>>, 
     }
 }
 
-fn plain(line: &Line, skip: usize) -> String {
+pub(crate) fn plain(line: &Line, skip: usize) -> String {
     line.spans.iter().flat_map(|s| s.content.chars()).skip(skip).collect()
 }
 
@@ -464,7 +469,7 @@ fn note(text: &str) -> Line<'static> {
     Line::from(format!(" {text}")).fg(theme::dim()).italic()
 }
 
-fn clean(text: &str) -> String {
+pub(crate) fn clean(text: &str) -> String {
     text.trim_end_matches(['\n', '\r']).replace('\t', "    ")
 }
 
