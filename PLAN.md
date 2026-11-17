@@ -125,6 +125,13 @@ view lighter). With 140 columns for the diff (opened wide on a screen bigger
 than a 14" laptop), old and new sit side by side: removed lines beside the
 added ones after them.
 
+Comments on lines or files are drafts on `Changes`, by line number, the
+lines' text and the commit shown, and stay per workspace while Pulpo runs.
+When the file changes, a comment moves to where its text went, or is marked
+outdated and sent quoting it. `Changes::fit` lays
+them out under their lines; ⌃b s pastes them all into the workspace's agent,
+then presses ⏎.
+
 ### History
 
 Under Changes (the right column in thirds): the commits since the workspace

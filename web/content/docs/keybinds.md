@@ -55,6 +55,15 @@ This one works from any panel:
 | :kp[r] | Rename the selected file or folder |
 | :kp[d] | Delete it, after asking |
 
+## Changes only
+
+| Keys | Does |
+| --- | --- |
+| :kp[n] | Comment on the selected lines, or the selected file |
+| :kp[e] | Edit the comment at the cursor |
+| :kp[d] | Delete it, after asking |
+| :kp[s] | Send every comment to the workspace's agent, after asking |
+
 ## Quit
 
 | Keys | Does |
@@ -110,6 +119,25 @@ Full screen, reading the file:
 | :k[0] | Back to the left edge |
 | :k[tab] | Go between the file and the tree |
 | :k[esc] | To the tree, then to the three columns |
+
+Full screen in Changes, a line cursor moves instead of the file:
+
+| Keys | Does |
+| --- | --- |
+| :k[↓] :k[↑] or :k[j] :k[k] | Next, previous line |
+| :k[d] or :k[space], :k[u] | Half a page down, up |
+| :k[g] :k[G] or :k[home] :k[end] | First, last line |
+| :k[shift] :k[↓] :k[↑] or :k[J] :k[K] | Select lines |
+| :k[esc] | Drop the selection |
+
+Writing a comment:
+
+| Keys | Does |
+| --- | --- |
+| :k[⏎] | Keep it. An empty one is deleted |
+| :k[⌥⏎] or :k[⌃j] | New line |
+| :k[←] :k[→] :k[↑] :k[↓] | Move in the text |
+| :k[esc] | Cancel |
 
 ## History
 
@@ -183,5 +211,8 @@ In the new project list, :k[↓] :k[↑], :k[pgdn] :k[pgup] and :k[esc] work the
 | Drag a border | Resize the columns, or the tree |
 | Wheel | Scroll. With :k[shift], scroll sideways in files |
 | Click the marks beside a change | Jump to that change |
+| Click a line in Changes, full screen | Put the line cursor there. Drag or :k[shift]-click selects lines |
+| Click a comment in Changes, full screen | Edit it |
+| Click *send review* | Send the comments to the workspace's agent, after asking |
 | Ctrl-click in a terminal | Open a link, or a path like `src/app.rs:120` in Files |
 | Click outside a list or question | Close it, or answer no |

@@ -25,13 +25,19 @@ Full screen, the file takes everything right of Projects and Workspaces. On a wi
 
 | To | Press |
 | --- | --- |
-| Scroll a line | :k[↑] :k[↓] or :k[j] :k[k] |
-| Scroll half a page | :k[d] or :k[space], and :k[u] |
+| Move the line cursor | :k[↑] :k[↓] or :k[j] :k[k], or click a line |
+| Move it half a page | :k[d] or :k[space], and :k[u] |
 | Scroll a page | :k[pgdn] :k[pgup] |
-| Go to the top, the bottom | :k[g], :k[G] |
+| Move it to the top, the bottom | :k[g], :k[G] |
 | Scroll sideways | :k[←] :k[→] or :k[h] :k[l], and :k[0] for the left edge |
 | Go between the file and the tree | :k[tab] |
 | Step back | :k[esc]: to the tree, to the three columns, then to the terminal |
+
+## Comment for the agent
+
+Full screen, select lines with the line cursor, :k[shift] :k[↓] or a drag, press :kp[n] and type your comment below them. In the tree, :kp[n] comments on the whole file. :kp[e] edits a comment and :kp[d] deletes it.
+
+Comments stay until you send them, while Pulpo runs. Press :kp[s] or click *send review* to send them all to the workspace's agent, like Claude Code or Codex, each under its place like `src/app.rs:12-14`.
 
 ## Look through the commits
 
