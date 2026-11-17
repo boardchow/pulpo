@@ -33,6 +33,8 @@ pub struct Viewer {
     widest: usize,
     stamp: Stamp,
     loading: bool,
+    blame: (Stamp, Vec<String>),
+    blamed: Option<Stamp>,
 }
 
 /// The size too: some disks keep times to the second only.
@@ -72,6 +74,7 @@ impl Viewer {
             self.scroll = 0;
             self.mark = None;
             self.hscroll = 0;
+            (self.blame, self.blamed) = Default::default();
             self.show(content);
         }
     }
@@ -106,6 +109,26 @@ impl Viewer {
         self.reload()
     }
 
+    pub fn blame_due(&mut self) -> Option<(PathBuf, Stamp)> {
+        let Some(Source::File(path)) = &self.source else { return None };
+        if self.blamed == Some(self.stamp) {
+            return None;
+        }
+        self.blamed = Some(self.stamp);
+        let shown = self.stamp.is_some_and(|(_, len)| len <= MAX_BYTES as u64);
+        shown.then(|| (path.clone(), self.stamp))
+    }
+
+    pub fn blame_again(&mut self) {
+        self.blamed = None;
+    }
+
+    pub fn on_blame(&mut self, path: PathBuf, stamp: Stamp, blame: Vec<String>) {
+        if self.source == Some(Source::File(path)) {
+            self.blame = (stamp, blame);
+        }
+    }
+
     fn show(&mut self, content: Content) {
         self.lines = content.lines;
         self.gutter = content.gutter;
@@ -119,9 +142,25 @@ impl Viewer {
         self.lines.len()
     }
 
-    pub fn decorated(&self, i: usize) -> Line<'static> {
-        let line = shift(self.lines[i].clone(), self.gutter, self.hscroll);
-        if self.mark == Some(i) { line.patch_style(Style::default().bg(theme::mark_bg())) } else { line }
+    pub fn decorated(&self, i: usize, blame: bool) -> Line<'static> {
+        let mut line = shift(self.lines[i].clone(), self.gutter, self.hscroll);
+        if self.mark != Some(i) {
+            return line;
+        }
+        let (stamp, lines) = &self.blame;
+        if let Some(who) = lines.get(i).filter(|_| blame && *stamp == self.stamp && lines.len() == self.lines.len()) {
+            line.spans.push(Span::from(format!("    {who}")).fg(theme::muted()));
+        }
+        line.patch_style(Style::default().bg(theme::mark_bg()))
+    }
+
+    pub fn move_mark(&mut self, rows: isize) {
+        let height = self.height.max(1);
+        let line = self.mark.unwrap_or(self.scroll).clamp(self.scroll, self.scroll + height - 1);
+        let line = line.saturating_add_signed(rows).min(self.row_count().saturating_sub(1));
+        self.mark = Some(line);
+        self.scroll = self.scroll.min(line).max((line + 1).saturating_sub(height));
+        self.scroll_by(0);
     }
 
     pub fn scroll_sideways(&mut self, columns: isize) {
@@ -534,6 +573,33 @@ mod tests {
         assert!(viewer.loaded(load(again, stamp)).is_none());
         assert_eq!(viewer.row_count(), 3);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn moves_the_mark_from_the_lines_in_view() {
+        let mut viewer = Viewer { lines: vec![Line::default(); 100], height: 10, ..Viewer::default() };
+        viewer.move_mark(1);
+        assert_eq!((viewer.mark, viewer.scroll), (Some(1), 0));
+        viewer.scroll_by(50);
+        viewer.move_mark(-1);
+        assert_eq!((viewer.mark, viewer.scroll), (Some(49), 49));
+        viewer.move_mark(isize::MAX / 2);
+        assert_eq!((viewer.mark, viewer.scroll), (Some(99), 90));
+    }
+
+    #[test]
+    fn blames_once_until_the_file_or_its_history_changes() {
+        let path = PathBuf::from("a.rs");
+        let stamp = Some((SystemTime::UNIX_EPOCH, 3));
+        let mut viewer = Viewer { source: Some(Source::File(path.clone())), stamp, lines: vec![Line::default()], mark: Some(0), ..Viewer::default() };
+        assert_eq!(viewer.blame_due(), Some((path.clone(), stamp)));
+        assert_eq!(viewer.blame_due(), None);
+        viewer.blame_again();
+        assert!(viewer.blame_due().is_some());
+        viewer.on_blame(path.clone(), None, vec!["old".into()]);
+        assert_eq!(viewer.decorated(0, true).spans.len(), 0);
+        viewer.on_blame(path, stamp, vec!["Sam".into()]);
+        assert_eq!(plain(&viewer.decorated(0, true), 0).trim(), "Sam");
     }
 
     #[test]

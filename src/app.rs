@@ -572,6 +572,9 @@ impl App {
 
     pub fn on_status(&mut self, root: PathBuf, status: git::Status) {
         let Some(i) = self.workspaces.iter().position(|w| w.root == root) else { return };
+        if i == self.current {
+            self.viewer.blame_again();
+        }
         if self.workspaces[i].end_status(status) {
             self.read_status(i);
         }
@@ -648,6 +651,15 @@ impl App {
                 self.focus = Focus::History;
             }
             self.reload_changes();
+        }
+        if self.focus == Focus::Files && self.reading && self.editor.is_none()
+            && let Some((path, stamp)) = self.viewer.blame_due()
+        {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let blame = git::blame(&path);
+                let _ = tx.send(Msg::Blamed(path, stamp, blame));
+            });
         }
     }
 
@@ -1624,7 +1636,7 @@ impl App {
                 KeyCode::PageDown => self.viewer.scroll_by(half),
                 KeyCode::PageUp => self.viewer.scroll_by(-half),
                 _ if self.reading => match scroll_keys(key, self.viewer.height) {
-                    Some(Scroll::Rows(rows)) => self.viewer.scroll_by(rows),
+                    Some(Scroll::Rows(rows)) => self.viewer.move_mark(rows),
                     Some(Scroll::Sideways(columns)) => self.viewer.scroll_sideways(columns),
                     None => {}
                 },
@@ -2271,6 +2283,9 @@ impl App {
             } else if double {
                 self.files_expanded = !self.files_expanded;
                 self.reading = self.files_expanded && self.viewer.is_open();
+            } else if down {
+                let line = self.viewer.scroll + (pos.y - areas.files_file.y) as usize;
+                self.viewer.mark = Some(line.min(self.viewer.row_count().saturating_sub(1)));
             }
         } else if areas.changes_tree.contains(pos) {
             if down {
