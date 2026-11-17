@@ -19,7 +19,7 @@ Once an agent commits a file, it leaves Changes and shows in History.
 
 ## Read a change full screen
 
-Full screen, the file takes everything right of the left side, whole, with its changes in place. On a wide screen, the old and new versions sit side by side. Marks on its right edge show where it changed: click one to jump there.
+Full screen, the file takes everything right of the left side, whole, with its changes in place. On a wide screen, the old and new versions sit side by side. Long lines wrap. Marks on its right edge show where it changed: click one to jump there.
 
 | To | Press |
 | --- | --- |
@@ -27,7 +27,6 @@ Full screen, the file takes everything right of the left side, whole, with its c
 | Move it half a page | :k[d] or :k[space], and :k[u] |
 | Scroll a page | :k[pgdn] :k[pgup] |
 | Move it to the top, the bottom | :k[g], :k[G] |
-| Scroll sideways | :k[←] :k[→] or :k[h] :k[l], and :k[0] for the left edge |
 | Go between the file and the tree | :k[tab] |
 | Step back | :k[esc]: to the tree, to the terminal beside it, then into the terminal |
 

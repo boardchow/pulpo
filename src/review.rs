@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ratatui::style::Color;
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::ListState;
 
 use crate::git::{self, Commit, History};
@@ -55,6 +55,7 @@ impl Comment {
 #[derive(Clone, PartialEq, Debug)]
 pub enum Shown {
     Row(usize),
+    Wrap { row: usize, piece: usize },
     /// Its index in the comments; none for the one being written.
     Note(Option<usize>, String),
     /// Under the one being written.
@@ -82,8 +83,8 @@ pub struct Changes {
     pub state: ListState,
     pub diff: Option<(PathBuf, ReviewDiff)>,
     pub scroll: usize,
-    pub hscroll: usize,
     pub height: usize,
+    pub code_width: usize,
     /// Old and new side by side; `scroll` and the ruler count its rows then.
     pub split: bool,
     /// An index in the diff's lines, not its rows.
@@ -92,7 +93,6 @@ pub struct Changes {
     /// The workspace's comments, those on its commits too.
     pub comments: Vec<Comment>,
     pub shown: Vec<Shown>,
-    note_rows: usize,
     /// The next draw brings the cursor, or the comment being written, into view.
     pub reveal: bool,
     /// Which comment above the file ⌃b e and d take next, so each press reaches another.
@@ -122,14 +122,13 @@ impl Changes {
             state: ListState::default().with_selected(Some(0)),
             diff: None,
             scroll: 0,
-            hscroll: 0,
             height: 20,
+            code_width: 80,
             split: false,
             cursor: 0,
             anchor: None,
             comments: Vec::new(),
             shown: Vec::new(),
-            note_rows: 0,
             reveal: false,
             turn: 0,
             history: History::default(),
@@ -245,7 +244,6 @@ impl Changes {
         let diff = viewer::review_diff(&self.root, &self.against, path, untracked);
         self.scroll = first_change(&diff, self.split);
         (self.cursor, self.anchor) = (diff.changes.first().copied().unwrap_or(0), None);
-        self.hscroll = 0;
         self.diff = Some((path.to_path_buf(), diff));
         self.follow_shown();
     }
@@ -300,11 +298,6 @@ impl Changes {
         self.follow();
     }
 
-    pub fn scroll_sideways(&mut self, columns: isize) {
-        let widest = self.diff.as_ref().map_or(0, |(_, d)| d.widest);
-        self.hscroll = if columns == 0 { 0 } else { self.hscroll.saturating_add_signed(columns).min(widest) };
-    }
-
     /// Keeps the same lines in view when the layout changes.
     pub fn set_split(&mut self, split: bool) {
         if split == self.split {
@@ -316,6 +309,25 @@ impl Changes {
         }
         self.split = split;
         self.scroll_by(0);
+    }
+
+    fn wrap_points(&self, line: usize) -> Vec<usize> {
+        self.diff.as_ref().map_or_else(|| vec![0], |(_, diff)| wrap_points(&diff.lines[line], diff.gutter, self.code_width))
+    }
+
+    pub fn piece_start(&self, line: usize, piece: usize) -> Option<usize> {
+        self.wrap_points(line).get(piece).copied()
+    }
+
+    fn screen_lines(&self, row: usize) -> usize {
+        let Some((_, diff)) = &self.diff else { return 1 };
+        let count = |i: Option<usize>| i.map_or(1, |i| self.wrap_points(i).len());
+        let lines = match diff.pairs.get(row) {
+            Some(&(old, new)) if self.split => count(old).max(count(new)),
+            _ => count(Some(row)),
+        };
+        // shortcut: a row taller than the view shows its first screenful, scroll by screen lines if that bites.
+        lines.min(self.height.max(1))
     }
 
     fn rows_len(&self) -> usize {
@@ -365,7 +377,7 @@ impl Changes {
 
     /// The row on screen, on the old side when split.
     pub fn click(&mut self, at: usize, old_side: bool, extend: bool) {
-        if let Some(&Shown::Row(row)) = self.shown.get(at) {
+        if let Some(&(Shown::Row(row) | Shown::Wrap { row, .. })) = self.shown.get(at) {
             self.select_row(row, old_side, extend);
         }
     }
@@ -501,6 +513,7 @@ impl Changes {
     /// The one being written shows `CURSOR` at its byte index.
     pub fn fit(&mut self, width: usize, writing: Option<(&Comment, usize)>) {
         let Some((_, diff)) = &self.diff else { return self.shown.clear() };
+        self.code_width = width.saturating_sub(diff.gutter).max(1);
         let (width, cursor) = (width.saturating_sub(diff.gutter + 2).max(10), row_of(diff, self.split, self.cursor));
         let wrap = |text: &str, i: Option<usize>| -> Vec<Shown> { text.split('\n').flat_map(|line| wrap(line, width)).map(|line| Shown::Note(i, line)).collect() };
         let mut notes: Vec<(Option<usize>, Vec<Shown>)> = Vec::new();
@@ -520,8 +533,13 @@ impl Changes {
         }
         let target = written.map_or(cursor, |(row, _, _)| row.unwrap_or(0));
         let writing = written.is_some();
-        self.note_rows = notes.iter().map(|(_, lines)| lines.len()).sum();
-        self.scroll_by(0);
+        let under = |row: usize| notes.iter().filter(|(r, _)| *r == Some(row)).map(|(_, lines)| lines.len()).sum::<usize>();
+        let (mut top, mut used) = (self.rows_len(), 0);
+        while top > 0 && used < self.height {
+            top -= 1;
+            used += self.screen_lines(top) + under(top);
+        }
+        self.scroll = self.scroll.min(if used > self.height { top + 1 } else { top }).min(self.rows_len().saturating_sub(1));
         loop {
             self.shown = self.lay(&notes);
             let seen = self.shown.contains(&Shown::Row(target)) || (target == 0 && self.scroll == 0);
@@ -552,6 +570,7 @@ impl Changes {
                 break;
             }
             shown.push(Shown::Row(row));
+            shown.extend((1..self.screen_lines(row)).map(|piece| Shown::Wrap { row, piece }));
             under(Some(row), &mut shown);
         }
         shown.truncate(self.height);
@@ -559,7 +578,7 @@ impl Changes {
     }
 
     pub fn scroll_by(&mut self, rows: isize) {
-        self.scroll = self.scroll.saturating_add_signed(rows).min((self.rows_len() + self.note_rows).saturating_sub(self.height.max(1)).min(self.rows_len().saturating_sub(1)));
+        self.scroll = self.scroll.saturating_add_signed(rows).min(self.rows_len().saturating_sub(1));
     }
 }
 
@@ -688,6 +707,24 @@ fn covers(comment: &Comment, (deleted, line): (bool, usize)) -> bool {
     !comment.outdated && comment.lines.is_some_and(|(d, first, last)| d == deleted && (first..=last).contains(&line))
 }
 
+/// Character offsets after the gutter.
+fn wrap_points(line: &Line, gutter: usize, width: usize) -> Vec<usize> {
+    let (mut points, mut used, mut kept) = (vec![0], 0, 1);
+    for (i, c) in line.spans.iter().flat_map(|s| s.content.chars()).skip(gutter).enumerate() {
+        let cells = if c.is_ascii() { 1 } else { Span::raw(c.to_string()).width() };
+        if used + cells > width && used > 0 {
+            points.push(i);
+            used = 0;
+        }
+        used += cells;
+        if !c.is_whitespace() {
+            kept = points.len();
+        }
+    }
+    points.truncate(kept);
+    points
+}
+
 fn row_of(diff: &ReviewDiff, split: bool, line: usize) -> usize {
     if !split {
         return line;
@@ -781,10 +818,6 @@ mod tests {
         assert_eq!(marks, [None, None, Some(theme::green()), Some(theme::green())]);
         assert!(changes.ruler(4).iter().all(|&(_, in_view)| in_view));
         assert_eq!(cell_lines(3, 4, 2), (1, 2));
-        changes.scroll_sideways(100);
-        assert_eq!(changes.hscroll, 4);
-        changes.scroll_sideways(0);
-        assert_eq!(changes.hscroll, 0);
         let stale = changes.request().read();
         let fresh = changes.request().read();
         changes.apply(stale);
@@ -840,6 +873,24 @@ mod tests {
     fn comment(changes: &mut Changes, reading: bool, text: &str) {
         let comment = changes.commenting(reading).unwrap();
         changes.keep(Comment { text: text.into(), ..comment });
+    }
+
+    #[test]
+    fn long_lines_wrap() {
+        let t = repo();
+        std::fs::write(t.join("src/b.txt"), format!("b\n{}\n", "x".repeat(25))).unwrap();
+        let mut changes = Changes::open(&t, None);
+        changes.height = 10;
+        changes.fit(14, None);
+        assert_eq!(changes.shown, [Shown::Row(0), Shown::Row(1), Shown::Wrap { row: 1, piece: 1 }, Shown::Wrap { row: 1, piece: 2 }]);
+        changes.click(3, false, false);
+        assert_eq!(changes.cursor, 1);
+        changes.height = 2;
+        changes.scroll_by(100);
+        changes.fit(14, None);
+        assert_eq!(changes.shown, [Shown::Row(1), Shown::Wrap { row: 1, piece: 1 }]);
+        assert_eq!(wrap_points(&Line::from(format!("1 + {}", "漢".repeat(6))), 4, 10), [0, 5]);
+        assert_eq!(wrap_points(&Line::from(format!("1 + ab{}", " ".repeat(30))), 4, 10), [0]);
     }
 
     #[test]

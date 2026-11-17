@@ -448,7 +448,16 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         line
     };
-    let shown = |i: usize| mark(crate::viewer::shift(diff.lines[i].clone(), diff.gutter, changes.hscroll), i);
+    let shown = |i: usize, piece: usize| {
+        let mut line = match changes.piece_start(i, piece) {
+            Some(start) => crate::viewer::shift(diff.lines[i].clone(), diff.gutter, start),
+            None => Line::from(String::new()).style(diff.lines[i].style),
+        };
+        if piece > 0 && let Some(gutter) = line.spans.first_mut() {
+            gutter.content = " ".repeat(diff.gutter).into();
+        }
+        mark(line, i)
+    };
     let side = |comment: Option<&crate::review::Comment>| match comment.and_then(|c| c.lines) {
         _ if !changes.split => file,
         Some((true, _, _)) => old,
@@ -462,22 +471,26 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         {
             cell.set_symbol("│").set_style(bg.fg(theme::border()));
         }
-        match item {
-            &Shown::Row(row) if !changes.split => frame.render_widget(Paragraph::new(shown(row)).style(bg), on(file)),
-            &Shown::Row(row) => {
+        match *item {
+            Shown::Row(row) | Shown::Wrap { row, .. } => {
+                let piece = if let Shown::Wrap { piece, .. } = *item { piece } else { 0 };
+                if !changes.split {
+                    frame.render_widget(Paragraph::new(shown(row, piece)).style(bg), on(file));
+                    continue;
+                }
                 let (o, n) = diff.pairs[row];
                 if let Some(i) = o {
-                    let mut line = shown(i);
-                    if diff.kinds[i] == crate::viewer::Kind::Same {
+                    let mut line = shown(i, piece);
+                    if piece == 0 && diff.kinds[i] == crate::viewer::Kind::Same {
                         line.spans[0] = Span::from(format!("{:>w$}   ", diff.old_numbers[i], w = diff.gutter - 3)).fg(theme::dim());
                     }
                     frame.render_widget(Paragraph::new(mark(line, i)).style(bg), on(old));
                 }
                 if let Some(i) = n {
-                    frame.render_widget(Paragraph::new(shown(i)).style(bg), on(new));
+                    frame.render_widget(Paragraph::new(shown(i, piece)).style(bg), on(new));
                 }
             }
-            Shown::Note(i, text) => {
+            Shown::Note(i, ref text) => {
                 let text = match text.split_once(CURSOR).filter(|_| i.is_none()) {
                     Some((before, after)) => vec![Span::from(before.to_string()), Span::from("█").fg(theme::blue()), Span::from(after.to_string())],
                     None => vec![Span::from(text.clone())],
@@ -494,9 +507,8 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// Old and new side by side from here: about 65 columns of code each, so a
-/// diff opened wide splits on screens bigger than a 14" laptop.
-const SPLIT_WIDTH: u16 = 140;
+/// So a 14" laptop, about 155 columns of diff, keeps one view.
+const SPLIT_WIDTH: u16 = 170;
 
 fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Files && !app.prefixed;

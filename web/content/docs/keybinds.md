@@ -111,8 +111,8 @@ Full screen, reading the file:
 | Keys | Does |
 | --- | --- |
 | :k[pgdn] :k[pgup] | Scroll half a page down, up |
-| :k[→] :k[←] or :k[l] :k[h] | Scroll sideways |
-| :k[0] | Back to the left edge |
+| :k[→] :k[←] or :k[l] :k[h] | Scroll sideways, in Files |
+| :k[0] | Back to the left edge, in Files |
 | :k[tab] | Go between the file and the tree |
 | :k[esc] | To the tree, then to the terminal beside it |
 
