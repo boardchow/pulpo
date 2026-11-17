@@ -247,10 +247,14 @@ impl Term {
 
     pub fn paste(&mut self, text: &str) {
         if self.screen().is_some_and(vt100::Screen::bracketed_paste) {
-            self.send(format!("\x1b[200~{text}\x1b[201~").as_bytes());
+            self.paste_bracketed(text);
         } else {
             self.send(text.as_bytes());
         }
+    }
+
+    pub fn paste_bracketed(&mut self, text: &str) {
+        self.send(format!("\x1b[200~{text}\x1b[201~").as_bytes());
     }
 
     fn send(&mut self, bytes: &[u8]) {

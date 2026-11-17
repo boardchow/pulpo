@@ -17,7 +17,7 @@ use crate::input;
 use crate::keymap::{Key, Keymap};
 use crate::layout::{self, Layout};
 use crate::proto::{Info, PROTOCOL, ToClient, ToServer};
-use crate::review::Changes;
+use crate::review::{Changes, Comment, Shown};
 use crate::search::{Hit, Kind, Mode, Search, expand_home};
 use crate::worktree;
 use crate::status::Status;
@@ -31,6 +31,8 @@ const MESSAGE_FOR: Duration = Duration::from_secs(5);
 const UNSAVED: &str = "unsaved changes in the editor: ⌃s saves them, esc twice throws them away";
 const PREFIX_FOR: Duration = Duration::from_secs(3);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// shortcut: a fixed wait so ⏎ isn't read as part of the paste, until an agent needs longer.
+const SUBMIT_AFTER: Duration = Duration::from_millis(300);
 /// Another workspace only shows how many changes it has: its `git status` can wait this long.
 const OTHERS_STATUS: Duration = Duration::from_secs(3);
 /// How long a terminal just switched to may wait for its snapshot before it's drawn empty.
@@ -69,6 +71,8 @@ pub enum Confirm {
     DeleteWorkspace(PathBuf),
     CloseTerminal(usize),
     DeleteFile(PathBuf),
+    DeleteComment(Comment),
+    SendReview(usize),
     StopAll,
 }
 
@@ -90,6 +94,7 @@ pub struct Areas {
     pub divider: Rect,
     pub tree_dividers: Vec<(Rect, u16)>,
     pub yes: Rect,
+    pub send_review: Rect,
     pub popup: Rect,
     pub popup_list: Rect,
     pub width: u16,
@@ -137,6 +142,12 @@ pub struct App {
     discard: bool,
     pub files_expanded: bool,
     pub changes_expanded: bool,
+    pub writing: Option<Comment>,
+    /// A byte index in its text.
+    pub writing_at: usize,
+    submitting: Option<(usize, Instant)>,
+    /// The comments of workspaces not on screen.
+    drafts: HashMap<PathBuf, Vec<Comment>>,
     pub reading: bool,
     pub changes: Option<Changes>,
     /// The workspace's changes, while a commit is shown in their place.
@@ -238,6 +249,10 @@ impl App {
             discard: false,
             files_expanded: false,
             changes_expanded: false,
+            writing: None,
+            writing_at: 0,
+            submitting: None,
+            drafts: HashMap::new(),
             reading: false,
             changes: None,
             shelved: None,
@@ -394,6 +409,11 @@ impl App {
                 self.sync_lists();
                 return false;
             }
+            self.shelved = None;
+            if let Some(changes) = self.changes.take() {
+                self.drafts.insert(changes.root, changes.comments);
+            }
+            self.writing = None;
             self.current = i;
             self.editor = None;
             self.viewer.close();
@@ -407,8 +427,9 @@ impl App {
                 self.read_status(i);
             }
             let base = self.worktrees.iter().find(|s| s.root == self.workspaces[i].root).and_then(|s| s.base.clone());
-            self.shelved = None;
-            self.changes = Some(Changes::new(&self.workspaces[i].root, base));
+            let mut changes = Changes::new(&self.workspaces[i].root, base);
+            changes.comments = self.drafts.remove(&changes.root).unwrap_or_default();
+            self.changes = Some(changes);
             self.reload_changes();
             self.restore_term();
             if self.setup_ended.remove(&self.workspaces[i].root) == Some(false) {
@@ -581,16 +602,27 @@ impl App {
     }
 
     pub fn on_changes(&mut self, read: crate::review::Read) {
-        if let Some(changes) = &mut self.changes {
-            changes.apply(read);
+        let Some(changes) = &mut self.changes else { return };
+        changes.apply(read);
+        let Some(draft) = &mut self.writing else { return };
+        if changes.diff.as_ref().is_some_and(|(path, _)| *path == draft.path) {
+            changes.follow_draft(draft);
+        } else {
+            // Its file left Changes: kept, the comment keeps the file there.
+            self.keep_writing();
         }
     }
 
     fn open_commit(&mut self) {
         let Some(changes) = &self.changes else { return };
         let Some(commit) = changes.history_state.selected().and_then(|i| changes.history.commits.get(i)) else { return };
-        let commit = Changes::of_commit(&changes.root, commit);
-        self.shelved = self.changes.replace(commit);
+        let mut commit = Changes::of_commit(&changes.root, commit);
+        self.shelved = self.changes.take().map(|mut changes| {
+            commit.comments = std::mem::take(&mut changes.comments);
+            changes
+        });
+        self.changes = Some(commit);
+        self.writing = None;
         (self.focus, self.changes_expanded, self.reading) = (Focus::Changes, true, false);
         self.reload_changes();
     }
@@ -606,11 +638,117 @@ impl App {
             self.link.send(&ToServer::Watch { id: self.active.map(|id| id as u32) });
         }
         if self.shelved.is_some() && !(self.focus == Focus::Changes && self.changes_expanded) {
+            let comments = self.changes.as_mut().map(|c| std::mem::take(&mut c.comments)).unwrap_or_default();
             self.changes = self.shelved.take();
+            if let Some(changes) = &mut self.changes {
+                changes.comments = comments;
+            }
+            self.writing = None;
             if self.focus == Focus::Changes {
                 self.focus = Focus::History;
             }
             self.reload_changes();
+        }
+    }
+
+    /// The one on screen first.
+    fn agent_term(&self) -> Option<usize> {
+        let agent = |t: &Term| t.info.running.is_some() && self.agents.session_for_tab(&t.info.tag).is_some();
+        let terms = self.workspace_terms();
+        let on_screen = terms.iter().map(|&t| &self.terms[t]).find(|t| Some(t.id) == self.active);
+        on_screen.filter(|t| agent(t)).or_else(|| terms.iter().map(|&t| &self.terms[t]).find(|t| agent(t))).map(|t| t.id)
+    }
+
+    fn ask_send_review(&mut self) {
+        let count = self.changes.as_ref().map_or(0, |c| c.comments.len());
+        if count == 0 {
+            self.message = Some(format!("no comments to send: {} n makes one", self.keymap.label()));
+            return;
+        }
+        let Some(term) = self.agent_term().and_then(|id| self.terms.iter().find(|t| t.id == id)) else {
+            self.message = Some("no agent running in this workspace to send the review to".into());
+            return;
+        };
+        let agent = self.agents.session_for_tab(&term.info.tag).map_or("the agent", |(_, kind)| kind.name);
+        self.ask(format!("send {count} comment(s) to {agent} in {}?", term.label()), Confirm::SendReview(term.id));
+    }
+
+    fn send_review(&mut self, id: usize) {
+        let Some(changes) = &mut self.changes else { return };
+        changes.follow_all();
+        let review = changes.review();
+        let Some(term) = self.terms.iter_mut().find(|t| t.id == id) else { return };
+        // The agent's screen may not be mirrored, but an agent always takes bracketed paste.
+        term.paste_bracketed(&review);
+        self.submitting = Some((id, Instant::now()));
+        if let Some(changes) = &mut self.changes {
+            changes.comments.clear();
+        }
+        self.select_term(id);
+        self.set_focus(Focus::Terminal);
+        self.message = Some("review sent".into());
+    }
+
+    fn write_comment(&mut self, comment: Option<Comment>) {
+        match comment {
+            Some(comment) => {
+                self.writing_at = comment.text.len();
+                self.writing = Some(comment);
+                if let Some(changes) = &mut self.changes {
+                    changes.reveal = true;
+                }
+            }
+            None if self.reading => self.message = Some("nothing to comment on here".into()),
+            None => self.message = Some("comments go on a file, or on its lines full screen".into()),
+        }
+    }
+
+    fn comment_command(&mut self, c: char) {
+        let (reading, p) = (self.reading, self.keymap.label());
+        let Some(changes) = &mut self.changes else { return };
+        if c == 'n' {
+            let comment = changes.commenting(reading);
+            return self.write_comment(comment);
+        }
+        let (here, above, root) = (changes.comment_at(reading), !changes.above().is_empty(), changes.root.clone());
+        match (c, here) {
+            ('e', Some(comment)) => self.write_comment(Some(comment)),
+            ('d', Some(comment)) => {
+                let at = comment.at(&root);
+                self.ask(format!("delete the comment on {at}?"), Confirm::DeleteComment(comment));
+            }
+            _ if reading && above => self.message = Some(format!("no comment here; for those above the file, tab to the tree, then {p} e or d")),
+            _ => self.message = Some(format!("no comment here: {p} n makes one")),
+        }
+    }
+
+    fn writing_key(&mut self, key: KeyEvent) {
+        let Some(comment) = &mut self.writing else { return };
+        match key.code {
+            KeyCode::Esc => self.writing = None,
+            KeyCode::Enter if key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) => self.insert_in_comment("\n"),
+            // ⌥⏎ only reaches Pulpo when the terminal sends Option as Meta.
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => self.insert_in_comment("\n"),
+            KeyCode::Enter => self.keep_writing(),
+            _ => {
+                input::edit_at(&mut comment.text, &mut self.writing_at, key);
+            }
+        }
+        if let Some(changes) = &mut self.changes {
+            changes.reveal = true;
+        }
+    }
+
+    fn insert_in_comment(&mut self, text: &str) {
+        if let Some(comment) = &mut self.writing {
+            comment.text.insert_str(self.writing_at, text);
+            self.writing_at += text.len();
+        }
+    }
+
+    fn keep_writing(&mut self) {
+        if let Some((comment, changes)) = self.writing.take().zip(self.changes.as_mut()) {
+            changes.keep(comment);
         }
     }
 
@@ -873,7 +1011,9 @@ impl App {
     }
 
     pub fn on_paste(&mut self, text: &str) {
-        if let Some(prompt) = &mut self.prompt {
+        if self.writing.is_some() {
+            self.insert_in_comment(&text.replace("\r\n", "\n").replace('\r', "\n"));
+        } else if let Some(prompt) = &mut self.prompt {
             prompt.text.push_str(text.trim());
         } else if let Some(search) = self.repos.as_mut().or(self.search.as_mut()) {
             search.query.push_str(text.trim());
@@ -913,6 +1053,12 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        if let Some((id, _)) = self.submitting.filter(|(_, at)| at.elapsed() >= SUBMIT_AFTER) {
+            self.submitting = None;
+            if let Some(term) = self.terms.iter_mut().find(|t| t.id == id) {
+                term.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            }
+        }
         if self.prefixed_at.is_some_and(|at| at.elapsed() >= PREFIX_FOR) {
             self.prefixed = false;
             self.prefixed_at = None;
@@ -960,7 +1106,7 @@ impl App {
     }
 
     pub fn animating(&self) -> bool {
-        !self.setting_up.is_empty() || !self.copying.is_empty() || !self.spawning.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
+        self.submitting.is_some() || !self.setting_up.is_empty() || !self.copying.is_empty() || !self.spawning.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
     }
 
     fn workspace_of(&self, term: &Term) -> Option<usize> {
@@ -1113,6 +1259,10 @@ impl App {
             self.prompt_key(key);
             return false;
         }
+        if self.writing.is_some() && !self.prefixed && !self.keymap.is_prefix(pressed) {
+            self.writing_key(key);
+            return false;
+        }
         if let Some((_, confirm)) = self.asking.take() {
             self.message = None;
             return matches!(key.code, KeyCode::Char('y' | 'Y')) && self.confirmed(confirm);
@@ -1130,6 +1280,7 @@ impl App {
             return self.command(pressed);
         }
         if self.keymap.is_prefix(pressed) {
+            self.keep_writing();
             self.prefixed = true;
             self.prefixed_at = Some(Instant::now());
             return false;
@@ -1175,6 +1326,8 @@ impl App {
                 self.settle();
                 self.open_commit();
             }
+            'n' | 'e' | 'd' if self.focus == Focus::Changes => self.comment_command(c),
+            's' if self.focus == Focus::Changes => self.ask_send_review(),
             'n' => self.new_here(),
             'N' => self.pick_project(),
             'x' => self.close_here(),
@@ -1237,6 +1390,12 @@ impl App {
             Confirm::DeleteWorkspace(root) => self.remove_workspace(&root),
             Confirm::CloseTerminal(id) => self.close_terminal(id),
             Confirm::DeleteFile(path) => self.delete(&path),
+            Confirm::DeleteComment(comment) => {
+                if let Some(changes) = &mut self.changes {
+                    changes.delete(&comment);
+                }
+            }
+            Confirm::SendReview(id) => self.send_review(id),
             Confirm::StopAll => {
                 for &pid in self.setting_up.values() {
                     unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
@@ -1290,8 +1449,7 @@ impl App {
                 };
                 self.prompt = Some(Prompt { ask: Ask::File(dir), text: String::new() });
             }
-            Focus::Changes => self.message = Some("changes are the agents' to make".into()),
-            Focus::History => self.message = Some("commits are the agents' to make".into()),
+            Focus::Changes | Focus::History => self.message = Some("commits are the agents' to make".into()),
         }
     }
 
@@ -1869,14 +2027,19 @@ impl App {
         if self.changes_expanded {
             let Some(changes) = &mut self.changes else { return };
             let half = (changes.height / 2).max(1) as isize;
+            // Uppercase letters come with shift too.
+            let shift = key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::Up | KeyCode::Down);
             match key.code {
+                KeyCode::Esc if self.reading && changes.anchor.is_some() => changes.anchor = None,
                 KeyCode::Esc if self.reading => self.reading = false,
                 KeyCode::Esc => self.changes_expanded = false,
                 KeyCode::Tab | KeyCode::BackTab => self.reading = !self.reading,
                 KeyCode::PageDown => changes.scroll_by(half),
                 KeyCode::PageUp => changes.scroll_by(-half),
+                KeyCode::Char('J') if self.reading => changes.move_cursor(1, true),
+                KeyCode::Char('K') if self.reading => changes.move_cursor(-1, true),
                 _ if self.reading => match scroll_keys(key, changes.height) {
-                    Some(Scroll::Rows(rows)) => changes.scroll_by(rows),
+                    Some(Scroll::Rows(rows)) => changes.move_cursor(rows, shift),
                     Some(Scroll::Sideways(columns)) => changes.scroll_sideways(columns),
                     None => {}
                 },
@@ -1938,6 +2101,11 @@ impl App {
     pub fn on_mouse(&mut self, mouse: MouseEvent) {
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
             self.prefixed = false;
+            // A click on the file is read first: keeping an emptied draft deletes a comment, which shifts the others.
+            let on_file = self.changes_expanded && mouse.kind == MouseEventKind::Down(MouseButton::Left) && self.areas.changes_file.contains(Position::new(mouse.column, mouse.row));
+            if !on_file {
+                self.keep_writing();
+            }
         }
         if self.help {
             self.help = !matches!(mouse.kind, MouseEventKind::Down(_));
@@ -2024,7 +2192,10 @@ impl App {
         }
         let row = |area: Rect, offset: usize| (pos.y - area.y) as usize + offset;
 
-        if down && areas.projects.contains(pos) {
+        if down && areas.send_review.contains(pos) {
+            self.set_focus(Focus::Changes);
+            self.ask_send_review();
+        } else if down && areas.projects.contains(pos) {
             self.set_focus(Focus::Projects);
             let i = row(areas.projects, self.projects_state.offset());
             if i < self.projects().len() {
@@ -2138,13 +2309,36 @@ impl App {
                 self.reading = self.changes_expanded;
             }
             if let Some(changes) = &mut self.changes {
+                let (at, old_side) = ((pos.y - areas.changes_file.y) as usize, pos.x < areas.changes_file.x + areas.changes_file.width / 2);
                 if sideways != 0 {
                     changes.scroll_sideways(sideways);
                 } else if wheel != 0 {
                     changes.scroll_by(wheel as isize);
+                } else if self.changes_expanded && !double && (down || mouse.kind == MouseEventKind::Drag(MouseButton::Left)) {
+                    match changes.shown.get(at) {
+                        Some(Shown::Note(None, _) | Shown::Hint) => {}
+                        Some(Shown::Note(Some(i), _)) => {
+                            if down {
+                                let comment = changes.comments.get(*i).cloned();
+                                self.keep_writing();
+                                self.write_comment(comment);
+                            }
+                        }
+                        _ => {
+                            // Saved first: saving clears the selection a shift-click would extend.
+                            if down {
+                                self.keep_writing();
+                            }
+                            if let Some(changes) = &mut self.changes {
+                                changes.click(at, old_side, shift || !down);
+                            }
+                        }
+                    }
                 } else if double {
+                    let shown = changes.diff.is_some();
+                    self.keep_writing();
                     self.changes_expanded = !self.changes_expanded;
-                    self.reading = self.changes_expanded && changes.diff.is_some();
+                    self.reading = self.changes_expanded && shown;
                 }
             }
         } else if areas.history.contains(pos) {
@@ -2409,6 +2603,7 @@ impl App {
         self.removing.remove(&root);
         if ok {
             self.gone.remove(&root);
+            self.drafts.remove(&root);
         }
         self.load_workspaces();
         if ok {

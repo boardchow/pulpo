@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Para
 
 use crate::agents::State;
 use crate::app::{App, Areas, Ask, Focus};
+use crate::review::{CURSOR, Shown};
 use crate::theme;
 use crate::search::{Entry, Kind};
 use crate::tree::Row;
@@ -383,17 +384,21 @@ fn file_items(rows: &[Row], changed: &[(PathBuf, char)]) -> Vec<ListItem<'static
             kinds.entry(at).or_insert(*kind);
         }
     }
-    rows.iter().map(|row| tree_item(row, kinds.get(row.path.as_path()).copied())).collect()
+    rows.iter().map(|row| tree_item(row, kinds.get(row.path.as_path()).copied(), 0)).collect()
 }
 
-fn tree_item(row: &Row, kind: Option<char>) -> ListItem<'static> {
+fn tree_item(row: &Row, kind: Option<char>, comments: usize) -> ListItem<'static> {
     let icon = match (row.is_dir, row.expanded) {
         (true, true) => "▾ ",
         (true, false) => "▸ ",
         _ => "  ",
     };
     let style = kind.map_or_else(Style::default, |k| Style::default().fg(kind_color(k)));
-    ListItem::new(Line::from(vec![Span::from(format!(" {}{icon}", "  ".repeat(row.depth))).fg(theme::dim()), Span::styled(row.name.clone(), style)]))
+    let mut spans = vec![Span::from(format!(" {}{icon}", "  ".repeat(row.depth))).fg(theme::dim()), Span::styled(row.name.clone(), style)];
+    if comments > 0 {
+        spans.push(Span::from(format!(" ✎{comments}")).fg(theme::yellow()));
+    }
+    ListItem::new(Line::from(spans))
 }
 
 fn draw_changes(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -412,12 +417,21 @@ fn draw_changes(frame: &mut Frame, app: &mut App, area: Rect) {
         rest.push(Span::from(format!("−{} ", diff.removed)).fg(theme::red()));
     }
     let name = if changes.commit.is_some() { "Commit" } else { "Changes" };
+    app.areas.send_review = Rect::default();
+    if !changes.comments.is_empty() {
+        rest.push(Span::from(format!("· ✎{} ", changes.comments.len())).fg(theme::yellow()));
+        let button = Span::from(format!(" send review {} s ", app.keymap.label())).fg(theme::on_accent()).bg(theme::accent()).bold();
+        let x = area.x + 1 + (name.len() + 2 + rest.iter().map(Span::width).sum::<usize>()) as u16;
+        let width = (button.width() as u16).min(area.right().saturating_sub(x + 1));
+        app.areas.send_review = Rect { x, y: area.y, width, height: 1 };
+        rest.push(button);
+    }
     let (tree, file) = split_panel(frame, app, area, title(name, focused, rest), focused);
     app.areas.changes_tree = tree;
     app.areas.changes_file = file;
     let in_tree = focused && !app.reading;
     let Some(changes) = &mut app.changes else { return };
-    let items: Vec<ListItem> = changes.rows.iter().map(|row| tree_item(row, changes.status_of(&row.path))).collect();
+    let items: Vec<ListItem> = changes.rows.iter().map(|row| tree_item(row, changes.status_of(&row.path), changes.count(&row.path))).collect();
     if items.is_empty() {
         frame.render_widget(Line::from(" nothing uncommitted").fg(theme::dim()), tree);
     }
@@ -435,34 +449,65 @@ fn draw_changes(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     let bg = Style::new().bg(theme::editor_bg());
-    let Some((_, diff)) = &changes.diff else {
-        frame.render_widget(Paragraph::new("").style(bg), file);
-        return;
-    };
-    let (scroll, height) = (changes.scroll, file.height as usize);
-    let shown = |i: usize| crate::viewer::shift(diff.lines[i].clone(), diff.gutter, changes.hscroll);
-    if !changes.split {
-        let lines: Vec<Line> = (scroll..diff.lines.len()).take(height).map(shown).collect();
-        frame.render_widget(Paragraph::new(lines).style(bg), file);
-        return;
-    }
-    let [old, line, new] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1), Constraint::Fill(1)]).areas(file);
-    let (mut left, mut right) = (Vec::new(), Vec::new());
-    for &(o, n) in diff.pairs.iter().skip(scroll).take(height) {
-        left.push(o.map_or_else(Line::default, |i| {
-            let mut line = shown(i);
-            if diff.kinds[i] == crate::viewer::Kind::Same {
-                line.spans[0] = Span::from(format!("{:>w$}   ", diff.old_numbers[i], w = diff.gutter - 3)).fg(theme::dim());
+    frame.render_widget(Paragraph::new("").style(bg), file);
+    let [old, divider, new] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1), Constraint::Fill(1)]).areas(file);
+    changes.fit(if changes.split { new.width.min(old.width) } else { file.width } as usize, app.writing.as_ref().map(|w| (w, app.writing_at)));
+    let Some((_, diff)) = &changes.diff else { return };
+    let (first, last) = changes.selection();
+    let reading = focused && app.reading;
+    let mark = |mut line: Line<'static>, i: usize| {
+        if let Some(gutter) = line.spans.first_mut().filter(|_| diff.kinds.get(i).is_some_and(|k| *k != crate::viewer::Kind::Gap)) {
+            if changes.commented(i) {
+                gutter.style = gutter.style.fg(theme::yellow()).add_modifier(Modifier::BOLD);
             }
-            line
-        }));
-        right.push(n.map_or_else(Line::default, shown));
-    }
-    frame.render_widget(Paragraph::new(left).style(bg), old);
-    frame.render_widget(Paragraph::new(right).style(bg), new);
-    for y in line.top()..line.bottom() {
-        if let Some(cell) = frame.buffer_mut().cell_mut((line.x, y)) {
+            if reading && (first..=last).contains(&i) {
+                gutter.style = gutter.style.bg(theme::selection());
+            }
+        }
+        line
+    };
+    let shown = |i: usize| mark(crate::viewer::shift(diff.lines[i].clone(), diff.gutter, changes.hscroll), i);
+    let side = |comment: Option<&crate::review::Comment>| match comment.and_then(|c| c.lines) {
+        _ if !changes.split => file,
+        Some((true, _, _)) => old,
+        _ => new,
+    };
+    let note = |text: Vec<Span<'static>>| Line::from([vec![Span::from(" ".repeat(diff.gutter.saturating_sub(2))), Span::from("▎ ").fg(theme::yellow())], text].concat());
+    for (y, item) in changes.shown.iter().enumerate() {
+        let on = |r: Rect| Rect { y: file.y + y as u16, height: 1, ..r };
+        if changes.split
+            && let Some(cell) = frame.buffer_mut().cell_mut((divider.x, file.y + y as u16))
+        {
             cell.set_symbol("│").set_style(bg.fg(theme::border()));
+        }
+        match item {
+            &Shown::Row(row) if !changes.split => frame.render_widget(Paragraph::new(shown(row)).style(bg), on(file)),
+            &Shown::Row(row) => {
+                let (o, n) = diff.pairs[row];
+                if let Some(i) = o {
+                    let mut line = shown(i);
+                    if diff.kinds[i] == crate::viewer::Kind::Same {
+                        line.spans[0] = Span::from(format!("{:>w$}   ", diff.old_numbers[i], w = diff.gutter - 3)).fg(theme::dim());
+                    }
+                    frame.render_widget(Paragraph::new(mark(line, i)).style(bg), on(old));
+                }
+                if let Some(i) = n {
+                    frame.render_widget(Paragraph::new(shown(i)).style(bg), on(new));
+                }
+            }
+            Shown::Note(i, text) => {
+                let text = match text.split_once(CURSOR).filter(|_| i.is_none()) {
+                    Some((before, after)) => vec![Span::from(before.to_string()), Span::from("█").fg(theme::blue()), Span::from(after.to_string())],
+                    None => vec![Span::from(text.clone())],
+                };
+                let line = note(text);
+                let comment = i.map_or(app.writing.as_ref(), |i| changes.comments.get(i));
+                frame.render_widget(Paragraph::new(line).style(Style::new().fg(theme::fg()).bg(theme::bg())), on(side(comment)));
+            }
+            Shown::Hint => {
+                let hint = Span::from("⏎ keep, empty deletes · ⌥⏎ or ⌃j new line · esc cancel").fg(theme::muted());
+                frame.render_widget(Paragraph::new(note(vec![hint])).style(Style::new().bg(theme::bg())), on(side(app.writing.as_ref())));
+            }
         }
     }
 }
@@ -673,7 +718,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
         (
             "Make and close",
             vec![
-                (prefixed("n"), "new project, workspace, terminal or file, by panel"),
+                (prefixed("n"), "new project, workspace, terminal, file or comment, by panel"),
                 (prefixed("N"), "new workspace, in any project"),
                 (prefixed("x"), "remove the project, delete the workspace, close the terminal"),
             ]
@@ -697,6 +742,9 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
                 ("⏎ in history".into(), "the commit: its files and their changes"),
                 ("⏎ tab".into(), "from the tree into the file, and back"),
                 ("pgup pgdn".into(), "scroll the file"),
+                ("⇧↑↓ J K".into(), "changes: select lines, also with ⇧click or drag"),
+                (prefixed("n e d"), "changes: comment on the lines or the file, edit, delete"),
+                (prefixed("s"), "changes: send the review to the workspace's agent"),
                 ("⌃s esc".into(), "editing: save, leave (twice to throw changes away)"),
             ],
         ),
