@@ -635,10 +635,17 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect { x: area.x + (area.width - width) / 2, y: area.y + (area.height - height) / 3, width, height }
 }
 
+fn veil(frame: &mut Frame) {
+    for cell in &mut frame.buffer_mut().content {
+        (cell.fg, cell.bg) = (theme::veiled(cell.fg, theme::dim()), theme::veiled(cell.bg, theme::bg()));
+    }
+}
+
 fn draw_search(frame: &mut Frame, app: &mut App) {
     let Some(search) = &mut app.search else { return };
+    veil(frame);
     let area = frame.area();
-    let popup = centered(area, (area.width * 7 / 10).max(40), (area.height * 7 / 10).max(10));
+    let popup = centered(area, (area.width * 6 / 10).clamp(40, 120), (area.height * 6 / 10).max(10));
     frame.render_widget(Clear, popup);
     let (name, hint) = match search.mode {
         Mode::Text => (" Search inside files ", " tab: file names · ↑↓ move · ⏎ open · esc close "),
@@ -690,6 +697,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
     if !app.help {
         return;
     }
+    veil(frame);
     let p = app.keymap.label();
     let prefixed = |keys: &str| format!("{p} {keys}");
     let twice = app.keymap.prefix.iter().find(|k| k.mods.contains(ratatui::crossterm::event::KeyModifiers::CONTROL)).map(|k| format!("{k} {k}"));
@@ -799,6 +807,10 @@ fn draw_welcome(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_repos(frame: &mut Frame, app: &mut App) {
+    if app.repos.is_none() {
+        return;
+    }
+    veil(frame);
     let area = frame.area();
     draw_repos_in(frame, app, centered(area, (area.width * 6 / 10).max(60), (area.height * 6 / 10).max(10)));
 }
