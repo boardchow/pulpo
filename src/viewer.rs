@@ -235,7 +235,6 @@ pub struct ReviewDiff {
     pub added: usize,
     pub removed: usize,
     pub gutter: usize,
-    pub widest: usize,
     pub kinds: Vec<Kind>,
     /// The side-by-side rows: the line shown on each side, by its index in `lines`.
     pub pairs: Vec<(Option<usize>, Option<usize>)>,
@@ -255,11 +254,9 @@ pub(crate) fn review_diff(root: &Path, base: &str, path: &Path, untracked: bool)
     let text = cmd.output().map(|out| String::from_utf8_lossy(&out.stdout).into_owned()).unwrap_or_default();
     let content = diff_content(&text, path);
     let (added, removed) = content.counts.unwrap_or_default();
-    let widest = content.lines.iter().map(|l| plain(l, content.gutter).trim_end().chars().count()).max().unwrap_or(0);
     let pairs = pairs(&content.kinds);
     ReviewDiff {
         gutter: content.gutter,
-        widest,
         lines: content.lines,
         changes: content.changes,
         added,

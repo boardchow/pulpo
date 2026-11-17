@@ -2029,8 +2029,7 @@ impl App {
                 KeyCode::Char('K') if self.reading => changes.move_cursor(-1, true),
                 _ if self.reading => match scroll_keys(key, changes.height) {
                     Some(Scroll::Rows(rows)) => changes.move_cursor(rows, shift),
-                    Some(Scroll::Sideways(columns)) => changes.scroll_sideways(columns),
-                    None => {}
+                    Some(Scroll::Sideways(_)) | None => {}
                 },
                 _ => self.changes_tree_key(key),
             }
@@ -2285,9 +2284,7 @@ impl App {
             }
             if let Some(changes) = &mut self.changes {
                 let (at, old_side) = ((pos.y - areas.changes_file.y) as usize, pos.x < areas.changes_file.x + areas.changes_file.width / 2);
-                if sideways != 0 {
-                    changes.scroll_sideways(sideways);
-                } else if wheel != 0 {
+                if wheel != 0 {
                     changes.scroll_by(wheel as isize);
                 } else if down || mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
                     match changes.shown.get(at) {
