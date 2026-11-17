@@ -28,7 +28,7 @@ The same key does what fits the panel you're in:
 | :kp[n] | Add a project | New workspace | New terminal | New file |
 | :kp[x] | Remove from the list | Delete the workspace | Close the terminal | Delete the file |
 
-:kp[e], :kp[r] and :kp[d] edit, rename and delete files, so they work in Files only.
+:kp[e], :kp[r] and :kp[d] edit, rename and delete files in Files. In Changes, :kp[n], :kp[e] and :kp[d] make, edit and delete [comments](/docs/review-changes#comment-for-the-agent), and :kp[s] sends them.
 
 ## Change the prefix
 
