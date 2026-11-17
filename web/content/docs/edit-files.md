@@ -19,9 +19,9 @@ Search covers the files of the workspace on screen, except the ones git ignores.
 
 ## Browse files
 
-Press :kp[f]. Files shows the workspace as a tree, with names colored by git status: green new, blue changed, red deleted. The selected file shows on the right.
+Press :kp[f]. Files, under Workspaces, shows the workspace as a tree, with names colored by git status: green new, blue changed, red deleted.
 
-Move with :k[↑] :k[↓], fold with :k[←] :k[→], and press :k[⏎] to read a file full screen. Full screen, the keys are the same as in [Changes](/docs/review-changes#read-a-change-full-screen). The line cursor's line ends with who changed it last, when, and the commit's subject.
+Move with :k[↑] :k[↓], fold with :k[←] :k[→], and press :k[⏎] or click a file to read it full screen. Full screen, the keys are the same as in [Changes](/docs/review-changes#read-a-change-full-screen). The line cursor's line ends with who changed it last, when, and the commit's subject.
 
 From a terminal, Ctrl-click a path like `src/app.rs:120` to open it in Files at that line.
 

@@ -91,20 +91,15 @@ pub struct Areas {
     pub panels: Vec<(Focus, Rect)>,
     pub editor: Rect,
     pub left_divider: Rect,
-    pub divider: Rect,
-    pub tree_dividers: Vec<(Rect, u16)>,
     pub yes: Rect,
     pub send_review: Rect,
     pub popup: Rect,
     pub popup_list: Rect,
-    pub width: u16,
 }
 
 #[derive(Clone, Copy)]
 enum Drag {
     Sidebar,
-    Right,
-    Tree(u16),
 }
 
 pub struct Selecting {
@@ -130,7 +125,6 @@ pub struct App {
     pub quit: bool,
     pub help: bool,
     pub left_hidden: bool,
-    pub right_hidden: bool,
     pub prompt: Option<Prompt>,
     pub asking: Option<(String, Confirm)>,
     pub message: Option<String>,
@@ -151,10 +145,8 @@ pub struct App {
     pub reading: bool,
     pub changes: Option<Changes>,
     /// The workspace's changes, while a commit is shown in their place.
-    shelved: Option<Changes>,
+    pub shelved: Option<Changes>,
     pub left_width: Option<u16>,
-    pub right_width: Option<u16>,
-    pub tree_width: Option<u16>,
     dragging: Option<Drag>,
     pub selecting: Option<Selecting>,
     last_click: Option<(Position, Instant)>,
@@ -234,7 +226,6 @@ impl App {
             quit: false,
             help: false,
             left_hidden: false,
-            right_hidden: false,
             prompt: None,
             asking: None,
             message: keys_error.or_else(|| {
@@ -257,8 +248,6 @@ impl App {
             changes: None,
             shelved: None,
             left_width: None,
-            right_width: None,
-            tree_width: None,
             dragging: None,
             selecting: None,
             last_click: None,
@@ -1350,13 +1339,15 @@ impl App {
             '?' => self.help = true,
             '<' => {
                 self.left_hidden = !self.left_hidden;
-                if self.left_hidden && matches!(self.focus, Focus::Projects | Focus::Workspaces) {
-                    self.set_focus(Focus::Terminal);
-                }
-            }
-            '>' => {
-                self.right_hidden = !self.right_hidden;
-                if self.right_hidden && matches!(self.focus, Focus::Files | Focus::Changes | Focus::History) {
+                let expanded = match self.focus {
+                    Focus::Files if self.editor.is_some() => true,
+                    Focus::Files => self.files_expanded,
+                    Focus::Changes => self.changes_expanded,
+                    _ => false,
+                };
+                if self.left_hidden && expanded {
+                    self.reading = true;
+                } else if self.left_hidden && self.focus != Focus::Terminal {
                     self.set_focus(Focus::Terminal);
                 }
             }
@@ -1425,10 +1416,8 @@ impl App {
 
     fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
-        match focus {
-            Focus::Projects | Focus::Workspaces => self.left_hidden = false,
-            Focus::Files | Focus::Changes | Focus::History => self.right_hidden = false,
-            Focus::Terminal => {}
+        if focus != Focus::Terminal {
+            self.left_hidden = false;
         }
         self.discard = false;
         self.reading = false;
@@ -1630,9 +1619,12 @@ impl App {
         if self.files_expanded {
             let half = (self.viewer.height / 2).max(1) as isize;
             match key.code {
-                KeyCode::Esc if self.reading => self.reading = false,
+                KeyCode::Esc if self.reading => (self.reading, self.left_hidden) = (false, false),
                 KeyCode::Esc => self.files_expanded = false,
-                KeyCode::Tab | KeyCode::BackTab => self.reading = !self.reading,
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.reading = !self.reading;
+                    self.left_hidden &= self.reading;
+                }
                 KeyCode::PageDown => self.viewer.scroll_by(half),
                 KeyCode::PageUp => self.viewer.scroll_by(-half),
                 _ if self.reading => match scroll_keys(key, self.viewer.height) {
@@ -1823,7 +1815,7 @@ impl App {
         self.viewer.open_at(editor.path.clone(), None);
         self.viewer.scroll = editor.scroll;
         self.files_expanded = true;
-        self.reading = false;
+        (self.reading, self.left_hidden) = (false, false);
         self.discard = false;
     }
 
@@ -2025,9 +2017,12 @@ impl App {
             let shift = key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::Up | KeyCode::Down);
             match key.code {
                 KeyCode::Esc if self.reading && changes.anchor.is_some() => changes.anchor = None,
-                KeyCode::Esc if self.reading => self.reading = false,
+                KeyCode::Esc if self.reading => (self.reading, self.left_hidden) = (false, false),
                 KeyCode::Esc => self.changes_expanded = false,
-                KeyCode::Tab | KeyCode::BackTab => self.reading = !self.reading,
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.reading = !self.reading;
+                    self.left_hidden &= self.reading;
+                }
                 KeyCode::PageDown => changes.scroll_by(half),
                 KeyCode::PageUp => changes.scroll_by(-half),
                 KeyCode::Char('J') if self.reading => changes.move_cursor(1, true),
@@ -2067,7 +2062,7 @@ impl App {
     }
 
     fn history_step(&mut self, delta: isize) {
-        let Some(changes) = &mut self.changes else { return };
+        let Some(changes) = self.shelved.as_mut().or(self.changes.as_mut()) else { return };
         let len = changes.history.commits.len();
         let next = changes.history_state.selected().unwrap_or(0).saturating_add_signed(delta).min(len.saturating_sub(1));
         changes.history_state.select(Some(next));
@@ -2139,22 +2134,13 @@ impl App {
             match mouse.kind {
                 MouseEventKind::Drag(MouseButton::Left) => match drag {
                     Drag::Sidebar => self.left_width = Some(pos.x + 1),
-                    Drag::Right => self.right_width = Some(areas.width.saturating_sub(pos.x)),
-                    Drag::Tree(x) => self.tree_width = Some(pos.x.saturating_sub(x).max(8)),
                 },
                 _ => self.dragging = None,
             }
             return;
         }
         if down {
-            let tree = areas.tree_dividers.iter().find(|(r, _)| r.contains(pos)).map(|&(_, x)| Drag::Tree(x));
-            self.dragging = tree.or_else(|| {
-                if areas.left_divider.contains(pos) {
-                    Some(Drag::Sidebar)
-                } else {
-                    areas.divider.contains(pos).then_some(Drag::Right)
-                }
-            });
+            self.dragging = areas.left_divider.contains(pos).then_some(Drag::Sidebar);
             if self.dragging.is_some() {
                 return;
             }
@@ -2232,11 +2218,9 @@ impl App {
                     self.preview();
                     match self.ws().selected_row().map(|r| (r.is_dir, r.expanded)) {
                         Some((true, expanded)) if again || double => self.fold_tree(!expanded),
-                        Some((false, _)) if double => (self.files_expanded, self.reading) = (true, true),
+                        Some((false, _)) => (self.files_expanded, self.reading) = (true, double),
                         _ => {}
                     }
-                } else if double {
-                    self.files_expanded = !self.files_expanded;
                 }
             } else if wheel != 0 && self.editor.is_none() {
                 self.tree_step(wheel.signum() as isize);
@@ -2262,9 +2246,6 @@ impl App {
                 self.viewer.scroll_by(wheel as isize);
             } else if sideways != 0 {
                 self.viewer.scroll_sideways(sideways);
-            } else if double {
-                self.files_expanded = !self.files_expanded;
-                self.reading = self.files_expanded && self.viewer.is_open();
             } else if down {
                 let line = self.viewer.scroll + (pos.y - areas.files_file.y) as usize;
                 self.viewer.mark = Some(line.min(self.viewer.row_count().saturating_sub(1)));
@@ -2285,11 +2266,9 @@ impl App {
                     changes.follow();
                     match changes.selected().map(|r| (r.is_dir, r.expanded)) {
                         Some((true, expanded)) if again || double => changes.fold(!expanded),
-                        Some((false, _)) if double => (self.changes_expanded, self.reading) = (true, true),
+                        Some((false, _)) => (self.changes_expanded, self.reading) = (true, double),
                         _ => {}
                     }
-                } else if double {
-                    self.changes_expanded = !self.changes_expanded;
                 }
             } else if wheel != 0 {
                 changes.step(wheel.signum() as isize);
@@ -2302,8 +2281,7 @@ impl App {
             }
         } else if areas.changes_file.contains(pos) {
             if down {
-                self.focus = Focus::Changes;
-                self.reading = self.changes_expanded;
+                (self.focus, self.reading) = (Focus::Changes, true);
             }
             if let Some(changes) = &mut self.changes {
                 let (at, old_side) = ((pos.y - areas.changes_file.y) as usize, pos.x < areas.changes_file.x + areas.changes_file.width / 2);
@@ -2311,7 +2289,7 @@ impl App {
                     changes.scroll_sideways(sideways);
                 } else if wheel != 0 {
                     changes.scroll_by(wheel as isize);
-                } else if self.changes_expanded && !double && (down || mouse.kind == MouseEventKind::Drag(MouseButton::Left)) {
+                } else if down || mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
                     match changes.shown.get(at) {
                         Some(Shown::Note(None, _) | Shown::Hint) => {}
                         Some(Shown::Note(Some(i), _)) => {
@@ -2331,24 +2309,17 @@ impl App {
                             }
                         }
                     }
-                } else if double {
-                    let shown = changes.diff.is_some();
-                    self.keep_writing();
-                    self.changes_expanded = !self.changes_expanded;
-                    self.reading = self.changes_expanded && shown;
                 }
             }
         } else if areas.history.contains(pos) {
             if down {
-                self.focus = Focus::History;
-                self.reading = false;
+                (self.focus, self.reading) = (Focus::History, false);
+                self.settle();
                 let Some(changes) = &mut self.changes else { return };
                 let i = row(areas.history, changes.history_state.offset());
                 if i < changes.history.commits.len() {
                     changes.history_state.select(Some(i));
-                    if double {
-                        self.open_commit();
-                    }
+                    self.open_commit();
                 }
             } else if wheel != 0 {
                 self.history_step(wheel.signum() as isize);
@@ -2357,11 +2328,6 @@ impl App {
             match focus {
                 Focus::Projects | Focus::Workspaces if down => self.set_focus(focus),
                 _ if down => (self.focus, self.reading) = (focus, false),
-                _ => {}
-            }
-            match focus {
-                Focus::Files if double => self.files_expanded = !self.files_expanded,
-                Focus::Changes if double => self.changes_expanded = !self.changes_expanded,
                 _ => {}
             }
         }

@@ -12,7 +12,7 @@ cd ~/code/my-app
 pulpo
 ```
 
-Pulpo opens in three columns. The repository shows under Projects on the left, a shell runs in the middle, and the repository's files and changes are on the right. The repository is now a [project](/docs/projects-and-workspaces).
+Pulpo opens in two columns. The repository shows under Projects on the left, with its files, changes and history below, and a shell runs on the right. The repository is now a [project](/docs/projects-and-workspaces).
 
 ::steps
 1. **Try the prefix.** Every Pulpo action is :k[⌃b], released, then one key. It works even while a program runs in the terminal. Press :k[⌃b], release it, then press :k[?]. The list of every key opens; press any key to close it. To learn more, see [the prefix key](/docs/prefix-key).
@@ -27,7 +27,7 @@ Pulpo opens in three columns. The repository shows under Projects on the left, a
 
 6. **Answer the agent that needs you.** When an agent finishes or asks something, its workspace shows ◆ and your terminal app shows a notification. Press :kp[a] to go to it.
 
-7. **Review what it changed.** Press :kp[c]. Changes lists every file the agent changed and hasn't committed. Move with :k[↑] and :k[↓], then press :k[⏎] to open a file full screen, with its changes in place. Press :k[esc] to step back: to the list, to the three columns, then to the terminal.
+7. **Review what it changed.** Press :kp[c]. Changes lists every file the agent changed and hasn't committed. Move with :k[↑] and :k[↓], then press :k[⏎] to open a file full screen, with its changes in place. Press :k[esc] to step back: to the list, to the terminal beside it, then into the terminal.
 
 8. **Quit and come back.** Press :kp[q]. Pulpo closes, and the agents keep working. Run `pulpo` again: they're where you left them.
 ::

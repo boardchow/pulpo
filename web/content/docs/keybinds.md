@@ -17,7 +17,7 @@ Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌃b], then the key. 
 | :kp[f] | Files |
 | :kp[c] | Changes |
 | :kp[h] | History |
-| :kp[F], :kp[C] | Files, Changes, full screen |
+| :kp[F], :kp[C] | The selected file, Changes, full screen |
 | :kp[H] | The selected commit, full screen |
 | :kp[1] to :kp[9] | The workspace with that number, in its terminal |
 | :kp[a] | The terminal that has waited longest for you |
@@ -29,8 +29,7 @@ Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌃b], then the key. 
 
 | Keys | Does |
 | --- | --- |
-| :kp{k="<"} | Hide or show the left side: Projects and Workspaces |
-| :kp{k=">"} | Hide or show the right side: Files, Changes and History |
+| :kp{k="<"} | Hide or show the left side: Projects, Workspaces, Files, Changes and History |
 
 ## Create and close
 
@@ -115,7 +114,7 @@ Full screen, reading the file:
 | :k[→] :k[←] or :k[l] :k[h] | Scroll sideways |
 | :k[0] | Back to the left edge |
 | :k[tab] | Go between the file and the tree |
-| :k[esc] | To the tree, then to the three columns |
+| :k[esc] | To the tree, then to the terminal beside it |
 
 A line cursor moves in the file. In Files, its line ends with who changed it last:
 
@@ -202,12 +201,12 @@ In the new project list, :k[↓] :k[↑], :k[pgdn] :k[pgup] and :k[esc] work the
 
 | Action | Does |
 | --- | --- |
-| Click | Focus a panel, select a row, go to a tab. `+` opens a terminal |
+| Click | Focus a panel, select a row, go to a tab. A file in Files or Changes, or a commit, opens full screen. `+` opens a terminal |
 | Click a selected folder | Fold or unfold it |
-| Double-click | Files or Changes: full screen, and back. A workspace: its terminal. A commit: open it |
+| Double-click | A workspace: its terminal |
 | Drag in a terminal | Select text and copy it. Hold :k[shift] if the program uses the mouse |
-| Drag a border | Resize the columns, or the tree |
-| Wheel | Scroll. With :k[shift], scroll sideways in files |
+| Drag a border | Resize the left side |
+| Wheel | Scroll. With :k[shift], scroll sideways in Files |
 | Click the marks beside a change | Jump to that change |
 | Click a line in Files or Changes, full screen | Put the line cursor there. In Changes, drag or :k[shift]-click selects lines |
 | Click a comment in Changes, full screen | Edit it |

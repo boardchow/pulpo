@@ -19,7 +19,7 @@ Pulpo made, as in Conductor.
 pulpo (one binary)
 ├── main.rs     terminal setup + event loop (one mpsc channel for everything)
 ├── app.rs      state: focus, the prefix and its keys, the terminals' tabs, files, mouse, workspaces
-├── ui.rs       ratatui rendering: projects and workspaces | terminal tabs | files, changes, history
+├── ui.rs       ratatui rendering: projects, workspaces, files, changes, history | terminal tabs
 ├── keymap.rs   the prefix (cmd-p, ctrl-b), from keys.toml; `pulpo keytest` and the doctor read it
 ├── input.rs    typing on the bottom line, with readline keys (ctrl-u, ctrl-w, alt-backspace)
 ├── review.rs   Changes: what the workspace changed, as a tree, the selected file's diff
@@ -62,7 +62,7 @@ waiting for you, above the quiet ones when it starts working (`App::reorder`, ea
 put when it calms down, so reading one leaves it where it is.
 Each is a `Workspace`: a project's row is the repository's own checkout, so selecting a project
 opens it. Selecting a workspace of another project makes that project the current one.
-The current workspace decides what the right side and the panels show: its
+The current workspace decides what the terminal and the panels show: its
 terminals, files and changes. A terminal belongs to the checkout it
 was started in (`info.cwd`), so terminals that kept running fall back into
 their workspace on their own; one started outside every checkout goes to
@@ -73,30 +73,29 @@ urgent state of its own terminals.
 
 ### The screen
 
-Three columns and a bottom line, nothing else. Left: the pulpo, then two
+Two columns and a bottom line, nothing else. Left: the pulpo, then two
 panels as tall as their rows: the projects, and every project's
-workspaces, the ones waiting for you on top. A project's and a workspace's mark come first on their row. Middle: the workspace's
+workspaces, the ones waiting for you on top. A project's and a workspace's mark come first on their row. Right: the workspace's
 terminals as tabs, drawn on the top of its frame (in the order of `terms`,
 which is the order they came in; the one on screen is kept by tag per
 workspace). There is always one: a shell opens in a checkout on screen without
 any, at most once a second for each, so a shell that exits at once isn't started
-again and again. Right: Files over Changes, each a tree and the selected file, over History; in
-one of them, ⏎ (or a double click), or editing, gives that panel
-everything right of the sidebar, the terminal included, and esc takes it
-back. Only a click moves the focus; hovering or scrolling a panel doesn't.
-The sidebar, the right side and the trees (one width for both) keep the
-width they were dragged to while Pulpo runs. The bottom line is where you type a name, answer a
+again and again. Under Workspaces, three trees share the rest, 2:2:1:
+Files, Changes and History. ⏎ or a click on a file, a change or a
+commit, or editing, shows it in place of the terminal, and esc takes
+it back. Only a click moves the focus; hovering or scrolling a panel
+doesn't. The sidebar keeps the width it was dragged to while Pulpo runs. The bottom line is where you type a name, answer a
 question (y), or read a message; its right end shows the current checkout's branch.
 
 Keys go to what has the focus. The prefix (⌘p or ⌃b, then one key) is
 taken from anywhere first: p w t f c h move the focus, F C H open Files, Changes, the selected commit full screen, 1 to 9 go to that workspace (numbered in
 the list) and its terminal, n and x make and close what has it, N makes a workspace in any project (picked on the bottom line), [ ] change tabs, a goes to who waits, / opens the search
 popup (over everything; a file found opens full screen), d e r
-act on files, q and Q quit. < and > hide or show a side; ? shows the keybinds in a popup (any key closes it). The prefix waits 3 s for its key; a click cancels it. ⌃b twice sends one to the program. The editor
+act on files, q and Q quit. < hides or shows the sidebar; ? shows the keybinds in a popup (any key closes it). The prefix waits 3 s for its key; a click cancels it. ⌃b twice sends one to the program. The editor
 saves with ⌘s or ⌃s and stays open; esc leaves it. A panel opens wide with the
 keys on its file; esc puts them on its tree (the file follows), ⏎ or tab
 back on the file. Esc steps back one level: file (or editor), tree,
-the three columns.
+the terminal.
 
 ### Agent status
 
@@ -134,7 +133,7 @@ then presses ⏎.
 
 ### History
 
-Under Changes (the right column in thirds): the commits since the workspace
+Under Changes (a fifth of what Workspaces leaves): the commits since the workspace
 started, newest first. A workspace Pulpo made starts at the commit it was
 copied at (`base`, recorded when it is made), a checkout on another branch
 where it left the main one; the main branch shows all of it. It reads 100,
@@ -143,7 +142,7 @@ says `100+`). A commit is pushed when `origin/<branch>` has it; the title says p
 or not pushed, and how many origin has that HEAD doesn't. Read with Changes,
 on the same thread, so a commit or a push (refs move) updates both.
 
-⏎ or a double click opens a commit full screen, read like Changes (its
+⏎ or a click opens a commit full screen, read like Changes (its
 files against its parent, the first commit against the empty tree), its
 hash, subject, author and age in the title. It takes the place of the
 workspace's changes (`shelved`) while it is full screen; leaving it (esc,

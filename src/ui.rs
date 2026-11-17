@@ -16,6 +16,8 @@ use crate::tree::Row;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.reorder();
+    app.files_expanded &= app.focus == Focus::Files;
+    app.changes_expanded &= app.focus == Focus::Changes;
     frame.render_widget(Block::new().style(Style::new().fg(theme::fg()).bg(theme::bg())), frame.area());
     let [main, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
     if app.no_projects {
@@ -24,31 +26,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
     let left = if app.left_hidden { 0 } else { app.left_width.unwrap_or((main.width * 18 / 100).clamp(26, 36)).clamp(20.min(main.width / 3), main.width / 3) };
-    let rest = main.width - left;
-    let least = 24.min(rest);
-    let right = if app.right_hidden { 0 } else { app.right_width.unwrap_or(rest * 42 / 100).clamp(least, rest.saturating_sub(30).max(least)) };
-    let expanded = match app.focus {
-        Focus::Files => app.files_expanded || app.editor.is_some(),
-        Focus::Changes => app.changes_expanded,
-        _ => false,
-    };
-    let (center, right) = if expanded { (0, main.width - left) } else { (main.width - left - right, right) };
-    let [left_area, center_area, right_area] = Layout::horizontal([Constraint::Length(left), Constraint::Length(center), Constraint::Length(right)]).areas(main);
-    let border_at = |area: Rect| Rect { x: area.x.saturating_sub(1), width: 2, ..area };
+    let [left_area, center_area] = Layout::horizontal([Constraint::Length(left), Constraint::Fill(1)]).areas(main);
     app.areas = Areas {
-        width: main.width,
-        left_divider: if left > 0 { border_at(if center > 0 { center_area } else { right_area }) } else { Rect::default() },
-        divider: if right > 0 && center > 0 { border_at(right_area) } else { Rect::default() },
+        left_divider: if left > 0 { Rect { x: center_area.x.saturating_sub(1), width: 2, ..center_area } } else { Rect::default() },
         ..Areas::default()
     };
     if left > 0 {
         draw_left(frame, app, left_area);
     }
-    if center > 0 {
-        draw_center(frame, app, center_area);
-    }
-    if right > 0 {
-        draw_right(frame, app, right_area);
+    match app.focus {
+        Focus::Files if app.files_expanded || app.editor.is_some() => draw_file(frame, app, center_area),
+        Focus::Changes if app.changes_expanded => draw_diff(frame, app, center_area),
+        _ => draw_center(frame, app, center_area),
     }
     draw_footer(frame, app, footer);
     draw_search(frame, app);
@@ -104,25 +93,27 @@ fn panel(frame: &mut Frame, block: Block<'static>, area: Rect, focused: bool, it
     body
 }
 
-fn framed(name: &str, focused: bool) -> Block<'static> {
-    Block::bordered().border_type(BorderType::Rounded).title(title(name, focused, Vec::new())).border_style(border(focused)).style(Style::new().bg(theme::bg()))
+fn framed(name: &str, focused: bool, rest: Vec<Span<'static>>) -> Block<'static> {
+    Block::bordered().border_type(BorderType::Rounded).title(title(name, focused, rest)).border_style(border(focused)).style(Style::new().bg(theme::bg()))
 }
 
 fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
-    let rows = |n: usize| n.max(1) as u16 + 2;
-    let [_, header, _, projects, workspaces, _] = Layout::vertical([
+    let rows = |n: usize| (n.max(1) as u16 + 2).min(area.height / 4).max(3);
+    let [_, header, _, projects, workspaces, files, changes, history] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(PULPO.len() as u16),
         Constraint::Length(1),
         Constraint::Length(rows(app.projects().len())),
         Constraint::Length(rows(app.workspace_order().len())),
+        Constraint::Fill(2),
+        Constraint::Fill(2),
         Constraint::Fill(1),
     ])
     .areas(area);
     draw_header(frame, app, header);
     let focused = app.focus == Focus::Projects;
     app.areas.panels.extend([(Focus::Projects, projects), (Focus::Workspaces, workspaces)]);
-    let block = framed("Projects", focused);
+    let block = framed("Projects", focused, Vec::new());
     let rows = block.inner(projects);
     frame.render_widget(block, projects);
 
@@ -162,10 +153,13 @@ fn draw_left(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
     let focused = app.focus == Focus::Workspaces;
     let empty = items.is_empty();
-    app.areas.workspaces = panel(frame, framed("Workspaces", focused), workspaces, focused, items, &mut app.workspaces_state);
+    app.areas.workspaces = panel(frame, framed("Workspaces", focused, Vec::new()), workspaces, focused, items, &mut app.workspaces_state);
     if empty {
         frame.render_widget(Line::from(" none yet").fg(theme::dim()), app.areas.workspaces);
     }
+    draw_files(frame, app, files);
+    draw_changes(frame, app, changes);
+    draw_history(frame, app, history);
 }
 
 fn state_name(state: Option<State>, name: &str, current: bool) -> Vec<Span<'static>> {
@@ -267,23 +261,10 @@ fn row_find(chars: &[char], needle: &str, from: usize) -> Option<usize> {
     (from..chars.len().saturating_sub(needle.len() - 1)).find(|&i| chars[i..i + needle.len()] == needle[..])
 }
 
-fn draw_right(frame: &mut Frame, app: &mut App, area: Rect) {
-    if app.focus == Focus::Files && (app.files_expanded || app.editor.is_some()) {
-        draw_files(frame, app, area);
-    } else if app.focus == Focus::Changes && app.changes_expanded {
-        draw_changes(frame, app, area);
-    } else {
-        let [files, changes, history] = Layout::vertical([Constraint::Fill(1); 3]).areas(area);
-        draw_files(frame, app, files);
-        draw_changes(frame, app, changes);
-        draw_history(frame, app, history);
-    }
-}
-
 fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
     app.areas.panels.push((Focus::History, area));
     let focused = app.focus == Focus::History;
-    let Some(changes) = &mut app.changes else { return };
+    let Some(changes) = app.shelved.as_mut().or(app.changes.as_mut()) else { return };
     let history = &changes.history;
     let unpushed = history.commits.iter().filter(|c| !c.pushed).count();
     let more = if history.more { "+" } else { "" };
@@ -320,54 +301,44 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
     panel(frame, block, area, focused, items, &mut changes.history_state);
 }
 
-fn split_panel(frame: &mut Frame, app: &mut App, area: Rect, title: Line<'static>, focused: bool) -> (Rect, Rect) {
-    let block = Block::bordered().border_type(BorderType::Rounded).title(title).border_style(border(focused)).style(Style::new().bg(theme::bg()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let fallback = (inner.width / 4).clamp(16, 32);
-    let width = app.tree_width.unwrap_or(fallback).clamp(8.min(inner.width / 2), inner.width.saturating_sub(20).max(8));
-    let [tree, line, file] = Layout::horizontal([Constraint::Length(width), Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
-    app.areas.tree_dividers.push((line, tree.x));
-    for y in line.top()..line.bottom() {
-        if let Some(cell) = frame.buffer_mut().cell_mut((line.x, y)) {
-            cell.set_symbol("│").set_fg(theme::border());
-        }
-    }
-    (tree, file)
-}
-
 fn title(name: &str, focused: bool, rest: Vec<Span<'static>>) -> Line<'static> {
     let mut spans = vec![Span::from(format!(" {name} ")).fg(if focused { theme::fg() } else { theme::muted() }).bold()];
     spans.extend(rest);
     Line::from(spans)
 }
 
+fn in_tree(app: &App) -> bool {
+    app.focus == Focus::Files && app.editor.is_none() && !app.reading
+}
+
 fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
     app.areas.panels.push((Focus::Files, area));
-    let focused = app.focus == Focus::Files;
-    let root = app.ws().root.clone();
-    let mut rest = Vec::new();
+    let focused = in_tree(app);
+    let unsaved = if app.editor.as_ref().is_some_and(|e| e.dirty) { vec![Span::from("● unsaved ").fg(theme::yellow())] } else { Vec::new() };
+    let block = framed("Files", focused, unsaved);
+    app.areas.files_tree = block.inner(area);
+    frame.render_widget(block, area);
+    let ws = &mut app.workspaces[app.current];
+    let changed: Vec<(PathBuf, char)> = ws.status.changes.iter().map(|c| (ws.root.join(&c.path), c.kind())).collect();
+    frame.render_stateful_widget(List::new(file_items(&ws.tree.rows, &changed)).highlight_style(highlight(focused)), app.areas.files_tree, &mut ws.files_state);
+}
+
+fn draw_file(frame: &mut Frame, app: &mut App, area: Rect) {
+    let root = &app.ws().root;
     let open = app.editor.as_ref().map(|e| e.path.clone()).or_else(|| match &app.viewer.source {
         Some(crate::viewer::Source::File(path)) => Some(path.clone()),
         _ => None,
     });
-    if let Some(path) = open {
-        rest.push(Span::from(format!("{} ", path.strip_prefix(&root).unwrap_or(&path).display())).fg(theme::muted()));
+    let name = open.map_or("Files".into(), |path| path.strip_prefix(root).unwrap_or(&path).display().to_string());
+    let mut rest = Vec::new();
+    if app.editor.as_ref().is_some_and(|e| e.dirty) {
+        rest.push(Span::from("● unsaved ").fg(theme::yellow()));
     }
-    if let Some(editor) = &app.editor {
-        if editor.dirty {
-            rest.push(Span::from("● unsaved ").fg(theme::yellow()));
-        }
-    }
-    let (tree, file) = split_panel(frame, app, area, title("Files", focused, rest), focused);
-    app.areas.files_tree = tree;
+    let focused = !in_tree(app);
+    let block = Block::bordered().border_type(BorderType::Rounded).title(title(&name, focused, rest)).border_style(border(focused)).style(Style::new().bg(theme::bg()));
+    let file = block.inner(area);
+    frame.render_widget(block, area);
     app.areas.files_file = file;
-
-    let in_tree = focused && app.editor.is_none() && !app.reading;
-    let ws = &mut app.workspaces[app.current];
-    let changed: Vec<(PathBuf, char)> = ws.status.changes.iter().map(|c| (ws.root.join(&c.path), c.kind())).collect();
-    frame.render_stateful_widget(List::new(file_items(&ws.tree.rows, &changed)).highlight_style(highlight(in_tree)), tree, &mut ws.files_state);
-
     if app.editor.is_some() {
         draw_editor(frame, app, file);
     } else if app.viewer.is_open() {
@@ -403,39 +374,51 @@ fn tree_item(row: &Row, kind: Option<char>, comments: usize) -> ListItem<'static
 
 fn draw_changes(frame: &mut Frame, app: &mut App, area: Rect) {
     app.areas.panels.push((Focus::Changes, area));
-    let focused = app.focus == Focus::Changes;
+    let focused = app.focus == Focus::Changes && !app.reading;
+    let Some(changes) = &mut app.changes else { return };
+    let name = if changes.commit.is_some() { "Commit" } else { "Changes" };
+    let count = Span::from(format!("{} ", changes.files.len())).fg(theme::blue());
+    let block = framed(name, focused, vec![count]);
+    let tree = block.inner(area);
+    frame.render_widget(block, area);
+    app.areas.changes_tree = tree;
+    let items: Vec<ListItem> = changes.rows.iter().map(|row| tree_item(row, changes.status_of(&row.path), changes.count(&row.path))).collect();
+    if items.is_empty() {
+        frame.render_widget(Line::from(" nothing uncommitted").fg(theme::dim()), tree);
+    }
+    frame.render_stateful_widget(List::new(items).highlight_style(highlight(focused)), tree, &mut changes.state);
+}
+
+fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.reading;
     let Some(changes) = &app.changes else { return };
-    let mut rest = vec![Span::from(format!("{} ", changes.files.len())).fg(theme::blue())];
+    let mut rest = Vec::new();
     if let Some(c) = &changes.commit {
         rest.push(Span::from(format!("{} ", c.hash)).fg(theme::muted()));
         rest.push(Span::from(format!("{} ", c.subject)).fg(theme::fg()));
         rest.push(Span::from(format!("· {}, {} ", c.author, c.when)).fg(theme::muted()));
     }
-    if let Some((path, diff)) = &changes.diff {
-        rest.push(Span::from(format!("· {} ", path.strip_prefix(&changes.root).unwrap_or(path).display())).fg(theme::muted()));
-        rest.push(Span::from(format!("+{} ", diff.added)).fg(theme::green()));
-        rest.push(Span::from(format!("−{} ", diff.removed)).fg(theme::red()));
-    }
-    let name = if changes.commit.is_some() { "Commit" } else { "Changes" };
-    app.areas.send_review = Rect::default();
+    let name = match &changes.diff {
+        Some((path, diff)) => {
+            rest.push(Span::from(format!("+{} ", diff.added)).fg(theme::green()));
+            rest.push(Span::from(format!("−{} ", diff.removed)).fg(theme::red()));
+            path.strip_prefix(&changes.root).unwrap_or(path).display().to_string()
+        }
+        None if changes.commit.is_some() => "Commit".into(),
+        None => "Changes".into(),
+    };
     if !changes.comments.is_empty() {
         rest.push(Span::from(format!("· ✎{} ", changes.comments.len())).fg(theme::yellow()));
         let button = Span::from(format!(" send review {} s ", app.keymap.label())).fg(theme::on_accent()).bg(theme::accent()).bold();
-        let x = area.x + 1 + (name.len() + 2 + rest.iter().map(Span::width).sum::<usize>()) as u16;
+        let x = area.x + 1 + (Span::from(name.as_str()).width() + 2 + rest.iter().map(Span::width).sum::<usize>()) as u16;
         let width = (button.width() as u16).min(area.right().saturating_sub(x + 1));
         app.areas.send_review = Rect { x, y: area.y, width, height: 1 };
         rest.push(button);
     }
-    let (tree, file) = split_panel(frame, app, area, title(name, focused, rest), focused);
-    app.areas.changes_tree = tree;
-    app.areas.changes_file = file;
-    let in_tree = focused && !app.reading;
+    let block = Block::bordered().border_type(BorderType::Rounded).title(title(&name, focused, rest)).border_style(border(focused)).style(Style::new().bg(theme::bg()));
+    let file = block.inner(area);
+    frame.render_widget(block, area);
     let Some(changes) = &mut app.changes else { return };
-    let items: Vec<ListItem> = changes.rows.iter().map(|row| tree_item(row, changes.status_of(&row.path), changes.count(&row.path))).collect();
-    if items.is_empty() {
-        frame.render_widget(Line::from(" nothing uncommitted").fg(theme::dim()), tree);
-    }
-    frame.render_stateful_widget(List::new(items).highlight_style(highlight(in_tree)), tree, &mut changes.state);
     let [file, ruler] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1)]).areas(file);
     app.areas.changes_file = file;
     app.areas.changes_ruler = ruler;
@@ -454,13 +437,12 @@ fn draw_changes(frame: &mut Frame, app: &mut App, area: Rect) {
     changes.fit(if changes.split { new.width.min(old.width) } else { file.width } as usize, app.writing.as_ref().map(|w| (w, app.writing_at)));
     let Some((_, diff)) = &changes.diff else { return };
     let (first, last) = changes.selection();
-    let reading = focused && app.reading;
     let mark = |mut line: Line<'static>, i: usize| {
         if let Some(gutter) = line.spans.first_mut().filter(|_| diff.kinds.get(i).is_some_and(|k| *k != crate::viewer::Kind::Gap)) {
             if changes.commented(i) {
                 gutter.style = gutter.style.fg(theme::yellow()).add_modifier(Modifier::BOLD);
             }
-            if reading && (first..=last).contains(&i) {
+            if focused && (first..=last).contains(&i) {
                 gutter.style = gutter.style.bg(theme::selection());
             }
         }
@@ -706,7 +688,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
                 (prefixed("p w t"), "projects, workspaces, the terminal"),
                 (prefixed("f c h"), "files, changes, history"),
                 (prefixed("F C H"), "files, changes full screen; the selected commit"),
-                (prefixed("< >"), "hide or show the left side, the right side"),
+                (prefixed("<"), "hide or show the left side"),
                 (prefixed("[ ]"), "previous, next terminal tab"),
                 (prefixed("a"), "the next terminal waiting for you"),
                 (prefixed("1-9"), "the workspace with that number"),
@@ -729,13 +711,13 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
                 (prefixed("/"), "search file names, tab for inside files"),
                 (prefixed("n"), "new file (ending with / for a folder)"),
                 (prefixed("e r d"), "edit, rename, delete"),
-                ("↑↓ ←→ ⏎".into(), "move, fold, open full screen"),
+                ("↑↓ ←→ ⏎".into(), "move, fold, open the file"),
             ],
         ),
         (
             "Full screen",
             vec![
-                ("esc".into(), "back to the tree, the three columns, then the terminal"),
+                ("esc".into(), "back to the tree, the terminal beside it, then into it"),
                 ("⏎ in history".into(), "the commit: its files and their changes"),
                 ("⏎ tab".into(), "from the tree into the file, and back"),
                 ("pgup pgdn".into(), "scroll the file"),
@@ -748,7 +730,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
         (
             "Mouse",
             vec![
-                ("click".into(), "go there; double-click Files or Changes: full screen"),
+                ("click".into(), "go there; a file, a change or a commit opens full screen"),
                 ("drag".into(), "select to copy in a terminal; a border to resize"),
                 ("wheel swipe".into(), "scroll, and sideways in files"),
                 ("ctrl-click".into(), "open a link, or a path:line"),
