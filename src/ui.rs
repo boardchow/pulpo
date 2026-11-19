@@ -284,11 +284,12 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::bordered().border_type(BorderType::Rounded).title(title("History", focused, rest)).border_style(border(focused)).style(Style::new().bg(theme::bg()));
     let body = block.inner(area);
     app.areas.history = body;
+    let pad = if unpushed == 0 { " " } else { "   " };
     let items: Vec<ListItem> = history
         .commits
         .iter()
         .map(|c| {
-            let mark = if c.pushed { Span::from("   ") } else { Span::from(" ↑ ").fg(theme::yellow()) };
+            let mark = if c.pushed { Span::from(pad) } else { Span::from(" ↑ ").fg(theme::yellow()) };
             let when = Span::from(format!(" {}", c.when)).fg(theme::dim());
             ListItem::new(Line::from(vec![mark, Span::from(format!("{} ", c.hash)).fg(theme::dim()), Span::from(c.subject.clone()), when]))
         })
