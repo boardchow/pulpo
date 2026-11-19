@@ -62,7 +62,7 @@ pub enum Shown {
     /// Under the one being written.
     Hint,
     Fold(Range<usize>),
-    Approved(Range<usize>),
+    Done(Range<usize>),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -70,6 +70,7 @@ enum Hide {
     No,
     Fold,
     Approved,
+    Commented,
 }
 
 #[derive(Clone, Debug)]
@@ -375,7 +376,7 @@ impl Changes {
     fn view_end(&self) -> usize {
         let end = |s: &Shown| match s {
             Shown::Row(row) | Shown::Wrap { row, .. } => Some(row + 1),
-            Shown::Fold(rows) | Shown::Approved(rows) => Some(rows.end),
+            Shown::Fold(rows) | Shown::Done(rows) => Some(rows.end),
             _ => None,
         };
         self.shown.iter().rev().find_map(end).unwrap_or(self.scroll + self.height)
@@ -389,7 +390,7 @@ impl Changes {
 
     /// From the cursor's row, or the nearest one in view after scrolling it out.
     pub fn move_cursor(&mut self, rows: isize, extend: bool) {
-        let in_view: Vec<usize> = self.shown.iter().filter_map(|s| if let Shown::Row(row) | Shown::Approved(Range { start: row, .. }) = s { Some(*row) } else { None }).collect();
+        let in_view: Vec<usize> = self.shown.iter().filter_map(|s| if let Shown::Row(row) | Shown::Done(Range { start: row, .. }) = s { Some(*row) } else { None }).collect();
         let mut row = self.cursor;
         if let (Some(&first), Some(&last)) = (in_view.first(), in_view.last()) {
             row = row.clamp(first, last);
@@ -404,7 +405,7 @@ impl Changes {
     }
 
     pub fn click(&mut self, at: usize, extend: bool) {
-        if let Some(Shown::Row(row) | Shown::Wrap { row, .. } | Shown::Approved(Range { start: row, .. })) = self.shown.get(at) {
+        if let Some(Shown::Row(row) | Shown::Wrap { row, .. } | Shown::Done(Range { start: row, .. })) = self.shown.get(at) {
             self.select_row(*row, extend);
         }
     }
@@ -428,6 +429,9 @@ impl Changes {
 
     /// The lines selected, or the file in the tree; a comment already there comes back to edit.
     pub fn commenting(&self, reading: bool) -> Option<Comment> {
+        if reading && self.anchor.is_none() && let Some(comment) = self.comment_folded(self.cursor) {
+            return Some(comment.clone());
+        }
         let (path, lines) = match self.diff.as_ref().filter(|_| reading) {
             // A file with no lines to show, binary or too big, still takes a comment.
             Some((path, diff)) => (path.clone(), if diff.kinds.is_empty() { None } else { Some(self.lines_selected()?) }),
@@ -571,7 +575,7 @@ impl Changes {
         self.scroll = self.fold_at(self.scroll).start;
         loop {
             self.shown = self.lay(&notes);
-            let seen = self.shown.iter().any(|s| matches!(s, Shown::Row(r) if *r == target) || matches!(s, Shown::Approved(rows) if rows.contains(&target))) || (target == 0 && self.scroll == 0);
+            let seen = self.shown.iter().any(|s| matches!(s, Shown::Row(r) if *r == target) || matches!(s, Shown::Done(rows) if rows.contains(&target))) || (target == 0 && self.scroll == 0);
             if !self.reveal || (seen && (!writing || self.shown.contains(&Shown::Hint))) {
                 break;
             }
@@ -599,7 +603,7 @@ impl Changes {
             if self.collapsed(row) {
                 let fold = self.fold_at(row);
                 row = fold.end;
-                shown.push(if self.hidden[fold.start] == Hide::Approved { Shown::Approved(fold) } else { Shown::Fold(fold) });
+                shown.push(if self.hidden[fold.start] == Hide::Fold { Shown::Fold(fold) } else { Shown::Done(fold) });
                 continue;
             }
             shown.push(Shown::Row(row));
@@ -618,7 +622,7 @@ impl Changes {
             let mut units = self.shown.iter().map(|s| {
                 match s {
                     Shown::Row(row) | Shown::Wrap { row, .. } => last = *row,
-                    Shown::Fold(rows) | Shown::Approved(rows) => last = rows.start,
+                    Shown::Fold(rows) | Shown::Done(rows) => last = rows.start,
                     Shown::Note(..) | Shown::Hint => {}
                 }
                 last
@@ -655,9 +659,10 @@ impl Changes {
         let hunk_of: Vec<Option<&Hunk>> = (0..len).map(|i| hunk_at(diff, hunks, i)).collect();
         let drafted = |i: usize| draft.is_some_and(|d| self.here(d, path) && number(diff, i).is_some_and(|at| covers(d, at)));
         let noted: Vec<bool> = (0..len).map(|i| self.commented(i) || drafted(i)).collect();
-        let commented: HashSet<u64> = (0..len).filter(|&i| noted[i]).filter_map(|i| hunk_of[i]).map(|h| h.id).collect();
-        let shut = |i: usize| hunk_of[i].is_some_and(|h| self.approved.contains(&h.id) && !commented.contains(&h.id));
-        let kept: Vec<bool> = (0..len).map(|i| (changed(i) && !shut(i)) || noted[i]).collect();
+        let drafted_on: HashSet<u64> = (0..len).filter(|&i| drafted(i)).filter_map(|i| hunk_of[i]).map(|h| h.id).collect();
+        let commented = |h: &Hunk| self.comment_on(path, h).next().is_some();
+        let shut = |i: usize| hunk_of[i].is_some_and(|h| !drafted_on.contains(&h.id) && (commented(h) || self.approved.contains(&h.id)));
+        let kept: Vec<bool> = (0..len).map(|i| (changed(i) || noted[i]) && !shut(i)).collect();
         let mut near = vec![false; len];
         let mut last = None;
         for i in 0..len {
@@ -675,16 +680,17 @@ impl Changes {
             }
         }
         let mut hidden: Vec<Hide> = (0..len).map(|i| if near[i] || diff.kinds[i] == Kind::Gap { Hide::No } else { Hide::Fold }).collect();
-        let mut spans: HashMap<u64, (usize, usize)> = HashMap::new();
+        let mut spans: HashMap<u64, (usize, usize, Hide)> = HashMap::new();
         for i in (0..len).filter(|&i| changed(i) && shut(i)) {
             let Some(h) = hunk_of[i] else { continue };
-            spans.entry(h.id).and_modify(|span| span.1 = i).or_insert((i, i));
+            let hide = if commented(h) { Hide::Commented } else { Hide::Approved };
+            spans.entry(h.id).and_modify(|span| span.1 = i).or_insert((i, i, hide));
         }
-        for (first, last) in spans.into_values() {
-            hidden[first..=last].fill(Hide::Approved);
+        for (first, last, hide) in spans.into_values() {
+            hidden[first..=last].fill(hide);
         }
         self.hidden = hidden;
-        if self.hidden.get(self.cursor) == Some(&Hide::Approved) {
+        if matches!(self.hidden.get(self.cursor), Some(Hide::Approved | Hide::Commented)) {
             self.cursor = self.fold_at(self.cursor).start;
         } else if self.collapsed(self.cursor)
             && let Some(row) = self.step_row(self.cursor, true).or_else(|| self.step_row(self.cursor, false))
@@ -780,7 +786,7 @@ impl Changes {
         let hunks = self.hunks.get(path).map_or(&[][..], Vec::as_slice);
         let mut seen = HashSet::new();
         let firsts = diff.changes.iter().copied().filter(|&line| match hunk_at(diff, hunks, line) {
-            Some(h) => !(unapproved && self.approved.contains(&h.id)) && seen.insert(h.id),
+            Some(h) => !(unapproved && self.done(path, h)) && seen.insert(h.id),
             None => true,
         });
         let firsts: Vec<usize> = firsts.collect();
@@ -811,7 +817,7 @@ impl Changes {
         };
         for path in order {
             let skip = match self.hunks.get(path) {
-                Some(hunks) => hunks.is_empty() || (unapproved && hunks.iter().all(|h| self.approved.contains(&h.id))),
+                Some(hunks) => hunks.is_empty() || (unapproved && hunks.iter().all(|h| self.done(path, h))),
                 None => unapproved,
             };
             if skip {
@@ -891,11 +897,50 @@ impl Changes {
         first..(self.cursor..block.end).find(|&i| other(i)).unwrap_or(block.end)
     }
 
-    pub fn approved_label(&self, rows: &Range<usize>) -> String {
-        let Some((_, diff)) = &self.diff else { return String::new() };
+    pub fn done_label(&self, rows: &Range<usize>) -> (bool, String) {
+        let Some((_, diff)) = &self.diff else { return Default::default() };
         let count = |kind: Kind, sign: char| Some(rows.clone().filter(|&i| diff.kinds[i] == kind).count()).filter(|&n| n > 0).map(|n| format!(" {sign}{n}"));
-        let first = viewer::plain(&diff.lines[rows.start], diff.gutter).trim().to_string();
-        format!("✓{}{} · {first}", count(Kind::Added, '+').unwrap_or_default(), count(Kind::Removed, '−').unwrap_or_default())
+        let counts = format!("{}{}", count(Kind::Added, '+').unwrap_or_default(), count(Kind::Removed, '−').unwrap_or_default());
+        match self.comment_folded(rows.start) {
+            Some(comment) => {
+                let more = match self.folded_comments(rows.start) {
+                    n if n > 1 => format!(" ({n} comments)"),
+                    _ => String::new(),
+                };
+                (true, format!("✎{counts} · {}{more}", comment.text.lines().next().unwrap_or_default()))
+            }
+            None => (false, format!("✓{counts} · {}", viewer::plain(&diff.lines[rows.start], diff.gutter).trim())),
+        }
+    }
+
+    pub fn left(&self) -> usize {
+        self.hunks.iter().map(|(path, hunks)| hunks.iter().filter(|h| !self.done(path, h)).count()).sum()
+    }
+
+    pub fn on_commented(&self) -> bool {
+        self.hidden.get(self.cursor) == Some(&Hide::Commented)
+    }
+
+    fn done(&self, path: &Path, hunk: &Hunk) -> bool {
+        self.approved.contains(&hunk.id) || self.comment_on(path, hunk).next().is_some()
+    }
+
+    fn comment_on<'a>(&'a self, path: &'a Path, hunk: &'a Hunk) -> impl Iterator<Item = &'a Comment> {
+        let on = |(deleted, first, last): (bool, usize, usize)| {
+            let side = if deleted { &hunk.old } else { &hunk.new };
+            first < side.end && last >= side.start
+        };
+        self.comments.iter().filter(move |c| !c.outdated && self.here(c, path) && c.lines.is_some_and(on))
+    }
+
+    fn comment_folded(&self, row: usize) -> Option<&Comment> {
+        let (path, diff) = self.diff.as_ref().filter(|_| self.hidden.get(row) == Some(&Hide::Commented))?;
+        self.comment_on(path, hunk_at(diff, self.hunks.get(path)?, row)?).next()
+    }
+
+    fn folded_comments(&self, row: usize) -> usize {
+        let Some((path, diff)) = &self.diff else { return 0 };
+        self.hunks.get(path).and_then(|hunks| hunk_at(diff, hunks, row)).map_or(0, |h| self.comment_on(path, h).count())
     }
 }
 
@@ -1343,23 +1388,26 @@ mod tests {
     fn comments_say_where_they_are_and_show_under_their_lines() {
         let t = repo();
         let mut changes = Changes::open(&t, None);
+        assert_eq!(changes.left(), 2);
         comment(&mut changes, true, "why?");
         assert!(changes.commented(1) && !changes.commented(0));
-        changes.move_cursor(-1, true);
+        assert!(changes.on_commented() && changes.left() == 1);
+        (changes.cursor, changes.anchor) = (1, Some(0));
         comment(&mut changes, true, "both");
         comment(&mut changes, false, "the file");
         assert_eq!(changes.review(), "src/b.txt\nthe file\n\nsrc/b.txt:1-2\nboth\n\nsrc/b.txt:2\nwhy?");
-        let both = changes.comment_at(true).unwrap();
-        assert_eq!(both.text, "both");
-        changes.delete(&both);
+        let why = changes.comment_at(true).unwrap();
+        assert_eq!(why.text, "why?");
+        changes.delete(&why);
         assert_eq!(changes.count(&t.join("src")), 2);
         changes.height = 10;
         changes.fit(80, None);
-        assert_eq!(changes.shown, [Shown::Note(Some(1), "the file".into()), Shown::Row(0), Shown::Row(1), Shown::Note(Some(0), "why?".into())]);
+        assert_eq!(changes.shown, [Shown::Note(Some(1), "the file".into()), Shown::Fold(0..1), Shown::Done(1..2)]);
+        assert_eq!(changes.done_label(&(1..2)), (true, "✎ +1 · both".to_string()));
         let writing = Comment { text: "a\nb".into(), ..changes.commenting(true).unwrap() };
         changes.fit(80, Some((&writing, 1)));
-        assert_eq!(changes.shown[1..4], [Shown::Row(0), Shown::Note(None, format!("a{CURSOR}")), Shown::Note(None, "b".into())]);
-        assert_eq!(changes.shown[4], Shown::Hint);
+        assert_eq!(changes.shown[1..5], [Shown::Row(0), Shown::Row(1), Shown::Note(None, format!("a{CURSOR}")), Shown::Note(None, "b".into())]);
+        assert_eq!(changes.shown[5], Shown::Hint);
         assert_eq!(wrap("ab漢字", 4), ["ab漢", "字"]);
         let mut agent = Changes::of_commit(&t, &changes.history.commits[0]);
         agent.load();
@@ -1376,6 +1424,21 @@ mod tests {
         changes.comments = agent.comments.split_off(1);
         changes.load();
         assert_eq!(changes.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["src", "b.txt", "a.txt", "c.txt"]);
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    #[test]
+    fn a_commented_change_folds_and_counts_as_done() {
+        let t = repo();
+        let mut changes = Changes::open(&t, None);
+        comment(&mut changes, true, "why?");
+        (changes.cursor, changes.anchor) = (1, Some(0));
+        comment(&mut changes, true, "both");
+        changes.height = 10;
+        changes.fit(80, None);
+        assert_eq!(changes.done_label(&(1..2)), (true, "✎ +1 · why? (2 comments)".to_string()));
+        assert_eq!(changes.next_change(true, true), None);
+        assert_eq!(changes.diff.as_ref().map(|(p, _)| p.clone()), Some(t.join("c.txt")));
         std::fs::remove_dir_all(&t).unwrap();
     }
 
@@ -1406,7 +1469,7 @@ mod tests {
         std::fs::write(&b, "b\n}\nx\n}\n").unwrap();
         changes.load();
         for (cursor, text) in [(1, "one"), (3, "two")] {
-            (changes.cursor, changes.anchor) = (cursor, None);
+            (changes.cursor, changes.anchor) = (cursor, Some(cursor));
             comment(&mut changes, true, text);
         }
         std::fs::write(&b, "b\nx\n}\n").unwrap();
@@ -1492,16 +1555,16 @@ mod tests {
         let text = |c: &Changes| viewer::plain(&c.diff.as_ref().unwrap().1.lines[c.cursor], c.diff.as_ref().unwrap().1.gutter).trim().to_string();
         assert_eq!(text(&changes), "b;");
         changes.fit(80, None);
-        assert!(changes.shown.contains(&Shown::Approved(22..24)));
+        assert!(changes.shown.contains(&Shown::Done(22..24)));
         changes.cursor = 22;
         assert_eq!(changes.section(), 22..24);
         let draft = changes.commenting(true).unwrap();
         changes.fit(80, Some((&draft, 0)));
         assert!(changes.shown.contains(&Shown::Row(22)) && changes.shown.contains(&Shown::Hint));
         changes.fit(80, None);
-        assert!(changes.shown.contains(&Shown::Approved(22..24)));
+        assert!(changes.shown.contains(&Shown::Done(22..24)));
         changes.cursor = 66;
-        assert_eq!(changes.approved_label(&(22..24)), "✓ +1 −1 · a;");
+        assert_eq!(changes.done_label(&(22..24)), (false, "✓ +1 −1 · a;".to_string()));
 
         assert_eq!(changes.next_change(false, false), None);
         assert_eq!(changes.cursor, 22);

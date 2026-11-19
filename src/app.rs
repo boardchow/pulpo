@@ -31,8 +31,6 @@ const MESSAGE_FOR: Duration = Duration::from_secs(5);
 const UNSAVED: &str = "unsaved changes in the editor: ⌃s saves them, esc twice throws them away";
 const PREFIX_FOR: Duration = Duration::from_secs(3);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-/// shortcut: a fixed wait so ⏎ isn't read as part of the paste, until an agent needs longer.
-const SUBMIT_AFTER: Duration = Duration::from_millis(300);
 /// Another workspace only shows how many changes it has: its `git status` can wait this long.
 const OTHERS_STATUS: Duration = Duration::from_secs(3);
 /// How long a terminal just switched to may wait for its snapshot before it's drawn empty.
@@ -72,7 +70,6 @@ pub enum Confirm {
     CloseTerminal(usize),
     DeleteFile(PathBuf),
     DeleteComment(Comment),
-    SendReview(usize),
     StopAll,
 }
 
@@ -92,7 +89,6 @@ pub struct Areas {
     pub editor: Rect,
     pub left_divider: Rect,
     pub yes: Rect,
-    pub send_review: Rect,
     pub popup: Rect,
     pub popup_list: Rect,
 }
@@ -139,7 +135,6 @@ pub struct App {
     pub writing: Option<Comment>,
     /// A byte index in its text.
     pub writing_at: usize,
-    submitting: Option<(usize, Instant)>,
     /// The comments of workspaces not on screen.
     drafts: HashMap<PathBuf, Vec<Comment>>,
     pub reading: bool,
@@ -242,7 +237,6 @@ impl App {
             changes_expanded: false,
             writing: None,
             writing_at: 0,
-            submitting: None,
             drafts: HashMap::new(),
             reading: false,
             changes: None,
@@ -664,34 +658,31 @@ impl App {
         on_screen.filter(|t| agent(t)).or_else(|| terms.iter().map(|&t| &self.terms[t]).find(|t| agent(t))).map(|t| t.id)
     }
 
-    fn ask_send_review(&mut self) {
-        let count = self.changes.as_ref().map_or(0, |c| c.comments.len());
-        if count == 0 {
-            self.message = Some(format!("no comments to send: {} n makes one", self.keymap.label()));
-            return;
-        }
-        let Some(term) = self.agent_term().and_then(|id| self.terms.iter().find(|t| t.id == id)) else {
-            self.message = Some("no agent running in this workspace to send the review to".into());
+    fn send_review(&mut self) {
+        let Some(id) = self.agent_term() else {
+            self.message = Some("no agent running in this workspace: start one, then c ⏎ sends the review".into());
             return;
         };
-        let agent = self.agents.session_for_tab(&term.info.tag).map_or("the agent", |(_, kind)| kind.name);
-        self.ask(format!("send {count} comment(s) to {agent} in {}?", term.label()), Confirm::SendReview(term.id));
-    }
-
-    fn send_review(&mut self, id: usize) {
         let Some(changes) = &mut self.changes else { return };
         changes.follow_all();
         let review = changes.review();
         let Some(term) = self.terms.iter_mut().find(|t| t.id == id) else { return };
         // The agent's screen may not be mirrored, but an agent always takes bracketed paste.
         term.paste_bracketed(&review);
-        self.submitting = Some((id, Instant::now()));
         if let Some(changes) = &mut self.changes {
             changes.comments.clear();
         }
         self.select_term(id);
         self.set_focus(Focus::Terminal);
-        self.message = Some("review sent".into());
+        self.message = Some("review typed in: ⏎ sends it".into());
+    }
+
+    fn finish_review(&mut self) {
+        match &self.changes {
+            Some(changes) if changes.left() == 0 && !changes.comments.is_empty() => self.send_review(),
+            Some(changes) if changes.left() == 0 => self.set_focus(Focus::Terminal),
+            _ => {}
+        }
     }
 
     fn write_comment(&mut self, comment: Option<Comment>) {
@@ -723,6 +714,7 @@ impl App {
                 self.ask(format!("delete the comment on {at}?"), Confirm::DeleteComment(comment));
             }
             _ if reading && above => self.message = Some(format!("no comment here; for those above the file, tab to the tree, then {p} e or d")),
+            _ if reading => self.message = Some("no comment here: c makes one".into()),
             _ => self.message = Some(format!("no comment here: {p} n makes one")),
         }
     }
@@ -734,7 +726,16 @@ impl App {
             KeyCode::Enter if key.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) => self.insert_in_comment("\n"),
             // ⌥⏎ only reaches Pulpo when the terminal sends Option as Meta.
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => self.insert_in_comment("\n"),
-            KeyCode::Enter => self.keep_writing(),
+            KeyCode::Enter => {
+                let left = self.changes.as_ref().map(Changes::left);
+                self.keep_writing();
+                if let Some(changes) = self.changes.as_mut().filter(|c| self.reading && (Some(c.left()) < left || c.on_commented())) {
+                    self.message = changes.next_change(true, true);
+                }
+                if self.reading {
+                    self.finish_review();
+                }
+            }
             _ => {
                 input::edit_at(&mut comment.text, &mut self.writing_at, key);
             }
@@ -1058,12 +1059,6 @@ impl App {
     }
 
     pub fn tick(&mut self) {
-        if let Some((id, _)) = self.submitting.filter(|(_, at)| at.elapsed() >= SUBMIT_AFTER) {
-            self.submitting = None;
-            if let Some(term) = self.terms.iter_mut().find(|t| t.id == id) {
-                term.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-            }
-        }
         if self.prefixed_at.is_some_and(|at| at.elapsed() >= PREFIX_FOR) {
             self.prefixed = false;
             self.prefixed_at = None;
@@ -1111,7 +1106,7 @@ impl App {
     }
 
     pub fn animating(&self) -> bool {
-        self.submitting.is_some() || !self.setting_up.is_empty() || !self.copying.is_empty() || !self.spawning.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
+        !self.setting_up.is_empty() || !self.copying.is_empty() || !self.spawning.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
     }
 
     fn workspace_of(&self, term: &Term) -> Option<usize> {
@@ -1335,7 +1330,6 @@ impl App {
                 self.open_commit();
             }
             'n' | 'e' | 'd' if self.focus == Focus::Changes => self.comment_command(c),
-            's' if self.focus == Focus::Changes => self.ask_send_review(),
             'n' => self.new_here(),
             'N' => self.pick_project(),
             'x' => self.close_here(),
@@ -1405,7 +1399,6 @@ impl App {
                     changes.delete(&comment);
                 }
             }
-            Confirm::SendReview(id) => self.send_review(id),
             Confirm::StopAll => {
                 for &pid in self.setting_up.values() {
                     unsafe { libc::killpg(pid as i32, libc::SIGTERM) };
@@ -2032,7 +2025,14 @@ impl App {
                 KeyCode::PageDown => changes.page(true),
                 KeyCode::PageUp => changes.page(false),
                 KeyCode::Char(c @ ('n' | 'p')) if self.reading => self.message = changes.next_change(c == 'n', false),
-                KeyCode::Char('a') if self.reading => self.message = changes.approve(),
+                KeyCode::Char('a') if self.reading => {
+                    let left = changes.left();
+                    self.message = changes.approve();
+                    if changes.left() < left {
+                        self.finish_review();
+                    }
+                }
+                KeyCode::Char('c') if self.reading => self.comment_command('n'),
                 KeyCode::Char('J') if self.reading => changes.move_cursor(1, true),
                 KeyCode::Char('K') if self.reading => changes.move_cursor(-1, true),
                 _ if self.reading => match scroll_keys(key, changes.height) {
@@ -2179,10 +2179,7 @@ impl App {
         }
         let row = |area: Rect, offset: usize| (pos.y - area.y) as usize + offset;
 
-        if down && areas.send_review.contains(pos) {
-            self.set_focus(Focus::Changes);
-            self.ask_send_review();
-        } else if down && areas.projects.contains(pos) {
+        if down && areas.projects.contains(pos) {
             self.set_focus(Focus::Projects);
             let i = row(areas.projects, self.projects_state.offset());
             if i < self.projects().len() {

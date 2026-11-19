@@ -32,15 +32,15 @@ Full screen, the file takes everything right of the left side, its changes inlin
 
 ## Go change by change
 
-Press :kp[C] to open Changes full screen at the first change not approved yet. :k[n] and :k[p] go to the next and previous change, across files. :k[a] approves one: it shrinks to a line and the next comes up, and :k[a] again takes it back. The title counts them, like `4 of 10 approved`.
+Press :kp[C] to open Changes full screen at the first change not approved or commented on yet. :k[n] and :k[p] go to the next and previous change, across files. :k[a] approves one: it shrinks to a line and the next comes up, and :k[a] again takes it back. The title counts them, like `4 of 10 approved`.
 
 An approval follows what the change says. When the agent edits the file again, changes it didn't come near stay approved, so you only read what's new. Approvals are kept when Pulpo quits.
 
 ## Comment for the agent
 
-Full screen, select lines with the line cursor, :k[shift] :k[↓] or a drag, press :kp[n] and type your comment below them. In the tree, :kp[n] comments on the whole file. :kp[e] edits a comment and :kp[d] deletes it.
+Full screen, select lines with the line cursor, :k[shift] :k[↓] or a drag, press :k[c] and type your comment below them. :k[⏎] keeps it: the change shrinks to an orange line and the next comes up, and :k[c] on that line opens it to edit. In the tree, :kp[n] comments on the whole file. :kp[e] edits a comment and :kp[d] deletes it.
 
-Comments stay until you send them, while Pulpo runs. Press :kp[s] or click *send review* to send them all to the workspace's agent, like Claude Code or Codex, each under its place like `src/app.rs:12-14`.
+Comments stay until you send them, while Pulpo runs. Once every change is approved or commented on, Pulpo goes to the workspace's agent, like Claude Code or Codex, and types your comments into its input, each under its place like `src/app.rs:12-14`. Read them and press :k[⏎] to send. With no comments, it goes back to the terminal.
 
 ## Look through the commits
 
