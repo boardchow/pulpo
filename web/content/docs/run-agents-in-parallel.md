@@ -17,8 +17,8 @@ The workspace shows in Workspaces, and a shell opens in it. Pulpo makes it in th
 
 ## Create a workspace in another project
 
-1. Press :kp[N] from any panel. The bottom line lists your projects, with the current one selected.
-2. Press :k[↑] or :k[↓] to select a project, then :k[⏎]. The bottom line asks for the workspace's name.
+1. Press :kp[N] from any panel. The bottom line shows the current project.
+2. Press :k[↑] or :k[↓] to switch to another project, then :k[⏎]. The bottom line asks for the workspace's name.
 3. Type the name and press :k[⏎].
 
 ## Name the branch yourself
