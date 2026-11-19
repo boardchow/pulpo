@@ -399,9 +399,10 @@ impl App {
                 return false;
             }
             self.shelved = None;
-            if let Some(changes) = self.changes.take() {
+            let approved = self.changes.take().map(|changes| {
                 self.drafts.insert(changes.root, changes.comments);
-            }
+                changes.approved
+            });
             self.writing = None;
             self.current = i;
             self.editor = None;
@@ -418,6 +419,7 @@ impl App {
             let base = self.worktrees.iter().find(|s| s.root == self.workspaces[i].root).and_then(|s| s.base.clone());
             let mut changes = Changes::new(&self.workspaces[i].root, base);
             changes.comments = self.drafts.remove(&changes.root).unwrap_or_default();
+            changes.approved = approved.unwrap_or_else(crate::review::load_approved);
             self.changes = Some(changes);
             self.reload_changes();
             self.restore_term();
@@ -611,6 +613,7 @@ impl App {
         let mut commit = Changes::of_commit(&changes.root, commit);
         self.shelved = self.changes.take().map(|mut changes| {
             commit.comments = std::mem::take(&mut changes.comments);
+            commit.approved = std::mem::take(&mut changes.approved);
             changes
         });
         self.changes = Some(commit);
@@ -630,10 +633,11 @@ impl App {
             self.link.send(&ToServer::Watch { id: self.active.map(|id| id as u32) });
         }
         if self.shelved.is_some() && !(self.focus == Focus::Changes && self.changes_expanded) {
-            let comments = self.changes.as_mut().map(|c| std::mem::take(&mut c.comments)).unwrap_or_default();
+            let (comments, approved) = self.changes.as_mut().map(|c| (std::mem::take(&mut c.comments), std::mem::take(&mut c.approved))).unwrap_or_default();
             self.changes = self.shelved.take();
             if let Some(changes) = &mut self.changes {
-                changes.comments = comments;
+                (changes.comments, changes.approved) = (comments, approved);
+                changes.recount();
             }
             self.writing = None;
             if self.focus == Focus::Changes {
@@ -1319,7 +1323,10 @@ impl App {
             }
             'C' => {
                 self.set_focus(Focus::Changes);
-                self.changes_expanded = true;
+                (self.changes_expanded, self.reading) = (true, true);
+                if let Some(changes) = &mut self.changes {
+                    self.message = changes.first_unapproved();
+                }
             }
             'H' => {
                 self.set_focus(Focus::History);
@@ -2025,6 +2032,8 @@ impl App {
                 }
                 KeyCode::PageDown => changes.scroll_by(half),
                 KeyCode::PageUp => changes.scroll_by(-half),
+                KeyCode::Char(c @ ('n' | 'p')) if self.reading => self.message = changes.next_change(c == 'n', false),
+                KeyCode::Char('a') if self.reading => self.message = changes.approve(),
                 KeyCode::Char('J') if self.reading => changes.move_cursor(1, true),
                 KeyCode::Char('K') if self.reading => changes.move_cursor(-1, true),
                 _ if self.reading => match scroll_keys(key, changes.height) {
@@ -2283,12 +2292,12 @@ impl App {
                 (self.focus, self.reading) = (Focus::Changes, true);
             }
             if let Some(changes) = &mut self.changes {
-                let (at, old_side) = ((pos.y - areas.changes_file.y) as usize, pos.x < areas.changes_file.x + areas.changes_file.width / 2);
+                let at = (pos.y - areas.changes_file.y) as usize;
                 if wheel != 0 {
                     changes.scroll_by(wheel as isize);
                 } else if down || mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
                     match changes.shown.get(at) {
-                        Some(Shown::Note(None, _) | Shown::Hint) => {}
+                        Some(Shown::Note(None, _) | Shown::Hint | Shown::Fold(_)) => {}
                         Some(Shown::Note(Some(i), _)) => {
                             if down {
                                 let comment = changes.comments.get(*i).cloned();
@@ -2302,7 +2311,7 @@ impl App {
                                 self.keep_writing();
                             }
                             if let Some(changes) = &mut self.changes {
-                                changes.click(at, old_side, shift || !down);
+                                changes.click(at, shift || !down);
                             }
                         }
                     }

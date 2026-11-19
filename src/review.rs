@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -60,6 +61,22 @@ pub enum Shown {
     Note(Option<usize>, String),
     /// Under the one being written.
     Hint,
+    Fold(Range<usize>),
+    Approved(Range<usize>),
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Hide {
+    No,
+    Fold,
+    Approved,
+}
+
+#[derive(Clone, Debug)]
+pub struct Hunk {
+    old: Range<usize>,
+    new: Range<usize>,
+    id: u64,
 }
 
 pub struct Changes {
@@ -85,9 +102,6 @@ pub struct Changes {
     pub scroll: usize,
     pub height: usize,
     pub code_width: usize,
-    /// Old and new side by side; `scroll` and the ruler count its rows then.
-    pub split: bool,
-    /// An index in the diff's lines, not its rows.
     pub cursor: usize,
     pub anchor: Option<usize>,
     /// The workspace's comments, those on its commits too.
@@ -101,9 +115,15 @@ pub struct Changes {
     pub history_state: ListState,
     /// How many commits History reads: a page more each time the list nears its end.
     pub history_limit: usize,
+    hunks: HashMap<PathBuf, Vec<Hunk>>,
+    counts: HashMap<PathBuf, (usize, usize)>,
+    pub approved: HashSet<u64>,
+    hidden: Vec<Hide>,
 }
 
 pub const HISTORY_PAGE: usize = 100;
+const CONTEXT: usize = 3;
+const SCOPE_REACH: usize = 10;
 
 impl Changes {
     pub fn new(root: &Path, copied: Option<String>) -> Changes {
@@ -124,7 +144,6 @@ impl Changes {
             scroll: 0,
             height: 20,
             code_width: 80,
-            split: false,
             cursor: 0,
             anchor: None,
             comments: Vec::new(),
@@ -134,6 +153,10 @@ impl Changes {
             history: History::default(),
             history_state: ListState::default().with_selected(Some(0)),
             history_limit: HISTORY_PAGE,
+            hunks: HashMap::new(),
+            counts: HashMap::new(),
+            approved: HashSet::new(),
+            hidden: Vec::new(),
         }
     }
 
@@ -183,23 +206,27 @@ impl Changes {
             selected = read.diff.as_ref().map(|(p, _)| p.clone()).or(selected);
         }
         let (was, scroll) = (self.diff.take().map(|(p, _)| p), self.scroll);
-        (self.since, self.files, self.history) = (read.since, read.files, read.history);
+        (self.since, self.files, self.history, self.hunks) = (read.since, read.files, read.history, read.hunks);
         self.statuses.clear();
         for f in &self.files {
             for at in self.root.join(&f.path).ancestors().take_while(|a| a.starts_with(&self.root)) {
                 self.statuses.entry(at.to_path_buf()).or_insert(f.status);
             }
         }
+        self.recount();
         self.layout(selected);
         if let Some((path, diff)) = read.diff {
-            if was.as_ref() == Some(&path) {
-                self.scroll = scroll;
-                self.cursor = self.cursor.min(diff.lines.len().saturating_sub(1));
-            } else {
-                (self.scroll, self.cursor, self.anchor) = (first_change(&diff, self.split), diff.changes.first().copied().unwrap_or(0), None);
-            }
+            let same = was.as_ref() == Some(&path);
+            let lines = diff.lines.len();
             self.diff = Some((path, diff));
             self.follow_shown();
+            if same {
+                self.scroll = scroll;
+                self.cursor = self.cursor.min(lines.saturating_sub(1));
+                self.refold();
+            } else {
+                self.start(true, true);
+            }
             self.scroll_by(0);
         }
         let selected_file = self.selected().filter(|r| !r.is_dir).map(|r| r.path.clone());
@@ -240,12 +267,20 @@ impl Changes {
         if self.diff.as_ref().is_some_and(|(p, _)| p == path) {
             return;
         }
-        let untracked = self.files.iter().any(|f| self.root.join(&f.path) == path && f.status == '?');
-        let diff = viewer::review_diff(&self.root, &self.against, path, untracked);
-        self.scroll = first_change(&diff, self.split);
-        (self.cursor, self.anchor) = (diff.changes.first().copied().unwrap_or(0), None);
-        self.diff = Some((path.to_path_buf(), diff));
+        self.diff = Some((path.to_path_buf(), self.read_diff(path)));
         self.follow_shown();
+        self.start(true, true);
+    }
+
+    fn read_diff(&self, path: &Path) -> ReviewDiff {
+        let untracked = self.files.iter().any(|f| self.root.join(&f.path) == path && f.status == '?');
+        viewer::review_diff(&self.root, &self.against, path, untracked)
+    }
+
+    fn start(&mut self, down: bool, unapproved: bool) {
+        self.refold();
+        let first = self.diff.as_ref().and_then(|(path, diff)| self.change(path, diff, down, None, unapproved).or_else(|| self.change(path, diff, down, None, false)));
+        self.go_to(first.unwrap_or(0));
     }
 
     fn follow_shown(&mut self) {
@@ -298,19 +333,6 @@ impl Changes {
         self.follow();
     }
 
-    /// Keeps the same lines in view when the layout changes.
-    pub fn set_split(&mut self, split: bool) {
-        if split == self.split {
-            return;
-        }
-        if let Some((_, diff)) = &self.diff {
-            let line = if split { self.scroll } else { diff.pairs.get(self.scroll).and_then(|&(old, new)| old.or(new)).unwrap_or(0) };
-            self.scroll = if split { row_of(diff, true, line) } else { line };
-        }
-        self.split = split;
-        self.scroll_by(0);
-    }
-
     fn wrap_points(&self, line: usize) -> Vec<usize> {
         self.diff.as_ref().map_or_else(|| vec![0], |(_, diff)| wrap_points(&diff.lines[line], diff.gutter, self.code_width))
     }
@@ -320,18 +342,13 @@ impl Changes {
     }
 
     fn screen_lines(&self, row: usize) -> usize {
-        let Some((_, diff)) = &self.diff else { return 1 };
-        let count = |i: Option<usize>| i.map_or(1, |i| self.wrap_points(i).len());
-        let lines = match diff.pairs.get(row) {
-            Some(&(old, new)) if self.split => count(old).max(count(new)),
-            _ => count(Some(row)),
-        };
+        let lines = self.wrap_points(row).len();
         // shortcut: a row taller than the view shows its first screenful, scroll by screen lines if that bites.
         lines.min(self.height.max(1))
     }
 
     fn rows_len(&self) -> usize {
-        self.diff.as_ref().map_or(0, |(_, d)| if self.split { d.pairs.len() } else { d.lines.len() })
+        self.diff.as_ref().map_or(0, |(_, d)| d.lines.len())
     }
 
     pub fn ruler(&self, cells: usize) -> Vec<(Option<Color>, bool)> {
@@ -340,13 +357,8 @@ impl Changes {
         (0..cells)
             .map(|cell| {
                 let (start, end) = cell_lines(cell, cells, rows);
-                let in_view = start < self.scroll + self.height && end > self.scroll;
-                let lines: Vec<usize> = if self.split {
-                    let pairs = diff.pairs.get(start..end).unwrap_or_default();
-                    pairs.iter().flat_map(|&(old, new)| [old, new]).flatten().collect()
-                } else {
-                    (start..end.min(diff.kinds.len())).collect()
-                };
+                let in_view = start < self.view_end() && end > self.scroll;
+                let lines: Vec<usize> = (start..end.min(diff.kinds.len())).collect();
                 let kinds: Vec<Kind> = lines.iter().map(|&i| diff.kinds[i]).collect();
                 let color = match (kinds.contains(&Kind::Added), kinds.contains(&Kind::Removed)) {
                     _ if lines.iter().any(|&i| self.commented(i)) => Some(theme::yellow()),
@@ -360,6 +372,15 @@ impl Changes {
             .collect()
     }
 
+    fn view_end(&self) -> usize {
+        let end = |s: &Shown| match s {
+            Shown::Row(row) | Shown::Wrap { row, .. } => Some(row + 1),
+            Shown::Fold(rows) | Shown::Approved(rows) => Some(rows.end),
+            _ => None,
+        };
+        self.shown.iter().rev().find_map(end).unwrap_or(self.scroll + self.height)
+    }
+
     pub fn jump_to(&mut self, cell: usize, cells: usize) {
         let (start, _) = cell_lines(cell, cells, self.rows_len());
         self.scroll = start.saturating_sub(self.height / 3);
@@ -368,29 +389,34 @@ impl Changes {
 
     /// From the cursor's row, or the nearest one in view after scrolling it out.
     pub fn move_cursor(&mut self, rows: isize, extend: bool) {
-        let Some((_, diff)) = &self.diff else { return };
-        let row = row_of(diff, self.split, self.cursor).max(self.scroll).min(self.scroll + self.height.max(1) - 1);
-        let row = row.saturating_add_signed(rows).min(self.rows_len().saturating_sub(1));
-        let old_side = diff.kinds.get(self.cursor) == Some(&Kind::Removed);
-        self.select_row(row, old_side, extend);
+        let in_view: Vec<usize> = self.shown.iter().filter_map(|s| if let Shown::Row(row) | Shown::Approved(Range { start: row, .. }) = s { Some(*row) } else { None }).collect();
+        let mut row = self.cursor;
+        if let (Some(&first), Some(&last)) = (in_view.first(), in_view.last()) {
+            row = row.clamp(first, last);
+        }
+        for _ in 0..rows.unsigned_abs().min(self.rows_len()) {
+            match self.step_row(row, rows > 0) {
+                Some(next) => row = next,
+                None => break,
+            }
+        }
+        self.select_row(row, extend);
     }
 
-    /// The row on screen, on the old side when split.
-    pub fn click(&mut self, at: usize, old_side: bool, extend: bool) {
-        if let Some(&(Shown::Row(row) | Shown::Wrap { row, .. })) = self.shown.get(at) {
-            self.select_row(row, old_side, extend);
+    pub fn click(&mut self, at: usize, extend: bool) {
+        if let Some(Shown::Row(row) | Shown::Wrap { row, .. } | Shown::Approved(Range { start: row, .. })) = self.shown.get(at) {
+            self.select_row(*row, extend);
         }
     }
 
-    fn select_row(&mut self, row: usize, old_side: bool, extend: bool) {
-        let Some((_, diff)) = &self.diff else { return };
-        let line = match diff.pairs.get(row) {
-            Some(&(old, new)) if self.split => if old_side { old.or(new) } else { new.or(old) }.unwrap_or(0),
-            _ => row,
-        };
+    fn select_row(&mut self, row: usize, extend: bool) {
+        if self.diff.is_none() {
+            return;
+        }
         self.anchor = if extend { self.anchor.or(Some(self.cursor)) } else { None };
-        self.cursor = line;
-        self.scroll = self.scroll.min(row).max((row + 1).saturating_sub(self.height.max(1)));
+        self.cursor = row;
+        let top = (1..self.height.max(1)).fold(row, |r, _| self.prev_unit(r));
+        self.scroll = self.scroll.min(row).max(top);
         self.scroll_by(0);
         self.reveal = true;
     }
@@ -477,6 +503,7 @@ impl Changes {
     fn relayout(&mut self) {
         self.layout(self.selected().map(|r| r.path.clone()));
         self.follow();
+        self.refold();
     }
 
     pub fn commented(&self, line: usize) -> bool {
@@ -507,14 +534,15 @@ impl Changes {
             return None;
         }
         let last = (0..diff.lines.len()).rev().find(|&i| number(diff, i).is_some_and(|at| covers(comment, at)));
-        Some(last.map(|i| row_of(diff, self.split, i)))
+        Some(last)
     }
 
     /// The one being written shows `CURSOR` at its byte index.
     pub fn fit(&mut self, width: usize, writing: Option<(&Comment, usize)>) {
+        self.refold_for(writing.map(|(w, _)| w));
         let Some((_, diff)) = &self.diff else { return self.shown.clear() };
         self.code_width = width.saturating_sub(diff.gutter).max(1);
-        let (width, cursor) = (width.saturating_sub(diff.gutter + 2).max(10), row_of(diff, self.split, self.cursor));
+        let (width, cursor) = (width.saturating_sub(diff.gutter + 2).max(10), self.cursor);
         let wrap = |text: &str, i: Option<usize>| -> Vec<Shown> { text.split('\n').flat_map(|line| wrap(line, width)).map(|line| Shown::Note(i, line)).collect() };
         let mut notes: Vec<(Option<usize>, Vec<Shown>)> = Vec::new();
         for (i, comment) in self.comments.iter().enumerate().filter(|(_, c)| writing.is_none_or(|(w, _)| w.id != c.id)) {
@@ -536,19 +564,20 @@ impl Changes {
         let under = |row: usize| notes.iter().filter(|(r, _)| *r == Some(row)).map(|(_, lines)| lines.len()).sum::<usize>();
         let (mut top, mut used) = (self.rows_len(), 0);
         while top > 0 && used < self.height {
-            top -= 1;
-            used += self.screen_lines(top) + under(top);
+            top = self.prev_unit(top);
+            used += if self.collapsed(top) { 1 } else { self.screen_lines(top) + under(top) };
         }
-        self.scroll = self.scroll.min(if used > self.height { top + 1 } else { top }).min(self.rows_len().saturating_sub(1));
+        self.scroll = self.scroll.min(if used > self.height { self.next_unit(top) } else { top }).min(self.rows_len().saturating_sub(1));
+        self.scroll = self.fold_at(self.scroll).start;
         loop {
             self.shown = self.lay(&notes);
-            let seen = self.shown.contains(&Shown::Row(target)) || (target == 0 && self.scroll == 0);
+            let seen = self.shown.iter().any(|s| matches!(s, Shown::Row(r) if *r == target) || matches!(s, Shown::Approved(rows) if rows.contains(&target))) || (target == 0 && self.scroll == 0);
             if !self.reveal || (seen && (!writing || self.shown.contains(&Shown::Hint))) {
                 break;
             }
             match self.scroll.cmp(&target) {
                 std::cmp::Ordering::Greater => self.scroll = target,
-                std::cmp::Ordering::Less => self.scroll += 1,
+                std::cmp::Ordering::Less => self.scroll = self.next_unit(self.scroll),
                 std::cmp::Ordering::Equal => break,
             }
         }
@@ -565,20 +594,284 @@ impl Changes {
         if self.scroll == 0 {
             under(None, &mut shown);
         }
-        for row in self.scroll..self.rows_len() {
-            if shown.len() >= self.height {
-                break;
+        let mut row = self.scroll;
+        while row < self.rows_len() && shown.len() < self.height {
+            if self.collapsed(row) {
+                let fold = self.fold_at(row);
+                row = fold.end;
+                shown.push(if self.hidden[fold.start] == Hide::Approved { Shown::Approved(fold) } else { Shown::Fold(fold) });
+                continue;
             }
             shown.push(Shown::Row(row));
             shown.extend((1..self.screen_lines(row)).map(|piece| Shown::Wrap { row, piece }));
             under(Some(row), &mut shown);
+            row += 1;
         }
         shown.truncate(self.height);
         shown
     }
 
     pub fn scroll_by(&mut self, rows: isize) {
-        self.scroll = self.scroll.saturating_add_signed(rows).min(self.rows_len().saturating_sub(1));
+        let mut row = self.fold_at(self.scroll.min(self.rows_len().saturating_sub(1))).start;
+        for _ in 0..rows.unsigned_abs().min(self.rows_len()) {
+            row = if rows < 0 { self.prev_unit(row) } else { Some(self.next_unit(row)).filter(|&r| r < self.rows_len()).unwrap_or(row) };
+        }
+        self.scroll = row;
+    }
+
+    fn refold(&mut self) {
+        self.refold_for(None);
+    }
+
+    fn refold_for(&mut self, draft: Option<&Comment>) {
+        let Some((path, diff)) = &self.diff else { return self.hidden.clear() };
+        let hunks = self.hunks.get(path).map_or(&[][..], Vec::as_slice);
+        let len = diff.kinds.len();
+        let changed = |i: usize| matches!(diff.kinds[i], Kind::Added | Kind::Removed);
+        let hunk_of: Vec<Option<&Hunk>> = (0..len).map(|i| hunk_at(diff, hunks, i)).collect();
+        let drafted = |i: usize| draft.is_some_and(|d| self.here(d, path) && number(diff, i).is_some_and(|at| covers(d, at)));
+        let noted: Vec<bool> = (0..len).map(|i| self.commented(i) || drafted(i)).collect();
+        let commented: HashSet<u64> = (0..len).filter(|&i| noted[i]).filter_map(|i| hunk_of[i]).map(|h| h.id).collect();
+        let shut = |i: usize| hunk_of[i].is_some_and(|h| self.approved.contains(&h.id) && !commented.contains(&h.id));
+        let kept: Vec<bool> = (0..len).map(|i| (changed(i) && !shut(i)) || noted[i]).collect();
+        let mut near = vec![false; len];
+        let mut last = None;
+        for i in 0..len {
+            last = if kept[i] { Some(i) } else { last };
+            near[i] = last.is_some_and(|l| i - l <= CONTEXT);
+        }
+        last = None;
+        for i in (0..len).rev() {
+            last = if kept[i] { Some(i) } else { last };
+            near[i] |= last.is_some_and(|l| l - i <= CONTEXT);
+            if kept[i] && (i == 0 || !kept[i - 1])
+                && let Some(&start) = scopes(diff, i, i.saturating_sub(SCOPE_REACH)).first()
+            {
+                near[start..i].fill(true);
+            }
+        }
+        let mut hidden: Vec<Hide> = (0..len).map(|i| if near[i] || diff.kinds[i] == Kind::Gap { Hide::No } else { Hide::Fold }).collect();
+        let mut spans: HashMap<u64, (usize, usize)> = HashMap::new();
+        for i in (0..len).filter(|&i| changed(i) && shut(i)) {
+            let Some(h) = hunk_of[i] else { continue };
+            spans.entry(h.id).and_modify(|span| span.1 = i).or_insert((i, i));
+        }
+        for (first, last) in spans.into_values() {
+            hidden[first..=last].fill(Hide::Approved);
+        }
+        self.hidden = hidden;
+        if self.hidden.get(self.cursor) == Some(&Hide::Approved) {
+            self.cursor = self.fold_at(self.cursor).start;
+        } else if self.collapsed(self.cursor)
+            && let Some(row) = self.step_row(self.cursor, true).or_else(|| self.step_row(self.cursor, false))
+        {
+            (self.cursor, self.anchor) = (row, None);
+        }
+    }
+
+    fn collapsed(&self, row: usize) -> bool {
+        self.hidden.get(row).is_some_and(|h| *h != Hide::No)
+    }
+
+    fn fold_at(&self, row: usize) -> Range<usize> {
+        let Some(&hide) = self.hidden.get(row).filter(|h| **h != Hide::No) else { return row..row + 1 };
+        let start = (0..row).rev().find(|&r| self.hidden[r] != hide).map_or(0, |r| r + 1);
+        start..(row..self.rows_len()).find(|&r| self.hidden.get(r) != Some(&hide)).unwrap_or(self.rows_len())
+    }
+
+    fn next_unit(&self, row: usize) -> usize {
+        self.fold_at(row).end
+    }
+
+    fn prev_unit(&self, row: usize) -> usize {
+        row.checked_sub(1).map_or(0, |r| self.fold_at(r).start)
+    }
+
+    fn step_row(&self, row: usize, down: bool) -> Option<usize> {
+        let mut next = row;
+        loop {
+            next = if down { self.fold_at(next).end } else { self.fold_at(next.checked_sub(1)?).start };
+            if next >= self.rows_len() {
+                return None;
+            }
+            if self.hidden.get(next) != Some(&Hide::Fold) {
+                return Some(next);
+            }
+        }
+    }
+
+    fn go_to(&mut self, line: usize) {
+        (self.cursor, self.anchor, self.reveal) = (line, None, true);
+        let mut top = line;
+        while top > 0 && !self.collapsed(top - 1) && line - top < self.height / 2 {
+            top -= 1;
+        }
+        self.scroll = self.prev_unit(top);
+    }
+
+    pub fn approve(&mut self) -> Option<String> {
+        let (path, diff) = self.diff.as_ref()?;
+        let Some(hunks) = self.hunks.get(path) else { return Some("this file's changes can't be approved".into()) };
+        let Some(id) = hunk_at(diff, hunks, self.cursor).map(|h| h.id) else { return Some("no change here to approve".into()) };
+        if self.approved.remove(&id) {
+            self.save_approved(Some(id));
+            self.recount();
+            self.refold();
+            return None;
+        }
+        self.approved.insert(id);
+        self.save_approved(None);
+        self.recount();
+        self.next_change(true, true)
+    }
+
+    /// Merged with what another window saved for these changes; ids of changes gone are dropped.
+    fn save_approved(&self, taken_back: Option<u64>) {
+        use std::os::fd::AsRawFd;
+        let key = match &self.commit {
+            Some(commit) => format!("{} {}", self.root.display(), commit.hash),
+            None => self.root.display().to_string(),
+        };
+        let dir = crate::agents::state_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let Ok(lock) = std::fs::File::create(dir.join("approved.lock")) else { return };
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return;
+        }
+        let mut all = read_approved();
+        let saved = all.remove(&key).unwrap_or_default();
+        let kept = |id: &u64| Some(*id) != taken_back && (self.approved.contains(id) || saved.contains(id));
+        let ids: Vec<u64> = self.hunks.values().flatten().map(|h| h.id).filter(kept).collect();
+        if !ids.is_empty() {
+            all.insert(key, ids);
+        }
+        let path = approved_path();
+        let tmp = path.with_extension("json.tmp");
+        if serde_json::to_vec(&all).is_ok_and(|bytes| std::fs::write(&tmp, bytes).is_ok()) {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+
+    fn change(&self, path: &Path, diff: &ReviewDiff, down: bool, from: Option<usize>, unapproved: bool) -> Option<usize> {
+        let hunks = self.hunks.get(path).map_or(&[][..], Vec::as_slice);
+        let mut seen = HashSet::new();
+        let firsts = diff.changes.iter().copied().filter(|&line| match hunk_at(diff, hunks, line) {
+            Some(h) => !(unapproved && self.approved.contains(&h.id)) && seen.insert(h.id),
+            None => true,
+        });
+        let firsts: Vec<usize> = firsts.collect();
+        match (from, down) {
+            (None, true) => firsts.first().copied(),
+            (None, false) => firsts.last().copied(),
+            (Some(at), true) => firsts.into_iter().find(|&l| l > at),
+            (Some(at), false) => firsts.into_iter().rev().find(|&l| l < at),
+        }
+    }
+
+    pub fn next_change(&mut self, down: bool, unapproved: bool) -> Option<String> {
+        self.refold();
+        let from = self.fold_at(self.cursor).start;
+        if let Some((path, diff)) = &self.diff
+            && let Some(line) = self.change(path, diff, down, Some(from), unapproved)
+        {
+            self.go_to(line);
+            return None;
+        }
+        let files: Vec<PathBuf> = tree::of_paths(&self.root, self.files.iter().map(|f| f.path.to_str().unwrap_or_default())).into_iter().filter(|r| !r.is_dir).map(|r| r.path).collect();
+        let at = self.diff.as_ref().and_then(|(shown, _)| files.iter().position(|f| f == shown));
+        let order: Vec<&PathBuf> = match (down, at) {
+            (true, Some(at)) => files[at + 1..].iter().collect(),
+            (true, None) => files.iter().collect(),
+            (false, Some(at)) => files[..at].iter().rev().collect(),
+            (false, None) => files.iter().rev().collect(),
+        };
+        for path in order {
+            let skip = match self.hunks.get(path) {
+                Some(hunks) => hunks.is_empty() || (unapproved && hunks.iter().all(|h| self.approved.contains(&h.id))),
+                None => unapproved,
+            };
+            if skip {
+                continue;
+            }
+            let diff = self.read_diff(path);
+            if self.change(path, &diff, down, None, unapproved).is_none() {
+                continue;
+            }
+            self.folded.retain(|f| !path.starts_with(f));
+            self.diff = Some((path.clone(), diff));
+            self.follow_shown();
+            self.layout(Some(path.clone()));
+            self.start(down, unapproved);
+            return None;
+        }
+        let (approved, all) = self.progress(&self.root);
+        Some(match unapproved {
+            true if all == 0 => "no changes".into(),
+            true if approved == all => {
+                let unread = self.files.iter().filter(|f| !self.hunks.contains_key(&self.root.join(&f.path))).count();
+                match unread {
+                    0 => format!("all {all} changes approved"),
+                    n => format!("all {all} changes approved; {n} file{} can't be", if n == 1 { "" } else { "s" }),
+                }
+            }
+            true => format!("no change left to approve {}", if down { "below" } else { "above" }),
+            false => format!("no change {}", if down { "below" } else { "above" }),
+        })
+    }
+
+    pub fn first_unapproved(&mut self) -> Option<String> {
+        let shown = self.diff.take();
+        let message = self.next_change(true, true);
+        if self.diff.is_none() {
+            self.diff = shown;
+            self.refold();
+        }
+        message
+    }
+
+    pub fn progress(&self, path: &Path) -> (usize, usize) {
+        self.counts.get(path).copied().unwrap_or_default()
+    }
+
+    pub fn recount(&mut self) {
+        self.counts.clear();
+        for (path, hunks) in &self.hunks {
+            let approved = hunks.iter().filter(|h| self.approved.contains(&h.id)).count();
+            for at in path.ancestors().take_while(|a| a.starts_with(&self.root)) {
+                let count = self.counts.entry(at.to_path_buf()).or_default();
+                (count.0, count.1) = (count.0 + approved, count.1 + hunks.len());
+            }
+        }
+    }
+
+    pub fn fold_label(&self, rows: &Range<usize>) -> (String, Vec<String>) {
+        let Some((_, diff)) = &self.diff else { return Default::default() };
+        let n = rows.len();
+        let scopes = if rows.end < diff.lines.len() { scopes(diff, rows.end, rows.start) } else { Vec::new() };
+        let text = |i: usize| viewer::plain(&diff.lines[i], diff.gutter).trim().to_string();
+        (format!("⋯ {n} line{}", if n == 1 { "" } else { "s" }), scopes.into_iter().map(text).collect())
+    }
+
+    pub fn section(&self) -> Range<usize> {
+        let Some((path, diff)) = self.diff.as_ref().filter(|(_, diff)| !diff.kinds.is_empty()) else { return 0..0 };
+        if self.collapsed(self.cursor) {
+            return self.fold_at(self.cursor);
+        }
+        let start = (0..self.cursor).rev().find(|&r| self.collapsed(r)).map_or(0, |r| r + 1);
+        let block = start..(self.cursor..self.rows_len()).find(|&r| self.collapsed(r)).unwrap_or(self.rows_len());
+        // Two changes near enough share a block: only the cursor's is the section, with the lines up to the next one.
+        let hunks = self.hunks.get(path).map_or(&[][..], Vec::as_slice);
+        let Some(id) = hunk_at(diff, hunks, self.cursor).map(|h| h.id) else { return block };
+        let other = |i: usize| hunk_at(diff, hunks, i).is_some_and(|h| h.id != id);
+        let first = (block.start..self.cursor).rev().find(|&i| other(i)).map_or(block.start, |i| i + 1);
+        first..(self.cursor..block.end).find(|&i| other(i)).unwrap_or(block.end)
+    }
+
+    pub fn approved_label(&self, rows: &Range<usize>) -> String {
+        let Some((_, diff)) = &self.diff else { return String::new() };
+        let count = |kind: Kind, sign: char| Some(rows.clone().filter(|&i| diff.kinds[i] == kind).count()).filter(|&n| n > 0).map(|n| format!(" {sign}{n}"));
+        let first = viewer::plain(&diff.lines[rows.start], diff.gutter).trim().to_string();
+        format!("✓{}{} · {first}", count(Kind::Added, '+').unwrap_or_default(), count(Kind::Removed, '−').unwrap_or_default())
     }
 }
 
@@ -599,6 +892,7 @@ pub struct Read {
     files: Vec<File>,
     diff: Option<(PathBuf, ReviewDiff)>,
     history: History,
+    hunks: HashMap<PathBuf, Vec<Hunk>>,
     generation: u64,
 }
 
@@ -620,7 +914,8 @@ impl Request {
             let (base, since) = self.copied.map(|c| (c, "since the copy".to_string())).unwrap_or_else(|| self::base(&self.root));
             (git::history(&self.root, &base, self.history_limit), since)
         };
-        Read { root: self.root, against: self.against, since, files, diff, history, generation: self.generation }
+        let hunks = hunks(&self.root, &self.against, &files);
+        Read { root: self.root, against: self.against, since, files, diff, history, hunks, generation: self.generation }
     }
 }
 
@@ -725,15 +1020,136 @@ fn wrap_points(line: &Line, gutter: usize, width: usize) -> Vec<usize> {
     points
 }
 
-fn row_of(diff: &ReviewDiff, split: bool, line: usize) -> usize {
-    if !split {
-        return line;
-    }
-    diff.pairs.iter().position(|&(old, new)| old == Some(line) || new == Some(line)).unwrap_or(0)
+fn approved_path() -> PathBuf {
+    crate::agents::state_dir().join("approved.json")
 }
 
-fn first_change(diff: &ReviewDiff, split: bool) -> usize {
-    diff.changes.first().map_or(0, |&line| row_of(diff, split, line).saturating_sub(3))
+fn read_approved() -> HashMap<String, Vec<u64>> {
+    std::fs::read(approved_path()).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+}
+
+pub fn load_approved() -> HashSet<u64> {
+    read_approved().into_values().flatten().collect()
+}
+
+fn hunk_at<'a>(diff: &ReviewDiff, hunks: &'a [Hunk], line: usize) -> Option<&'a Hunk> {
+    let (deleted, n) = number(diff, line)?;
+    let side = |h: &Hunk| if deleted { h.old.clone() } else { h.new.clone() };
+    // Hunks are in file order on both sides; this runs for every line on every frame.
+    let at = hunks.partition_point(|h| side(h).end <= n);
+    hunks.get(at).filter(|h| side(h).contains(&n))
+}
+
+/// Outermost first: each the nearest line above indented less.
+fn scopes(diff: &ReviewDiff, line: usize, floor: usize) -> Vec<usize> {
+    let Some(&kind) = diff.kinds.get(line).filter(|k| **k != Kind::Gap) else { return Vec::new() };
+    let kind = if kind == Kind::Removed { Kind::Removed } else { Kind::Added };
+    let on_side = |i: &usize| diff.kinds[*i] == Kind::Same || diff.kinds[*i] == kind;
+    let indent = |i: usize| {
+        let mut chars = diff.lines[i].spans.iter().flat_map(|s| s.content.chars()).skip(diff.gutter);
+        let mut spaces = 0;
+        loop {
+            match chars.next() {
+                Some(' ') => spaces += 1,
+                Some(c) if !c.is_whitespace() => return Some((spaces, c)),
+                _ => return None,
+            }
+        }
+    };
+    let Some((mut want, _)) = (line..diff.kinds.len()).filter(on_side).take(50).find_map(indent) else { return Vec::new() };
+    let mut chain = Vec::new();
+    for i in (floor..line).rev().filter(on_side) {
+        if want == 0 {
+            break;
+        }
+        // A closing line ends a block before this one: `} else {` too, whose `if` is the scope.
+        if let Some((n, _)) = indent(i).filter(|&(n, c)| n < want && !matches!(c, '}' | ')' | ']')) {
+            chain.push(i);
+            want = n;
+        }
+    }
+    chain.reverse();
+    chain
+}
+
+fn hunks(root: &Path, against: &str, files: &[File]) -> HashMap<PathBuf, Vec<Hunk>> {
+    // Paths are read off the prefixes, which a user's diff.noprefix would drop.
+    let diff = git(root, &["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "-U3", "--inter-hunk-context=0", against]).unwrap_or_default();
+    let mut all = parse_hunks(root, &diff);
+    // A whole diff is at least the new file: one past the viewer's limit shows no lines to approve.
+    all.retain(|path, _| !std::fs::metadata(path).is_ok_and(|m| m.len() > 2 * viewer::MAX_BYTES as u64));
+    // shortcut: like the line counts, only 200 new files under 1 MB are read, so others can't be approved; read them when shown if that bites.
+    for file in files.iter().filter(|f| f.status == '?').take(200) {
+        let path = root.join(&file.path);
+        // shortcut: a link isn't read (git shows its target's path), so can't be approved; hash `read_link` if that bites.
+        if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file() && m.len() < 1024 * 1024) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        // git calls a file binary by its first 8000 bytes.
+        if bytes.is_empty() || bytes[..bytes.len().min(8000)].contains(&0) {
+            all.insert(path, Vec::new());
+            continue;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let lines: Vec<String> = text.lines().map(|l| format!("+{l}")).collect();
+        let id = hunk_id(&path, &lines.iter().map(String::as_str).collect::<Vec<_>>(), 1);
+        all.insert(path, vec![Hunk { old: 0..0, new: 1..lines.len() + 1, id }]);
+    }
+    all
+}
+
+fn parse_hunks(root: &Path, diff: &str) -> HashMap<PathBuf, Vec<Hunk>> {
+    let mut all = HashMap::new();
+    for file in format!("\n{diff}").split("\ndiff --git ").skip(1) {
+        let mut lines = file.lines();
+        let names = lines.next().unwrap_or_default();
+        // A deleted file has no size to check above; its diff is at least as big.
+        if file.len() > 2 * viewer::MAX_BYTES {
+            continue;
+        }
+        // "a/P b/P": the same path twice, with no renames.
+        // shortcut: a quoted path (odd characters) is skipped, so can't be approved; unquote it if that bites.
+        let Some(path) = names.get(2..2 + names.len().saturating_sub(5) / 2).filter(|_| !names.starts_with('"')) else { continue };
+        let mut hunks: Vec<(Hunk, Vec<&str>)> = Vec::new();
+        for line in lines {
+            if let Some(header) = line.strip_prefix("@@ ") {
+                let range = |prefix: char| -> Range<usize> {
+                    let part = header.split(' ').find_map(|p| p.strip_prefix(prefix)).unwrap_or("1");
+                    let (start, len) = part.split_once(',').unwrap_or((part, "1"));
+                    let start = start.parse().unwrap_or(1);
+                    start..start + len.parse().unwrap_or(1)
+                };
+                hunks.push((Hunk { old: range('-'), new: range('+'), id: 0 }, Vec::new()));
+            } else if let Some((_, changed)) = hunks.last_mut().filter(|_| line.starts_with(['+', '-'])) {
+                changed.push(line);
+            }
+        }
+        let path = root.join(path);
+        let mut seen: HashMap<u64, u64> = HashMap::new();
+        let hunks = hunks
+            .into_iter()
+            .map(|(hunk, changed)| {
+                let nth = seen.entry(hunk_id(&path, &changed, 0)).or_default();
+                *nth += 1;
+                Hunk { id: hunk_id(&path, &changed, *nth), ..hunk }
+            })
+            .collect();
+        all.insert(path, hunks);
+    }
+    all
+}
+
+/// `nth` tells apart the same change made twice in a file.
+fn hunk_id(path: &Path, changed: &[&str], nth: u64) -> u64 {
+    use std::os::unix::ffi::OsStrExt;
+    let mut bytes = path.as_os_str().as_bytes().to_vec();
+    for line in changed {
+        bytes.push(0);
+        bytes.extend_from_slice(line.as_bytes());
+    }
+    bytes.extend_from_slice(&nth.to_le_bytes());
+    crate::worktree::fnv(&bytes)
 }
 
 fn cell_lines(cell: usize, cells: usize, lines: usize) -> (usize, usize) {
@@ -794,6 +1210,8 @@ mod tests {
         run(&["checkout", "-qb", "task"]);
         std::fs::write(t.join("a.txt"), "one\nTWO\nthree\n").unwrap();
         run(&["commit", "-qam", "agent"]);
+        // In .git, so it's no change to show.
+        crate::agents::TEST_STATE.set(Some(t.join(".git/pulpo-state")));
         std::fs::write(t.join("src/b.txt"), "b\nmore\n").unwrap();
         std::fs::write(t.join("c.txt"), "new\n").unwrap();
         t
@@ -881,13 +1299,13 @@ mod tests {
         std::fs::write(t.join("src/b.txt"), format!("b\n{}\n", "x".repeat(25))).unwrap();
         let mut changes = Changes::open(&t, None);
         changes.height = 10;
-        changes.fit(14, None);
+        changes.fit(17, None);
         assert_eq!(changes.shown, [Shown::Row(0), Shown::Row(1), Shown::Wrap { row: 1, piece: 1 }, Shown::Wrap { row: 1, piece: 2 }]);
-        changes.click(3, false, false);
+        changes.click(3, false);
         assert_eq!(changes.cursor, 1);
         changes.height = 2;
         changes.scroll_by(100);
-        changes.fit(14, None);
+        changes.fit(17, None);
         assert_eq!(changes.shown, [Shown::Row(1), Shown::Wrap { row: 1, piece: 1 }]);
         assert_eq!(wrap_points(&Line::from(format!("1 + {}", "漢".repeat(6))), 4, 10), [0, 5]);
         assert_eq!(wrap_points(&Line::from(format!("1 + ab{}", " ".repeat(30))), 4, 10), [0]);
@@ -1007,6 +1425,121 @@ mod tests {
         std::fs::remove_file(&c).unwrap();
         changes.follow_all();
         assert!(changes.comments.iter().find(|c| c.text == "new file").unwrap().outdated);
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    #[test]
+    fn folds_around_changes_and_keeps_approvals_through_edits() {
+        let t = repo();
+        let run = |args: &[&str]| assert!(Command::new("git").current_dir(&t).args(args).output().unwrap().status.success());
+        let long = t.join("src/long.rs");
+        let write = |a: &str, b: &str| {
+            let lines = |s: &str| format!("        {s};\n").repeat(20);
+            let text = format!("impl X {{\n    fn one() {{\n{}        {a};\n{}    }}\n    fn two() {{\n{}        {b};\n    }}\n}}\n", lines("x"), lines("y"), lines("z"));
+            std::fs::write(&long, text).unwrap();
+        };
+        write("a", "b");
+        run(&["add", "src/long.rs"]);
+        run(&["commit", "-qm", "long"]);
+        write("a2", "b2");
+        let mut changes = Changes::open(&t, None);
+        let row = changes.rows.iter().position(|r| r.path == long).unwrap();
+        changes.state.select(Some(row));
+        changes.follow();
+        changes.height = 40;
+        changes.fit(80, None);
+        assert_eq!(changes.shown[0], Shown::Fold(0..19));
+        assert_eq!(changes.shown[1..9], (19..27).map(Shown::Row).collect::<Vec<_>>());
+        assert_eq!(changes.section(), 19..27);
+        assert!(matches!(changes.shown[9], Shown::Fold(_)));
+        assert_eq!(changes.fold_label(&(0..19)), ("⋯ 19 lines".to_string(), vec!["impl X {".to_string(), "fn one() {".to_string()]));
+
+        assert_eq!(changes.approve(), None);
+        assert_eq!(changes.progress(&long), (1, 2));
+        assert_eq!(load_approved().len(), 1);
+        let mut restarted = Changes::new(&t, None);
+        restarted.approved = load_approved();
+        restarted.load();
+        assert_eq!(restarted.progress(&long), (1, 2));
+        let text = |c: &Changes| viewer::plain(&c.diff.as_ref().unwrap().1.lines[c.cursor], c.diff.as_ref().unwrap().1.gutter).trim().to_string();
+        assert_eq!(text(&changes), "b;");
+        changes.fit(80, None);
+        assert!(changes.shown.contains(&Shown::Approved(22..24)));
+        changes.cursor = 22;
+        assert_eq!(changes.section(), 22..24);
+        let draft = changes.commenting(true).unwrap();
+        changes.fit(80, Some((&draft, 0)));
+        assert!(changes.shown.contains(&Shown::Row(22)) && changes.shown.contains(&Shown::Hint));
+        changes.fit(80, None);
+        assert!(changes.shown.contains(&Shown::Approved(22..24)));
+        changes.cursor = 66;
+        assert_eq!(changes.approved_label(&(22..24)), "✓ +1 −1 · a;");
+
+        assert_eq!(changes.next_change(false, false), None);
+        assert_eq!(changes.cursor, 22);
+        assert_eq!(changes.approve(), None);
+        assert_eq!(changes.progress(&long), (0, 2));
+        assert!(load_approved().is_empty());
+        changes.fit(80, None);
+        assert!(changes.shown.contains(&Shown::Row(22)) && changes.shown.contains(&Shown::Row(23)));
+        assert_eq!(changes.approve(), None);
+
+        write("a2", "b3");
+        changes.load();
+        assert_eq!(changes.progress(&long), (1, 2));
+        write("a3", "b3");
+        changes.load();
+        assert_eq!(changes.progress(&long), (0, 2));
+
+        changes.approved.extend(changes.hunks[&long].iter().map(|h| h.id));
+        changes.follow();
+        changes.start(true, true);
+        assert_eq!(changes.next_change(true, true), None);
+        assert_eq!(changes.diff.as_ref().map(|(p, _)| p.clone()), Some(t.join("c.txt")));
+        assert_eq!(changes.approve(), Some("no change left to approve below".into()));
+        assert_eq!(changes.diff.as_ref().map(|(p, _)| p.clone()), Some(t.join("c.txt")));
+        assert_eq!(changes.next_change(false, false), None);
+        assert_eq!((changes.diff.as_ref().map(|(p, _)| p.clone()), changes.cursor), (Some(long.clone()), 66));
+        assert_eq!(changes.first_unapproved(), None);
+        assert_eq!(changes.selected().map(|r| r.path.clone()), Some(t.join("src/b.txt")));
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    #[test]
+    fn scopes_and_hunks_hold_in_odd_cases() {
+        let t = repo();
+        let run = |args: &[&str]| assert!(Command::new("git").current_dir(&t).args(args).output().unwrap().status.success());
+        let f = t.join("src/f.rs");
+        let body = "        x;\n".repeat(30);
+        std::fs::write(&f, format!("impl X {{\n    fn bar() {{\n    }}\n    fn foo(a) {{\n{body}        old;\n    }}\n}}\n")).unwrap();
+        run(&["add", "src/f.rs"]);
+        run(&["commit", "-qm", "f"]);
+        std::fs::write(&f, format!("impl X {{\n    fn bar() {{\n    }}\n    fn foo(a, b) {{\n{body}        new;\n    }}\n}}\n")).unwrap();
+        std::fs::write(t.join("src/__init__.py"), "").unwrap();
+        run(&["config", "diff.noprefix", "true"]);
+        let mut changes = Changes::open(&t, None);
+        assert_eq!(changes.progress(&t), (0, 4));
+
+        changes.state.select(Some(0));
+        changes.fold(false);
+        changes.state.select(changes.rows.iter().position(|r| r.path == t.join("c.txt")));
+        changes.follow();
+        assert_eq!(changes.next_change(false, false), None);
+        assert_eq!(changes.selected().map(|r| r.path.clone()), Some(f.clone()));
+        let diff = &changes.diff.as_ref().unwrap().1;
+        let text = |i: usize| viewer::plain(&diff.lines[i], diff.gutter).trim().to_string();
+        assert_eq!(text(changes.cursor), "old;");
+        let chain = |line: usize| scopes(diff, line, 0).into_iter().map(text).collect::<Vec<_>>();
+        assert_eq!(chain(5), ["impl X {", "fn foo(a, b) {"]);
+        assert_eq!(chain(changes.cursor), ["impl X {", "fn foo(a) {"]);
+        changes.height = 40;
+        changes.fit(80, None);
+        assert_eq!(changes.shown[..3], [Shown::Row(0), Shown::Row(1), Shown::Row(2)]);
+
+        let diff = "diff --git a/x b/x\n@@ -0,0 +1,2 @@\n+a\n+b\n@@ -5 +7 @@\n-c\n+d\n@@ -9 +11 @@\n-c\n+d\n";
+        let hunks = &parse_hunks(&t, diff)[&t.join("x")];
+        assert_eq!(hunks.iter().map(|h| (h.old.clone(), h.new.clone())).collect::<Vec<_>>(), [(0..0, 1..3), (5..6, 7..8), (9..10, 11..12)]);
+        assert_ne!(hunks[1].id, hunks[2].id);
         std::fs::remove_dir_all(&t).unwrap();
     }
 
