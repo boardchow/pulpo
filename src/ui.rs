@@ -580,16 +580,13 @@ fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
         let project = app.new_in.file_name().unwrap_or_default().to_string_lossy().into_owned();
         match &prompt.ask {
             Ask::Project(at) => {
-                let mut spans = vec![
+                let name = app.projects().get(*at).map_or("", |&i| app.workspaces[i].name.as_str());
+                Line::from(vec![
                     Span::from(" new workspace in ").fg(theme::on_accent()).bg(theme::accent()).bold(),
                     Span::from(" › ").fg(theme::blue()).bold(),
-                ];
-                for (n, i) in app.projects().into_iter().enumerate() {
-                    let name = Span::from(format!(" {} ", app.workspaces[i].name));
-                    spans.push(if n == *at { name.fg(theme::fg()).bg(theme::hover()).bold() } else { name.fg(theme::muted()) });
-                }
-                spans.push(Span::from("   ↑↓ project · ⏎ next · esc cancel").fg(theme::muted()));
-                Line::from(spans)
+                    Span::from(format!(" {name} ")).fg(theme::fg()).bg(theme::hover()).bold(),
+                    Span::from("   ↑↓ project · ⏎ next · esc cancel").fg(theme::muted()),
+                ])
             }
             Ask::Workspace(branch) => workspace_input(&project, &prompt.text, branch, false),
             Ask::Branch(name) => workspace_input(&project, name, &prompt.text, true),
