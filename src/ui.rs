@@ -55,14 +55,13 @@ const PULPO: [&str; 3] = [
 
 const PULPO_QUADRANTS: [&str; 3] = ["▗▄████▄▖", "▝▙▄██▄▟▘", "▞▚▀▞▚▀▞▚"];
 
-/// Fonts rarely have octants; Ghostty and kitty draw them themselves.
-static OCTANTS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+static OWN_GLYPHS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     std::env::var("TERM_PROGRAM").is_ok_and(|t| t == "ghostty") || std::env::var("TERM").is_ok_and(|t| t == "xterm-kitty")
 });
 
 fn pulpo(wiggle: bool) -> Vec<String> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let art = if *OCTANTS { PULPO } else { PULPO_QUADRANTS };
+    let art = if *OWN_GLYPHS { PULPO } else { PULPO_QUADRANTS };
     let mut rows: Vec<String> = art.iter().map(|row| row.to_string()).collect();
     if wiggle && (now.as_millis() / 300) % 2 == 1 {
         let mut legs: Vec<char> = rows[2].chars().collect();
@@ -360,13 +359,14 @@ fn file_items(rows: &[Row], changed: &[(PathBuf, char)]) -> Vec<ListItem<'static
 }
 
 fn tree_item(row: &Row, kind: Option<char>, comments: usize, (approved, all): (usize, usize)) -> ListItem<'static> {
-    let icon = match (row.is_dir, row.expanded) {
-        (true, true) => "▾ ",
-        (true, false) => "▸ ",
-        _ => "  ",
+    let [open, shut, file] = if *OWN_GLYPHS { ["\u{f07c} ", "\u{f07b} ", "\u{f15b} "] } else { ["▾ ", "▸ ", "  "] };
+    let (icon, color) = match (row.is_dir, row.expanded) {
+        (true, true) => (open, theme::blue()),
+        (true, false) => (shut, theme::blue()),
+        _ => (file, theme::fg()),
     };
     let style = kind.map_or_else(Style::default, |k| Style::default().fg(kind_color(k)));
-    let mut spans = vec![Span::from(format!(" {}{icon}", "  ".repeat(row.depth))).fg(theme::dim()), Span::styled(row.name.clone(), style)];
+    let mut spans = vec![Span::from(format!(" {}{icon}", "  ".repeat(row.depth))).fg(color), Span::styled(row.name.clone(), style)];
     if comments > 0 {
         spans.push(Span::from(format!(" ✎{comments}")).fg(theme::yellow()));
     }
