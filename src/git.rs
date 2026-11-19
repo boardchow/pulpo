@@ -43,7 +43,8 @@ pub fn toplevel(dir: &Path) -> Option<PathBuf> {
 /// With an empty first commit, for workspaces to branch off.
 pub fn init(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("couldn't make {}: {e}", dir.display()))?;
-    if let Err(e) = git(dir, &["init", "-q"]) {
+    let branch = git(dir, &["config", "--get", "init.defaultBranch"]).map_or("main".into(), |b| b.trim().to_string());
+    if let Err(e) = git(dir, &["init", "-q", "-b", &branch]) {
         let _ = std::fs::remove_dir(dir);
         return Err(format!("git init failed: {e}"));
     }
@@ -255,6 +256,8 @@ mod tests {
             Ok(()) => assert!(git(&dir, &["rev-parse", "HEAD"]).is_ok()),
             Err(e) => assert!(e.starts_with("no first commit")),
         }
+        let branch = git(&dir, &["config", "--get", "init.defaultBranch"]).map_or("main".into(), |b| b.trim().to_string());
+        assert_eq!(git(&dir, &["symbolic-ref", "--short", "HEAD"]).unwrap().trim(), branch);
         assert_eq!(main_repo(&dir).unwrap().canonicalize().unwrap(), dir.canonicalize().unwrap());
         std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
     }
