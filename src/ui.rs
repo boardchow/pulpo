@@ -410,7 +410,7 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             rest.push(Span::from(format!("+{} ", diff.added)).fg(theme::green()));
             rest.push(Span::from(format!("−{} ", diff.removed)).fg(theme::red()));
             let (approved, all) = changes.progress(&changes.root);
-            if all > 0 {
+            if all > 0 && changes.commit.is_none() {
                 rest.push(Span::from(format!("· {approved} of {all} approved ")).fg(if approved == all { theme::green() } else { theme::muted() }));
             }
             path.strip_prefix(&changes.root).unwrap_or(path).display().to_string()

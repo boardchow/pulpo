@@ -29,6 +29,7 @@ use crate::workspace::Workspace;
 const NOTICE_EVERY: Duration = Duration::from_secs(10);
 const MESSAGE_FOR: Duration = Duration::from_secs(5);
 const UNSAVED: &str = "unsaved changes in the editor: ⌃s saves them, esc twice throws them away";
+const READ_ONLY: &str = "a commit is only to read";
 const PREFIX_FOR: Duration = Duration::from_secs(3);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Another workspace only shows how many changes it has: its `git status` can wait this long.
@@ -604,12 +605,8 @@ impl App {
     fn open_commit(&mut self) {
         let Some(changes) = &self.changes else { return };
         let Some(commit) = changes.history_state.selected().and_then(|i| changes.history.commits.get(i)) else { return };
-        let mut commit = Changes::of_commit(&changes.root, commit);
-        self.shelved = self.changes.take().map(|mut changes| {
-            commit.comments = std::mem::take(&mut changes.comments);
-            commit.approved = std::mem::take(&mut changes.approved);
-            changes
-        });
+        let commit = Changes::of_commit(&changes.root, commit);
+        self.shelved = self.changes.take();
         self.changes = Some(commit);
         self.writing = None;
         (self.focus, self.changes_expanded, self.reading) = (Focus::Changes, true, false);
@@ -627,12 +624,7 @@ impl App {
             self.link.send(&ToServer::Watch { id: self.active.map(|id| id as u32) });
         }
         if self.shelved.is_some() && !(self.focus == Focus::Changes && self.changes_expanded) {
-            let (comments, approved) = self.changes.as_mut().map(|c| (std::mem::take(&mut c.comments), std::mem::take(&mut c.approved))).unwrap_or_default();
             self.changes = self.shelved.take();
-            if let Some(changes) = &mut self.changes {
-                (changes.comments, changes.approved) = (comments, approved);
-                changes.recount();
-            }
             self.writing = None;
             if self.focus == Focus::Changes {
                 self.focus = Focus::History;
@@ -702,6 +694,10 @@ impl App {
     fn comment_command(&mut self, c: char) {
         let (reading, p) = (self.reading, self.keymap.label());
         let Some(changes) = &mut self.changes else { return };
+        if changes.commit.is_some() {
+            self.message = Some(READ_ONLY.into());
+            return;
+        }
         if c == 'n' {
             let comment = changes.commenting(reading);
             return self.write_comment(comment);
@@ -2025,6 +2021,7 @@ impl App {
                 KeyCode::PageDown => changes.page(true),
                 KeyCode::PageUp => changes.page(false),
                 KeyCode::Char(c @ ('n' | 'p')) if self.reading => self.message = changes.next_change(c == 'n', false),
+                KeyCode::Char('a') if self.reading && changes.commit.is_some() => self.message = Some(READ_ONLY.into()),
                 KeyCode::Char('a') if self.reading => {
                     let left = changes.left();
                     self.message = changes.approve();
