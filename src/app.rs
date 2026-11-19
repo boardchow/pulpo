@@ -393,8 +393,7 @@ impl App {
                 self.sync_lists();
                 return false;
             }
-            self.shelved = None;
-            let approved = self.changes.take().map(|changes| {
+            let approved = self.shelved.take().or(self.changes.take()).map(|changes| {
                 self.drafts.insert(changes.root, changes.comments);
                 changes.approved
             });
