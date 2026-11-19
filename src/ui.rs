@@ -735,6 +735,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
             vec![
                 (prefixed("n"), "new project, workspace, terminal, file or comment, by panel"),
                 (prefixed("N"), "new workspace, in any project"),
+                (prefixed("P"), "new project"),
                 (prefixed("x"), "remove the project, delete the workspace, close the terminal"),
             ]
             .into_iter()

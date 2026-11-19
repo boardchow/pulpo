@@ -1327,6 +1327,7 @@ impl App {
             'n' | 'e' | 'd' if self.focus == Focus::Changes => self.comment_command(c),
             'n' => self.new_here(),
             'N' => self.pick_project(),
+            'P' => self.open_repo_picker(),
             'x' => self.close_here(),
             '[' => self.cycle_tab(-1),
             ']' => self.cycle_tab(1),
