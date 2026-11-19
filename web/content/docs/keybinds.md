@@ -111,7 +111,7 @@ Full screen, reading the file:
 
 | Keys | Does |
 | --- | --- |
-| :k[pgdn] :k[pgup] | Scroll half a page down, up |
+| :k[pgdn] :k[pgup] | Scroll a page down, up, keeping 2 lines in view |
 | :k[→] :k[←] or :k[l] :k[h] | Scroll sideways, in Files |
 | :k[0] | Back to the left edge, in Files |
 | :k[tab] | Go between the file and the tree |

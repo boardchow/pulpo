@@ -1624,7 +1624,7 @@ impl App {
             return self.editor_key(key);
         }
         if self.files_expanded {
-            let half = (self.viewer.height / 2).max(1) as isize;
+            let page = self.viewer.height.saturating_sub(2).max(1) as isize;
             match key.code {
                 KeyCode::Esc if self.reading => (self.reading, self.left_hidden) = (false, false),
                 KeyCode::Esc => self.files_expanded = false,
@@ -1632,8 +1632,8 @@ impl App {
                     self.reading = !self.reading;
                     self.left_hidden &= self.reading;
                 }
-                KeyCode::PageDown => self.viewer.scroll_by(half),
-                KeyCode::PageUp => self.viewer.scroll_by(-half),
+                KeyCode::PageDown => self.viewer.scroll_by(page),
+                KeyCode::PageUp => self.viewer.scroll_by(-page),
                 _ if self.reading => match scroll_keys(key, self.viewer.height) {
                     Some(Scroll::Rows(rows)) => self.viewer.move_mark(rows),
                     Some(Scroll::Sideways(columns)) => self.viewer.scroll_sideways(columns),
@@ -2019,7 +2019,6 @@ impl App {
     fn changes_key(&mut self, key: KeyEvent) {
         if self.changes_expanded {
             let Some(changes) = &mut self.changes else { return };
-            let half = (changes.height / 2).max(1) as isize;
             // Uppercase letters come with shift too.
             let shift = key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::Up | KeyCode::Down);
             match key.code {
@@ -2030,8 +2029,8 @@ impl App {
                     self.reading = !self.reading;
                     self.left_hidden &= self.reading;
                 }
-                KeyCode::PageDown => changes.scroll_by(half),
-                KeyCode::PageUp => changes.scroll_by(-half),
+                KeyCode::PageDown => changes.page(true),
+                KeyCode::PageUp => changes.page(false),
                 KeyCode::Char(c @ ('n' | 'p')) if self.reading => self.message = changes.next_change(c == 'n', false),
                 KeyCode::Char('a') if self.reading => self.message = changes.approve(),
                 KeyCode::Char('J') if self.reading => changes.move_cursor(1, true),
