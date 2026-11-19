@@ -23,7 +23,6 @@ pub struct Comment {
     /// Two can end up on the same lines, so a comment is edited by this, not by its place.
     pub id: u64,
     pub path: PathBuf,
-    pub commit: Option<String>,
     /// Whether they were deleted, the first and last line; none for the whole file.
     pub lines: Option<(bool, usize, usize)>,
     pub text: String,
@@ -42,14 +41,11 @@ impl Comment {
                 at += " (deleted)";
             }
         }
-        if let Some(commit) = &self.commit {
-            at += &format!(" in commit {commit}");
-        }
         at
     }
 
     fn same_place(&self, other: &Comment) -> bool {
-        (&self.path, &self.commit, self.lines) == (&other.path, &other.commit, other.lines)
+        (&self.path, self.lines) == (&other.path, other.lines)
     }
 }
 
@@ -238,7 +234,7 @@ impl Changes {
 
     fn layout(&mut self, selected: Option<PathBuf>) {
         // A file committed while it has comments stays, so they can still be read and sent.
-        let commented = self.comments.iter().filter(|c| self.in_view(c)).filter_map(|c| c.path.strip_prefix(&self.root).ok());
+        let commented = self.comments.iter().filter_map(|c| c.path.strip_prefix(&self.root).ok());
         let mut paths: Vec<&Path> = self.files.iter().map(|f| f.path.as_path()).chain(commented).collect();
         paths.sort();
         paths.dedup();
@@ -285,23 +281,23 @@ impl Changes {
 
     fn follow_shown(&mut self) {
         if let Some((path, diff)) = &self.diff {
-            follow_code(&mut self.comments, path, self.commit.as_ref().map(|c| c.hash.as_str()), diff);
+            follow_code(&mut self.comments, path, diff);
         }
     }
 
     pub fn follow_draft(&self, draft: &mut Comment) {
         if let Some((path, diff)) = &self.diff {
-            follow_code(std::slice::from_mut(draft), path, self.commit.as_ref().map(|c| c.hash.as_str()), diff);
+            follow_code(std::slice::from_mut(draft), path, diff);
         }
     }
 
     pub fn follow_all(&mut self) {
-        let mut paths: Vec<PathBuf> = self.comments.iter().filter(|c| c.commit.is_none() && c.lines.is_some()).map(|c| c.path.clone()).collect();
+        let mut paths: Vec<PathBuf> = self.comments.iter().filter(|c| c.lines.is_some()).map(|c| c.path.clone()).collect();
         paths.sort();
         paths.dedup();
         for path in paths {
             let diff = viewer::review_diff(&self.root, "HEAD", &path, !git::is_tracked(&self.root, &path));
-            follow_code(&mut self.comments, &path, None, &diff);
+            follow_code(&mut self.comments, &path, &diff);
         }
     }
 
@@ -437,8 +433,7 @@ impl Changes {
             None => (self.selected().filter(|r| !r.is_dir)?.path.clone(), None),
         };
         let code = self.diff.as_ref().zip(lines).map(|((_, diff), lines)| side(diff, lines.0).filter(|(n, _)| (lines.1..=lines.2).contains(n)).map(|(_, code)| code).collect());
-        let commit = self.commit.as_ref().map(|c| c.hash.clone());
-        let comment = Comment { id: next_id(), path, commit, lines, text: String::new(), code: code.unwrap_or_default(), outdated: false };
+        let comment = Comment { id: next_id(), path, lines, text: String::new(), code: code.unwrap_or_default(), outdated: false };
         Some(self.comments.iter().find(|c| !c.outdated && c.same_place(&comment)).cloned().unwrap_or(comment))
     }
 
@@ -464,7 +459,7 @@ impl Changes {
         let (first, last) = self.selection();
         let at = |i| number(diff, i);
         if self.anchor.is_none()
-            && let Some(comment) = self.comments.iter().find(|c| self.here(c, path) && at(first).is_some_and(|line| covers(c, line)))
+            && let Some(comment) = self.comments.iter().find(|c| c.path == *path && at(first).is_some_and(|line| covers(c, line)))
         {
             return comment.lines;
         }
@@ -474,14 +469,6 @@ impl Changes {
             new => (false, new),
         };
         Some((deleted, *numbers.first()?, *numbers.last()?))
-    }
-
-    fn here(&self, comment: &Comment, path: &Path) -> bool {
-        comment.path == path && self.in_view(comment)
-    }
-
-    fn in_view(&self, comment: &Comment) -> bool {
-        comment.commit.as_deref() == self.commit.as_ref().map(|c| c.hash.as_str())
     }
 
     /// Saves the text on the comment with its id, wherever it moved, or adds it; empty, deletes it.
@@ -511,11 +498,11 @@ impl Changes {
 
     pub fn commented(&self, line: usize) -> bool {
         let Some((path, diff)) = &self.diff else { return false };
-        number(diff, line).is_some_and(|at| self.comments.iter().any(|c| self.here(c, path) && covers(c, at)))
+        number(diff, line).is_some_and(|at| self.comments.iter().any(|c| c.path == *path && covers(c, at)))
     }
 
     pub fn count(&self, path: &Path) -> usize {
-        self.comments.iter().filter(|c| c.path.starts_with(path) && self.in_view(c)).count()
+        self.comments.iter().filter(|c| c.path.starts_with(path)).count()
     }
 
     pub fn review(&self) -> String {
@@ -524,7 +511,7 @@ impl Changes {
             false => format!("{}\n{}", c.at(&self.root), c.text.trim()),
         };
         let mut comments: Vec<&Comment> = self.comments.iter().collect();
-        comments.sort_by_key(|c| (c.commit.clone(), c.path.clone(), c.lines.map(|(_, first, _)| first)));
+        comments.sort_by_key(|c| (c.path.clone(), c.lines.map(|(_, first, _)| first)));
         let review = comments.into_iter().map(one).collect::<Vec<_>>().join("\n\n");
         // Paths and pasted text could end the paste early and type into the agent.
         review.chars().filter(|&c| matches!(c, '\n' | '\t') || !c.is_control()).collect()
@@ -533,7 +520,7 @@ impl Changes {
     /// The row a comment shows under: none above the file, for a file comment or one whose lines are gone.
     fn row_under(&self, comment: &Comment) -> Option<Option<usize>> {
         let (path, diff) = self.diff.as_ref()?;
-        if !self.here(comment, path) {
+        if comment.path != *path {
             return None;
         }
         let last = (0..diff.lines.len()).rev().find(|&i| number(diff, i).is_some_and(|at| covers(comment, at)));
@@ -656,7 +643,7 @@ impl Changes {
         let len = diff.kinds.len();
         let changed = |i: usize| matches!(diff.kinds[i], Kind::Added | Kind::Removed);
         let hunk_of: Vec<Option<&Hunk>> = (0..len).map(|i| hunk_at(diff, hunks, i)).collect();
-        let drafted = |i: usize| draft.is_some_and(|d| self.here(d, path) && number(diff, i).is_some_and(|at| covers(d, at)));
+        let drafted = |i: usize| draft.is_some_and(|d| d.path == *path && number(diff, i).is_some_and(|at| covers(d, at)));
         let noted: Vec<bool> = (0..len).map(|i| self.commented(i) || drafted(i)).collect();
         let drafted_on: HashSet<u64> = (0..len).filter(|&i| drafted(i)).filter_map(|i| hunk_of[i]).map(|h| h.id).collect();
         let commented = |h: &Hunk| self.comment_on(path, h).next().is_some();
@@ -757,10 +744,7 @@ impl Changes {
     /// Merged with what another window saved for these changes; ids of changes gone are dropped.
     fn save_approved(&self, taken_back: Option<u64>) {
         use std::os::fd::AsRawFd;
-        let key = match &self.commit {
-            Some(commit) => format!("{} {}", self.root.display(), commit.hash),
-            None => self.root.display().to_string(),
-        };
+        let key = self.root.display().to_string();
         let dir = crate::agents::state_dir();
         let _ = std::fs::create_dir_all(&dir);
         let Ok(lock) = std::fs::File::create(dir.join("approved.lock")) else { return };
@@ -929,7 +913,7 @@ impl Changes {
             let side = if deleted { &hunk.old } else { &hunk.new };
             first < side.end && last >= side.start
         };
-        self.comments.iter().filter(move |c| !c.outdated && self.here(c, path) && c.lines.is_some_and(on))
+        self.comments.iter().filter(move |c| !c.outdated && c.path == *path && c.lines.is_some_and(on))
     }
 
     fn comment_folded(&self, row: usize) -> Option<&Comment> {
@@ -1031,13 +1015,13 @@ fn side(diff: &ReviewDiff, deleted: bool) -> impl Iterator<Item = (usize, String
 type Side = Option<Vec<(usize, String)>>;
 
 /// The new side's lines and the deleted ones, by number; none where they can't be read.
-fn sides(diff: &ReviewDiff, file: Option<&Path>) -> [Side; 2] {
+fn sides(diff: &ReviewDiff, file: &Path) -> [Side; 2] {
     if !diff.kinds.is_empty() {
         return [Some(side(diff, false).collect()), Some(side(diff, true).collect())];
     }
     // No change left to read them in, as when the agent took it back: the file is the new side.
     let small = |f: &&Path| std::fs::metadata(f).map_or(true, |m| m.len() <= viewer::MAX_BYTES as u64);
-    let lines = match file.filter(small).map(std::fs::read) {
+    let lines = match Some(file).filter(small).map(std::fs::read) {
         Some(Ok(bytes)) => Some(String::from_utf8_lossy(&bytes).lines().enumerate().map(|(i, line)| (i + 1, viewer::clean(line).trim_end().to_string())).collect()),
         Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
         _ => None,
@@ -1046,11 +1030,11 @@ fn sides(diff: &ReviewDiff, file: Option<&Path>) -> [Side; 2] {
 }
 
 /// Keeps each comment on its code: where it is, or where it went if it's there once; outdated otherwise.
-fn follow_code(comments: &mut [Comment], path: &Path, commit: Option<&str>, diff: &ReviewDiff) {
+fn follow_code(comments: &mut [Comment], path: &Path, diff: &ReviewDiff) {
     let mut both: Option<[Side; 2]> = None;
-    for comment in comments.iter_mut().filter(|c| c.path == path && c.commit.as_deref() == commit && !c.code.is_empty()) {
+    for comment in comments.iter_mut().filter(|c| c.path == path && !c.code.is_empty()) {
         let Some((deleted, first, _)) = comment.lines else { continue };
-        let both = both.get_or_insert_with(|| sides(diff, commit.is_none().then_some(path)));
+        let both = both.get_or_insert_with(|| sides(diff, path));
         let Some(side) = &both[usize::from(deleted)] else { continue };
         let n = comment.code.len();
         let matches = |p: &usize| side.get(*p..*p + n).is_some_and(|w| w.iter().map(|(_, code)| code).eq(&comment.code));
@@ -1408,19 +1392,10 @@ mod tests {
         assert_eq!(changes.shown[1..5], [Shown::Row(0), Shown::Row(1), Shown::Note(None, format!("a{CURSOR}")), Shown::Note(None, "b".into())]);
         assert_eq!(changes.shown[5], Shown::Hint);
         assert_eq!(wrap("ab漢字", 4), ["ab漢", "字"]);
-        let mut agent = Changes::of_commit(&t, &changes.history.commits[0]);
-        agent.load();
-        let hash = agent.commit.as_ref().unwrap().hash.clone();
-        assert_eq!(agent.commenting(true).map(|c| c.at(&t)), Some(format!("a.txt:2 (deleted) in commit {hash}")));
-        agent.move_cursor(1, true);
-        assert_eq!(agent.commenting(true).map(|c| c.at(&t)), Some(format!("a.txt:2 in commit {hash}")));
-        agent.comments = std::mem::take(&mut changes.comments);
-        assert_eq!(agent.count(&t.join("src")), 0);
-        agent.keep(Comment { id: 0, path: t.join("a.txt"), commit: None, lines: None, text: "no\x1b[201~ escape\tok".into(), code: Vec::new(), outdated: false });
-        assert!(agent.review().starts_with("a.txt\nno[201~ escape\tok\n\nsrc/b.txt"));
+        changes.keep(Comment { id: 0, path: t.join("a.txt"), lines: None, text: "no\x1b[201~ escape\tok".into(), code: Vec::new(), outdated: false });
+        assert!(changes.review().starts_with("a.txt\nno[201~ escape\tok\n\nsrc/b.txt"));
         let run = |args: &[&str]| assert!(Command::new("git").current_dir(&t).args(args).output().unwrap().status.success());
         run(&["commit", "-qam", "b"]);
-        changes.comments = agent.comments.split_off(1);
         changes.load();
         assert_eq!(changes.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["src", "b.txt", "a.txt", "c.txt"]);
         std::fs::remove_dir_all(&t).unwrap();
