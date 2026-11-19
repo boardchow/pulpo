@@ -35,16 +35,6 @@ onMounted(() => {
 });
 onBeforeUnmount(() => removeEventListener("scroll", onScroll));
 
-// The window's bottom edge fades the screenshot, until the footer, which has its own fade, comes into view.
-const footer = ref(null);
-const footerSeen = ref(false);
-let watching;
-onMounted(() => {
-  watching = new IntersectionObserver(([entry]) => (footerSeen.value = entry.isIntersecting));
-  watching.observe(footer.value);
-});
-onBeforeUnmount(() => watching?.disconnect());
-
 // The globe turns east, one side every 1.5s, unless motion is reduced.
 const sides = ["🌍", "🌏", "🌎"];
 const side = ref(0);
@@ -54,6 +44,14 @@ onMounted(() => {
   turning = setInterval(() => (side.value = (side.value + 1) % sides.length), 1500);
 });
 onBeforeUnmount(() => clearInterval(turning));
+
+const playing = ref(false);
+// Without playsinline, iPhones play it full screen on their own.
+function start({ el }) {
+  el.play();
+  if (matchMedia("(max-width: 560px)").matches) el.requestFullscreen?.().catch(() => {});
+  else el.focus({ preventScroll: true });
+}
 </script>
 
 <template>
@@ -76,11 +74,16 @@ onBeforeUnmount(() => clearInterval(turning));
           <button type="button" @click="copy">{{ copied }}</button>
         </div>
       </main>
-      <div class="shot">
-        <img src="/screenshot.png" width="2560" height="1412" alt="Pulpo: projects, workspaces, files, changes and history on the left, a review of what the agent changed on the right">
+      <div class="shot" :class="{ playing }">
+        <video v-if="playing" src="/demo.mp4" poster="/screenshot.png" width="1920" height="1050" controls aria-label="Pulpo demo, with a voiceover" @vue:mounted="start" />
+        <template v-else>
+          <img src="/screenshot.png" width="2560" height="1412" alt="Pulpo: projects, workspaces, files, changes and history on the left, a review of what the agent changed on the right">
+          <button type="button" class="play" aria-label="Play the demo, with sound" @click="playing = true">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" /></svg>
+          </button>
+        </template>
       </div>
-      <div class="edge" :class="{ hidden: footerSeen }" />
-      <footer ref="footer">
+      <footer>
         <div class="meta">
           <span>Built across time zones <span class="globe" aria-hidden="true">{{ sides[side] }}</span></span>
           <nav>
@@ -130,7 +133,6 @@ header::before {
   transform: translateX(-50%);
   z-index: -1;
   background: var(--bg);
-  border-bottom: 1px solid var(--border);
   opacity: 0;
   transition: opacity 0.15s;
 }
@@ -239,39 +241,20 @@ h1 {
   max-width: 1080px;
   margin: 56px auto 0;
 }
-/* Its bottom edge, and the field around it, fades into the footer. */
-.shot::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  left: 50%;
-  width: 100vw;
-  height: 160px;
-  transform: translateX(-50%);
-  background: linear-gradient(to bottom, transparent, var(--bg));
-  pointer-events: none;
-}
-.edge {
-  position: fixed;
-  inset: auto 0 0;
-  z-index: 1;
-  height: 120px;
-  background: linear-gradient(to bottom, transparent, var(--bg));
-  pointer-events: none;
-  transition: opacity 0.2s;
-}
-.edge.hidden { opacity: 0; }
 footer {
   position: relative;
   z-index: 1;
+  display: flex;
+  align-items: center;
   width: 100%;
   max-width: 1080px;
-  margin: 0 auto;
-  padding: 32px 0 40px;
-  font-size: 13px;
-  color: var(--dim);
+  min-height: var(--header);
+  margin: 80px auto 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
 }
-/* Solid across the window, so the field stops where the screenshot fades out. */
+/* Like the scrolled header: the window's full width. */
 footer::before {
   content: "";
   position: absolute;
@@ -281,23 +264,44 @@ footer::before {
   z-index: -1;
   background: var(--bg);
 }
-footer .meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 24px; }
-footer nav { display: flex; gap: 24px; }
-footer a { color: var(--muted); text-decoration: none; transition: color 0.15s; }
+footer .meta { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 24px; width: 100%; }
+footer nav { display: flex; gap: 28px; }
+footer a { color: inherit; text-decoration: none; transition: color 0.15s; }
 footer a:hover { color: var(--fg); }
 footer .globe { display: inline-block; margin-left: 4px; }
-.shot img {
+.shot :is(img, video) {
   display: block;
   width: 100%;
   height: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
 }
+.play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 84px;
+  height: 84px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: rgb(9 9 9 / 0.7);
+  backdrop-filter: blur(6px);
+  color: var(--fg);
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+  transition: transform 0.15s, border-color 0.15s, background 0.15s;
+}
+.play:hover { border-color: var(--accent); background: rgb(94 106 210 / 0.35); transform: translate(-50%, -50%) scale(1.06); }
+.play svg { width: 34px; height: 34px; margin-left: 4px; fill: currentColor; }
 @media (max-width: 560px) {
   .install { font-size: 12px; }
+  footer { padding: 16px 0; }
   footer .meta { flex-direction: column-reverse; align-items: center; gap: 12px; }
   /* Readable size, starting at the left margin and cut by the window's right edge. */
   .shot { width: 800px; max-width: none; margin-left: 0; }
-  .shot::after { left: -16px; transform: none; }
+  .play { left: calc(50vw - 16px); }
+  .shot.playing { width: 100%; }
 }
 </style>
