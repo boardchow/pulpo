@@ -611,6 +611,30 @@ impl Changes {
         shown
     }
 
+    /// Down, from the second to last line on screen; up, back as many lines.
+    pub fn page(&mut self, down: bool) {
+        if down {
+            let mut last = self.scroll;
+            let mut units = self.shown.iter().map(|s| {
+                match s {
+                    Shown::Row(row) | Shown::Wrap { row, .. } => last = *row,
+                    Shown::Fold(rows) | Shown::Approved(rows) => last = rows.start,
+                    Shown::Note(..) | Shown::Hint => {}
+                }
+                last
+            });
+            let top = units.nth(self.shown.len().saturating_sub(2)).filter(|&r| r > self.scroll);
+            self.scroll = top.unwrap_or_else(|| self.next_unit(self.scroll)).min(self.rows_len().saturating_sub(1));
+            return;
+        }
+        let (mut row, mut used) = (self.scroll, 0);
+        while row > 0 && used < self.height.saturating_sub(2) {
+            row = self.prev_unit(row);
+            used += if self.collapsed(row) { 1 } else { self.screen_lines(row) };
+        }
+        self.scroll = row;
+    }
+
     pub fn scroll_by(&mut self, rows: isize) {
         let mut row = self.fold_at(self.scroll.min(self.rows_len().saturating_sub(1))).start;
         for _ in 0..rows.unsigned_abs().min(self.rows_len()) {
@@ -1303,6 +1327,10 @@ mod tests {
         assert_eq!(changes.shown, [Shown::Row(0), Shown::Row(1), Shown::Wrap { row: 1, piece: 1 }, Shown::Wrap { row: 1, piece: 2 }]);
         changes.click(3, false);
         assert_eq!(changes.cursor, 1);
+        changes.page(true);
+        assert_eq!(changes.scroll, 1);
+        changes.page(false);
+        assert_eq!(changes.scroll, 0);
         changes.height = 2;
         changes.scroll_by(100);
         changes.fit(17, None);
