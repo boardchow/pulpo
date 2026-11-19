@@ -18,7 +18,7 @@ Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌃b], then the key. 
 | :kp[c] | Changes |
 | :kp[h] | History |
 | :kp[F] | The selected file, full screen |
-| :kp[C] | Changes full screen, at the first change not approved |
+| :kp[C] | Changes full screen, at the first change not approved or commented on |
 | :kp[H] | The selected commit, full screen |
 | :kp[1] to :kp[9] | The workspace with that number, in its terminal |
 | :kp[a] | The terminal that has waited longest for you |
@@ -62,7 +62,6 @@ This one works from any panel:
 | :kp[n] | Comment on the selected lines, or the selected file |
 | :kp[e] | Edit the comment at the cursor |
 | :kp[d] | Delete it, after asking |
-| :kp[s] | Send every comment to the workspace's agent, after asking |
 
 ## Quit
 
@@ -132,7 +131,8 @@ In Changes:
 | Keys | Does |
 | --- | --- |
 | :k[n] :k[p] | Next, previous change, in the next files too |
-| :k[a] | Approve the change and go to the next one not approved. On an approved change, take it back |
+| :k[a] | Approve the change and go to the next one not approved or commented on. On an approved change, take it back |
+| :k[c] | Comment on the selected lines. On a commented change, open it to edit the comment |
 
 Writing a comment:
 
@@ -218,6 +218,5 @@ In the new project list, :k[↓] :k[↑], :k[pgdn] :k[pgup] and :k[esc] work the
 | Click the marks beside a change | Jump to that change |
 | Click a line in Files or Changes, full screen | Put the line cursor there. In Changes, drag or :k[shift]-click selects lines |
 | Click a comment in Changes, full screen | Edit it |
-| Click *send review* | Send the comments to the workspace's agent, after asking |
 | Ctrl-click in a terminal | Open a link, or a path like `src/app.rs:120` in Files |
 | Click outside a list or question | Close it, or answer no |

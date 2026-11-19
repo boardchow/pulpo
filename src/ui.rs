@@ -420,11 +420,6 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     if !changes.comments.is_empty() {
         rest.push(Span::from(format!("· ✎{} ", changes.comments.len())).fg(theme::yellow()));
-        let button = Span::from(format!(" send review {} s ", app.keymap.label())).fg(theme::on_accent()).bg(theme::accent()).bold();
-        let x = area.x + 1 + (Span::from(name.as_str()).width() + 2 + rest.iter().map(Span::width).sum::<usize>()) as u16;
-        let width = (button.width() as u16).min(area.right().saturating_sub(x + 1));
-        app.areas.send_review = Rect { x, y: area.y, width, height: 1 };
-        rest.push(button);
     }
     let block = Block::bordered().border_type(BorderType::Rounded).title(title(&name, focused, rest)).border_style(border(focused)).style(Style::new().bg(theme::bg()));
     let file = block.inner(area);
@@ -475,7 +470,7 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         let at = Rect { y: file.y + y as u16, height: 1, ..file };
         // A comment goes with the row above it.
         match *item {
-            Shown::Row(row) | Shown::Wrap { row, .. } | Shown::Approved(Range { start: row, .. }) => in_section = section.contains(&row),
+            Shown::Row(row) | Shown::Wrap { row, .. } | Shown::Done(Range { start: row, .. }) => in_section = section.contains(&row),
             Shown::Fold(_) => in_section = false,
             Shown::Note(..) | Shown::Hint => {}
         }
@@ -499,10 +494,11 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
                 let (lines, scopes) = changes.fold_label(rows);
                 frame.render_widget(Paragraph::new(fold_line(indent(), lines, scopes, file.width as usize)).style(Style::new().bg(theme::bg())), at);
             }
-            Shown::Approved(ref rows) => {
-                let on = focused && rows.contains(&changes.cursor);
-                let style = if on { Style::new().fg(theme::green()).bg(theme::selection()) } else { Style::new().fg(theme::green()) };
-                let line = Line::from(vec![indent(), Span::styled(changes.approved_label(rows), style)]);
+            Shown::Done(ref rows) => {
+                let (commented, label) = changes.done_label(rows);
+                let style = Style::new().fg(if commented { theme::yellow() } else { theme::green() });
+                let style = if focused && rows.contains(&changes.cursor) { style.bg(theme::selection()) } else { style };
+                let line = Line::from(vec![indent(), Span::styled(label, style)]);
                 frame.render_widget(Paragraph::new(line).style(bg), at);
             }
         }
@@ -765,9 +761,8 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
                 ("⏎ tab".into(), "from the tree into the file, and back"),
                 ("pgup pgdn".into(), "scroll the file"),
                 ("⇧↑↓ J K".into(), "changes: select lines, also with ⇧click or drag"),
-                ("n p a".into(), "changes: next, previous change; approve it, or take it back"),
+                ("n p a c".into(), "changes: next, previous change; approve it, or take it back; comment on the selected lines"),
                 (prefixed("n e d"), "changes: comment on the lines or the file, edit, delete"),
-                (prefixed("s"), "changes: send the review to the workspace's agent"),
                 ("⌃s esc".into(), "editing: save, leave (twice to throw changes away)"),
             ],
         ),
