@@ -77,7 +77,7 @@ onBeforeUnmount(() => clearInterval(turning));
         </div>
       </main>
       <div class="shot">
-        <img src="/screenshot.png" width="2560" height="1412" alt="Pulpo: projects, workspaces, files, changes and history on the left, Claude Code in a terminal on the right">
+        <img src="/screenshot.png" width="2560" height="1412" alt="Pulpo: projects, workspaces, files, changes and history on the left, a review of what the agent changed on the right">
       </div>
       <div class="edge" :class="{ hidden: footerSeen }" />
       <footer ref="footer">

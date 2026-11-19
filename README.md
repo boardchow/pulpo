@@ -8,8 +8,6 @@
 
 Run several coding agents, each on its own branch and ports. Pulpo marks the one waiting for you and takes you straight to it.
 
-![Pulpo: projects, workspaces, files, changes and history on the left, Claude Code in a terminal on the right](web/public/screenshot.png)
-
 ## Install
 
 ```sh
