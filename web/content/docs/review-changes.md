@@ -48,6 +48,6 @@ Press :kp[h]. History, under Changes, lists the branch's commits since it left t
 
 A `↑` marks a commit that isn't on origin yet. The title says where the branch stands: `pushed`, `2 unpushed` or `not pushed`, and `1 to pull` when origin has commits you don't.
 
-Press :k[⏎], or click a commit, to open it full screen. It shows the commit's files and that commit's changes, read the same way, and its author and age in the title. :k[esc] goes back to History.
+Press :k[⏎], or click a commit, to open it full screen. It shows the commit's files and that commit's changes, only to read, and its author and age in the title. :k[esc] goes back to History.
 
 Pulpo doesn't stage, commit or undo changes. Ask the agent, or use the terminal.
