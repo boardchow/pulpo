@@ -33,8 +33,8 @@ const PULPO_DARK: Palette = Palette {
     fg: 0xE3E4E7,
     muted: 0x97979A,
     dim: 0x595A5C,
-    selection: 0x1E2025,
-    hover: 0x16171A,
+    selection: mix(0x5E6AD2, 0x090909, 0x55),
+    hover: 0x1E2025,
     ansi: PULPO_ANSI,
     text_selection: mix(0x5E6AD2, 0x101012, 0x70),
 };
