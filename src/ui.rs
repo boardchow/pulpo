@@ -829,7 +829,7 @@ fn draw_repos(frame: &mut Frame, app: &mut App) {
     }
     veil(frame);
     let area = frame.area();
-    draw_repos_in(frame, app, centered(area, (area.width * 6 / 10).max(60), (area.height * 6 / 10).max(10)));
+    draw_repos_in(frame, app, centered(area, (area.width / 2).clamp(60, 100), (area.height / 2).max(10)));
 }
 
 fn draw_repos_in(frame: &mut Frame, app: &mut App, popup: Rect) {
