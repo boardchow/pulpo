@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
@@ -355,10 +356,10 @@ fn file_items(rows: &[Row], changed: &[(PathBuf, char)]) -> Vec<ListItem<'static
             kinds.entry(at).or_insert(*kind);
         }
     }
-    rows.iter().map(|row| tree_item(row, kinds.get(row.path.as_path()).copied(), 0)).collect()
+    rows.iter().map(|row| tree_item(row, kinds.get(row.path.as_path()).copied(), 0, (0, 0))).collect()
 }
 
-fn tree_item(row: &Row, kind: Option<char>, comments: usize) -> ListItem<'static> {
+fn tree_item(row: &Row, kind: Option<char>, comments: usize, (approved, all): (usize, usize)) -> ListItem<'static> {
     let icon = match (row.is_dir, row.expanded) {
         (true, true) => "▾ ",
         (true, false) => "▸ ",
@@ -368,6 +369,11 @@ fn tree_item(row: &Row, kind: Option<char>, comments: usize) -> ListItem<'static
     let mut spans = vec![Span::from(format!(" {}{icon}", "  ".repeat(row.depth))).fg(theme::dim()), Span::styled(row.name.clone(), style)];
     if comments > 0 {
         spans.push(Span::from(format!(" ✎{comments}")).fg(theme::yellow()));
+    }
+    if all > 0 && approved == all {
+        spans.push(Span::from(" ✓").fg(theme::green()));
+    } else if approved > 0 {
+        spans.push(Span::from(format!(" {approved}/{all}")).fg(theme::dim()));
     }
     ListItem::new(Line::from(spans))
 }
@@ -382,7 +388,7 @@ fn draw_changes(frame: &mut Frame, app: &mut App, area: Rect) {
     let tree = block.inner(area);
     frame.render_widget(block, area);
     app.areas.changes_tree = tree;
-    let items: Vec<ListItem> = changes.rows.iter().map(|row| tree_item(row, changes.status_of(&row.path), changes.count(&row.path))).collect();
+    let items: Vec<ListItem> = changes.rows.iter().map(|row| tree_item(row, changes.status_of(&row.path), changes.count(&row.path), changes.progress(&row.path))).collect();
     if items.is_empty() {
         frame.render_widget(Line::from(" nothing uncommitted").fg(theme::dim()), tree);
     }
@@ -402,6 +408,10 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         Some((path, diff)) => {
             rest.push(Span::from(format!("+{} ", diff.added)).fg(theme::green()));
             rest.push(Span::from(format!("−{} ", diff.removed)).fg(theme::red()));
+            let (approved, all) = changes.progress(&changes.root);
+            if all > 0 {
+                rest.push(Span::from(format!("· {approved} of {all} approved ")).fg(if approved == all { theme::green() } else { theme::muted() }));
+            }
             path.strip_prefix(&changes.root).unwrap_or(path).display().to_string()
         }
         None if changes.commit.is_some() => "Commit".into(),
@@ -422,7 +432,6 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     let [file, ruler] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1)]).areas(file);
     app.areas.changes_file = file;
     app.areas.changes_ruler = ruler;
-    changes.set_split(file.width >= SPLIT_WIDTH);
     changes.height = file.height as usize;
     changes.scroll_by(0);
     for (i, (color, in_view)) in changes.ruler(ruler.height as usize).into_iter().enumerate() {
@@ -433,8 +442,7 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let bg = Style::new().bg(theme::editor_bg());
     frame.render_widget(Paragraph::new("").style(bg), file);
-    let [old, divider, new] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1), Constraint::Fill(1)]).areas(file);
-    changes.fit(if changes.split { new.width.min(old.width) } else { file.width } as usize, app.writing.as_ref().map(|w| (w, app.writing_at)));
+    changes.fit(file.width as usize, app.writing.as_ref().map(|w| (w, app.writing_at)));
     let Some((_, diff)) = &changes.diff else { return };
     let (first, last) = changes.selection();
     let mark = |mut line: Line<'static>, i: usize| {
@@ -458,57 +466,71 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         mark(line, i)
     };
-    let side = |comment: Option<&crate::review::Comment>| match comment.and_then(|c| c.lines) {
-        _ if !changes.split => file,
-        Some((true, _, _)) => old,
-        _ => new,
-    };
-    let note = |text: Vec<Span<'static>>| Line::from([vec![Span::from(" ".repeat(diff.gutter.saturating_sub(2))), Span::from("▎ ").fg(theme::yellow())], text].concat());
+    let indent = || Span::from(" ".repeat(diff.gutter.saturating_sub(2)));
+    let note = |text: Vec<Span<'static>>| Line::from([vec![indent(), Span::from("▎ ").fg(theme::yellow())], text].concat());
+    let section = changes.section();
+    let mut in_section = false;
     for (y, item) in changes.shown.iter().enumerate() {
-        let on = |r: Rect| Rect { y: file.y + y as u16, height: 1, ..r };
-        if changes.split
-            && let Some(cell) = frame.buffer_mut().cell_mut((divider.x, file.y + y as u16))
-        {
-            cell.set_symbol("│").set_style(bg.fg(theme::border()));
+        let at = Rect { y: file.y + y as u16, height: 1, ..file };
+        // A comment goes with the row above it.
+        match *item {
+            Shown::Row(row) | Shown::Wrap { row, .. } | Shown::Approved(Range { start: row, .. }) => in_section = section.contains(&row),
+            Shown::Fold(_) => in_section = false,
+            Shown::Note(..) | Shown::Hint => {}
         }
         match *item {
             Shown::Row(row) | Shown::Wrap { row, .. } => {
                 let piece = if let Shown::Wrap { piece, .. } = *item { piece } else { 0 };
-                if !changes.split {
-                    frame.render_widget(Paragraph::new(shown(row, piece)).style(bg), on(file));
-                    continue;
-                }
-                let (o, n) = diff.pairs[row];
-                if let Some(i) = o {
-                    let mut line = shown(i, piece);
-                    if piece == 0 && diff.kinds[i] == crate::viewer::Kind::Same {
-                        line.spans[0] = Span::from(format!("{:>w$}   ", diff.old_numbers[i], w = diff.gutter - 3)).fg(theme::dim());
-                    }
-                    frame.render_widget(Paragraph::new(mark(line, i)).style(bg), on(old));
-                }
-                if let Some(i) = n {
-                    frame.render_widget(Paragraph::new(shown(i, piece)).style(bg), on(new));
-                }
+                frame.render_widget(Paragraph::new(shown(row, piece)).style(bg), at);
             }
             Shown::Note(i, ref text) => {
                 let text = match text.split_once(CURSOR).filter(|_| i.is_none()) {
                     Some((before, after)) => vec![Span::from(before.to_string()), Span::from("█").fg(theme::blue()), Span::from(after.to_string())],
                     None => vec![Span::from(text.clone())],
                 };
-                let line = note(text);
-                let comment = i.map_or(app.writing.as_ref(), |i| changes.comments.get(i));
-                frame.render_widget(Paragraph::new(line).style(Style::new().fg(theme::fg()).bg(theme::bg())), on(side(comment)));
+                frame.render_widget(Paragraph::new(note(text)).style(Style::new().fg(theme::fg()).bg(theme::bg())), at);
             }
             Shown::Hint => {
                 let hint = Span::from("⏎ keep, empty deletes · ⌥⏎ or ⌃j new line · esc cancel").fg(theme::muted());
-                frame.render_widget(Paragraph::new(note(vec![hint])).style(Style::new().bg(theme::bg())), on(side(app.writing.as_ref())));
+                frame.render_widget(Paragraph::new(note(vec![hint])).style(Style::new().bg(theme::bg())), at);
             }
+            Shown::Fold(ref rows) => {
+                let (lines, scopes) = changes.fold_label(rows);
+                frame.render_widget(Paragraph::new(fold_line(indent(), lines, scopes, file.width as usize)).style(Style::new().bg(theme::bg())), at);
+            }
+            Shown::Approved(ref rows) => {
+                let on = focused && rows.contains(&changes.cursor);
+                let style = if on { Style::new().fg(theme::green()).bg(theme::selection()) } else { Style::new().fg(theme::green()) };
+                let line = Line::from(vec![indent(), Span::styled(changes.approved_label(rows), style)]);
+                frame.render_widget(Paragraph::new(line).style(bg), at);
+            }
+        }
+        if focused && in_section && let Some(cell) = frame.buffer_mut().cell_mut((at.x, at.y)) {
+            cell.set_symbol("▌").set_fg(theme::accent());
         }
     }
 }
 
-/// So a 14" laptop, about 155 columns of diff, keeps one view.
-const SPLIT_WIDTH: u16 = 170;
+fn fold_line(indent: Span<'static>, lines: String, scopes: Vec<String>, width: usize) -> Line<'static> {
+    let mut spans = vec![indent, Span::from(lines).fg(theme::dim())];
+    if scopes.is_empty() {
+        return Line::from(spans);
+    }
+    let used = spans.iter().map(Span::width).sum::<usize>() + 3;
+    let fits = |k: usize| used + if k > 0 { 4 } else { 0 } + Span::from(scopes[k..].join(" › ")).width() <= width;
+    let skip = (0..scopes.len() - 1).find(|&k| fits(k)).unwrap_or(scopes.len() - 1);
+    spans.push(Span::from("   "));
+    if skip > 0 {
+        spans.push(Span::from("… › ").fg(theme::dim()));
+    }
+    for (i, scope) in scopes[skip..].iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::from(" › ").fg(theme::dim()));
+        }
+        spans.push(Span::from(scope.clone()).fg(if skip + i + 1 == scopes.len() { theme::fg() } else { theme::muted() }));
+    }
+    Line::from(spans)
+}
 
 fn draw_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Files && !app.prefixed;
@@ -707,7 +729,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
             vec![
                 (prefixed("p w t"), "projects, workspaces, the terminal"),
                 (prefixed("f c h"), "files, changes, history"),
-                (prefixed("F C H"), "files, changes full screen; the selected commit"),
+                (prefixed("F C H"), "files full screen; changes at the first to approve; the commit"),
                 (prefixed("<"), "hide or show the left side"),
                 (prefixed("[ ]"), "previous, next terminal tab"),
                 (prefixed("a"), "the next terminal waiting for you"),
@@ -742,6 +764,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
                 ("⏎ tab".into(), "from the tree into the file, and back"),
                 ("pgup pgdn".into(), "scroll the file"),
                 ("⇧↑↓ J K".into(), "changes: select lines, also with ⇧click or drag"),
+                ("n p a".into(), "changes: next, previous change; approve it, or take it back"),
                 (prefixed("n e d"), "changes: comment on the lines or the file, edit, delete"),
                 (prefixed("s"), "changes: send the review to the workspace's agent"),
                 ("⌃s esc".into(), "editing: save, leave (twice to throw changes away)"),

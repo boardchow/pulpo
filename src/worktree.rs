@@ -366,7 +366,7 @@ fn starter(c: &Config) -> String {
 }
 
 /// FNV-1a: the same in every build, unlike std's hasher.
-fn fnv(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100000001b3))
 }
 

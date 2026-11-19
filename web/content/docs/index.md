@@ -18,7 +18,7 @@ Developers who give coding agents more than one task at a time. Pulpo runs any [
 | Start a task | Make a branch and a worktree, copy `.env`, open a pane | Two keys and a name |
 | Run the app in each task | Change ports by hand | Each workspace gets its own ports, and with Docker Compose its own containers and database |
 | See who needs you | Check every pane | A ◆ marks the agent that waits, and one key goes to it |
-| Review the work | Run `git diff` | Changes shows each edited file whole, with its changes in place |
+| Review the work | Run `git diff` | Changes shows each change under the code it sits in, to approve one by one |
 | Restart your Mac | Start every session again | Terminals reopen and agent sessions resume |
 
 Pulpo never commits, pushes or merges: your agents, or you, do that.

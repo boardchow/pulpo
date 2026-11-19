@@ -114,6 +114,14 @@ pub fn removed_bg() -> Color {
     let p = PULPO_DARK;
     rgb(mix(p.ansi[1], p.editor_bg, 0x26))
 }
+pub fn added_word_bg() -> Color {
+    let p = PULPO_DARK;
+    rgb(mix(p.ansi[2], p.editor_bg, 0x55))
+}
+pub fn removed_word_bg() -> Color {
+    let p = PULPO_DARK;
+    rgb(mix(p.ansi[1], p.editor_bg, 0x55))
+}
 pub fn find_bg() -> Color {
     let p = PULPO_DARK;
     rgb(mix(p.ansi[3], p.editor_bg, 0x55))

@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -236,9 +237,6 @@ pub struct ReviewDiff {
     pub removed: usize,
     pub gutter: usize,
     pub kinds: Vec<Kind>,
-    /// The side-by-side rows: the line shown on each side, by its index in `lines`.
-    pub pairs: Vec<(Option<usize>, Option<usize>)>,
-    /// Each line's number in the old file, for the left side of an unchanged line.
     pub old_numbers: Vec<usize>,
     pub new_numbers: Vec<usize>,
 }
@@ -254,7 +252,6 @@ pub(crate) fn review_diff(root: &Path, base: &str, path: &Path, untracked: bool)
     let text = cmd.output().map(|out| String::from_utf8_lossy(&out.stdout).into_owned()).unwrap_or_default();
     let content = diff_content(&text, path);
     let (added, removed) = content.counts.unwrap_or_default();
-    let pairs = pairs(&content.kinds);
     ReviewDiff {
         gutter: content.gutter,
         lines: content.lines,
@@ -262,31 +259,9 @@ pub(crate) fn review_diff(root: &Path, base: &str, path: &Path, untracked: bool)
         added,
         removed,
         kinds: content.kinds,
-        pairs,
         old_numbers: content.old_numbers,
         new_numbers: content.new_numbers,
     }
-}
-
-/// Unchanged lines on both sides; removed lines beside the added ones that follow them.
-fn pairs(kinds: &[Kind]) -> Vec<(Option<usize>, Option<usize>)> {
-    let mut pairs = Vec::new();
-    let mut i = 0;
-    while i < kinds.len() {
-        if matches!(kinds[i], Kind::Same | Kind::Gap) {
-            pairs.push((Some(i), Some(i)));
-            i += 1;
-            continue;
-        }
-        let run = |from: usize, kind: Kind| (from..kinds.len()).find(|&j| kinds[j] != kind).unwrap_or(kinds.len());
-        let middle = run(i, Kind::Removed);
-        let (removed, added) = (i..middle, middle..run(middle, Kind::Added));
-        for k in 0..removed.len().max(added.len()) {
-            pairs.push((removed.clone().nth(k), added.clone().nth(k)));
-        }
-        i = added.end;
-    }
-    pairs
 }
 
 fn diff_content(text: &str, path: &Path) -> Content {
@@ -338,7 +313,20 @@ fn diff_content(text: &str, path: &Path) -> Content {
     let syntax = syntax_for(path);
     let (mut new_side, mut old_side) = (HighlightLines::new(syntax, &colors), HighlightLines::new(syntax, &colors));
     let width = rows.iter().map(|r| r.1.max(r.2)).max().unwrap_or(0).to_string().len();
-    let mut content = Content { gutter: width + 3, ..Content::default() };
+    // A first column left free, for the bar on the change being read.
+    let mut content = Content { gutter: 2 * width + 5, ..Content::default() };
+    let mut marks = vec![Vec::new(); rows.len()];
+    let run = |from: usize, kind: Kind| (from..rows.len()).find(|&j| rows[j].0 != kind).unwrap_or(rows.len());
+    let mut i = 0;
+    while i < rows.len() {
+        let (middle, end) = if rows[i].0 == Kind::Removed { (run(i, Kind::Removed), run(run(i, Kind::Removed), Kind::Added)) } else { (i + 1, i + 1) };
+        for (r, a) in (i..middle).zip(middle..end) {
+            if let Some([old, new]) = word_changes(&clean(rows[r].3), &clean(rows[a].3)) {
+                (marks[r], marks[a]) = (old, new);
+            }
+        }
+        i = end;
+    }
     let (mut added, mut removed) = (0, 0);
     for (i, &(kind, old_number, new_number, text)) in rows.iter().enumerate() {
         if kind == Kind::Gap {
@@ -348,7 +336,6 @@ fn diff_content(text: &str, path: &Path) -> Content {
             content.new_numbers.push(0);
             continue;
         }
-        let number = if kind == Kind::Removed { old_number } else { new_number };
         let with_newline = format!("{text}\n");
         let ranges = match kind {
             _ if i >= MAX_HIGHLIGHTED_LINES => None,
@@ -359,10 +346,10 @@ fn diff_content(text: &str, path: &Path) -> Content {
                 new_side.highlight_line(&with_newline, syntaxes).ok()
             }
         };
-        let (marker, fg, bg) = match kind {
-            Kind::Added => ('+', theme::green(), Some(theme::added_bg())),
-            Kind::Removed => ('-', theme::red(), Some(theme::removed_bg())),
-            _ => (' ', theme::dim(), None),
+        let (marker, fg, bg, word_bg) = match kind {
+            Kind::Added => ('+', theme::green(), Some(theme::added_bg()), theme::added_word_bg()),
+            Kind::Removed => ('-', theme::red(), Some(theme::removed_bg()), theme::removed_word_bg()),
+            _ => (' ', theme::dim(), None, theme::editor_bg()),
         };
         if bg.is_some() && (i == 0 || matches!(rows[i - 1].0, Kind::Same | Kind::Gap)) {
             content.changes.push(content.lines.len());
@@ -373,8 +360,10 @@ fn diff_content(text: &str, path: &Path) -> Content {
             _ => {}
         }
         let code = styled(ranges, &with_newline);
-        let mut spans = vec![Span::styled(format!("{number:>width$} {marker} "), Style::default().fg(fg))];
-        spans.extend(code);
+        let number = |n: usize, shown: bool| if shown { n.to_string() } else { String::new() };
+        let (old, new) = (number(old_number, kind != Kind::Added), number(new_number, kind != Kind::Removed));
+        let mut spans = vec![Span::styled(format!(" {old:>width$} {new:>width$} {marker} "), Style::default().fg(fg))];
+        spans.extend(emphasize(code, &marks[i], word_bg));
         let mut line = Line::from(spans);
         if let Some(bg) = bg {
             // Pad so the background reaches across the view.
@@ -388,6 +377,93 @@ fn diff_content(text: &str, path: &Path) -> Content {
     }
     content.counts = Some((added, removed));
     content
+}
+
+/// None when the lines share too little to read as an edit.
+fn word_changes(old: &str, new: &str) -> Option<[Vec<Range<usize>>; 2]> {
+    let (a, b) = (words(old), words(new));
+    if a.len() * b.len() > 250_000 {
+        return None;
+    }
+    let mut common = vec![vec![0u32; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            common[i][j] = if a[i].1 == b[j].1 { common[i + 1][j + 1] + 1 } else { common[i + 1][j].max(common[i][j + 1]) };
+        }
+    }
+    let (mut same_a, mut same_b) = (vec![false; a.len()], vec![false; b.len()]);
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        if a[i].1 == b[j].1 {
+            (same_a[i], same_b[j]) = (true, true);
+            (i, j) = (i + 1, j + 1);
+        } else if common[i + 1][j] >= common[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    let size = |words: &[(Range<usize>, &str)], only: Option<&[bool]>| words.iter().enumerate().filter(|(k, w)| !w.1.trim().is_empty() && only.is_none_or(|s| s[*k])).map(|(_, w)| w.0.len()).sum::<usize>();
+    let shorter = size(&a, None).min(size(&b, None));
+    if shorter == 0 || size(&a, Some(&same_a)) * 2 < shorter {
+        return None;
+    }
+    Some([changed_ranges(&a, &same_a), changed_ranges(&b, &same_b)])
+}
+
+/// Words, runs of spaces, and single other characters.
+fn words(text: &str) -> Vec<(Range<usize>, &str)> {
+    let class = |c: char| if c.is_alphanumeric() || c == '_' { 0 } else if c.is_whitespace() { 1 } else { 2 };
+    let mut words: Vec<(Range<usize>, &str)> = Vec::new();
+    let (mut start, mut chars) = (0, 0);
+    let indices: Vec<(usize, char)> = text.char_indices().collect();
+    for (k, &(byte, c)) in indices.iter().enumerate() {
+        let end = indices.get(k + 1).map_or(text.len(), |&(b, _)| b);
+        let joins = k > 0 && class(c) != 2 && class(c) == class(indices[k - 1].1);
+        if joins && let Some(last) = words.last_mut() {
+            (last.0.end, last.1) = (chars + 1, &text[start..end]);
+        } else {
+            start = byte;
+            words.push((chars..chars + 1, &text[byte..end]));
+        }
+        chars += 1;
+    }
+    words
+}
+
+/// Joined across the spaces between changed words.
+fn changed_ranges(words: &[(Range<usize>, &str)], same: &[bool]) -> Vec<Range<usize>> {
+    let changed = |k: usize| !same[k] || (words[k].1.trim().is_empty() && k > 0 && k + 1 < words.len() && !same[k - 1] && !same[k + 1]);
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    for k in (0..words.len()).filter(|&k| changed(k)) {
+        match ranges.last_mut() {
+            Some(last) if last.end == words[k].0.start => last.end = words[k].0.end,
+            _ => ranges.push(words[k].0.clone()),
+        }
+    }
+    ranges
+}
+
+fn emphasize(spans: Vec<Span<'static>>, marks: &[Range<usize>], bg: Color) -> Vec<Span<'static>> {
+    if marks.is_empty() {
+        return spans;
+    }
+    let mut out = Vec::new();
+    let mut at = 0;
+    for span in spans {
+        let chars: Vec<char> = span.content.chars().collect();
+        let mut from = 0;
+        while from < chars.len() {
+            let pos = at + from;
+            let inside = marks.iter().any(|m| m.contains(&pos));
+            let edge = marks.iter().flat_map(|m| [m.start, m.end]).filter(|&e| e > pos).min().map_or(chars.len(), |e| (e - at).min(chars.len()));
+            let text: String = chars[from..edge].iter().collect();
+            out.push(Span::styled(text, if inside { span.style.bg(bg) } else { span.style }));
+            from = edge;
+        }
+        at += chars.len();
+    }
+    out
 }
 
 pub(crate) fn shift(line: Line<'static>, gutter: usize, n: usize) -> Line<'static> {
@@ -536,14 +612,11 @@ mod tests {
         assert_eq!(content.changes, [1]);
         assert_eq!(content.kinds, [Kind::Same, Kind::Removed, Kind::Added, Kind::Same]);
         let text: Vec<String> = content.lines.iter().map(|l| plain(l, 0).trim_end().to_string()).collect();
-        assert_eq!(text, ["1   one", "2 - two", "2 + TWO", "3   three"]);
-        assert_eq!(pairs(&content.kinds), [(Some(0), Some(0)), (Some(1), Some(2)), (Some(3), Some(3))]);
-        use Kind::*;
-        let kinds = [Added, Same, Removed, Removed, Added, Gap, Removed];
-        assert_eq!(
-            pairs(&kinds),
-            [(None, Some(0)), (Some(1), Some(1)), (Some(2), Some(4)), (Some(3), None), (Some(5), Some(5)), (Some(6), None)]
-        );
+        assert_eq!(text, [" 1 1   one", " 2   - two", "   2 + TWO", " 3 3   three"]);
+        assert_eq!(word_changes("let x = foo(a);", "let x = foo(a, b);"), Some([vec![], vec![Range { start: 13, end: 16 }]]));
+        assert_eq!(word_changes("let x = 1;", "fn main() {}"), None);
+        let marked = emphasize(vec![Span::raw("ab"), Span::raw("cd")], &[Range { start: 1, end: 3 }], Color::Red);
+        assert_eq!(marked.iter().map(|s| (s.content.to_string(), s.style.bg)).collect::<Vec<_>>(), [("a".into(), None), ("b".into(), Some(Color::Red)), ("c".into(), Some(Color::Red)), ("d".into(), None)]);
     }
 
     #[test]

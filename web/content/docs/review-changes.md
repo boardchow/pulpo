@@ -1,6 +1,6 @@
 ---
 title: Review what an agent changed
-description: "Read every file an agent changed, each one whole with its changes in place, then look back through its commits."
+description: "Go through every change an agent made, under the code it sits in, approve each one, then look back through its commits."
 section: Guides
 order: 6
 ---
@@ -19,7 +19,7 @@ Once an agent commits a file, it leaves Changes and shows in History.
 
 ## Read a change full screen
 
-Full screen, the file takes everything right of the left side, whole, with its changes in place. On a wide screen, the old and new versions sit side by side. Long lines wrap. Marks on its right edge show where it changed: click one to jump there.
+Full screen, the file takes everything right of the left side, its changes inline with the old and new line numbers. Each change shows with 3 lines around it, back to where its function starts when that's 10 lines up or less. The lines between fold into one row, which names the code they hide that the change sits in, like `impl App { › fn set_current(...) {`. In a changed line, the words that changed stand out. Long lines wrap. Marks on its right edge show where it changed: click one to jump there.
 
 | To | Press |
 | --- | --- |
@@ -29,6 +29,12 @@ Full screen, the file takes everything right of the left side, whole, with its c
 | Move it to the top, the bottom | :k[g], :k[G] |
 | Go between the file and the tree | :k[tab] |
 | Step back | :k[esc]: to the tree, to the terminal beside it, then into the terminal |
+
+## Go change by change
+
+Press :kp[C] to open Changes full screen at the first change not approved yet. :k[n] and :k[p] go to the next and previous change, across files. :k[a] approves one: it shrinks to a line and the next comes up, and :k[a] again takes it back. The title counts them, like `4 of 10 approved`.
+
+An approval follows what the change says. When the agent edits the file again, changes it didn't come near stay approved, so you only read what's new. Approvals are kept when Pulpo quits.
 
 ## Comment for the agent
 
@@ -42,6 +48,6 @@ Press :kp[h]. History, under Changes, lists the branch's commits since it left t
 
 A `↑` marks a commit that isn't on origin yet. The title says where the branch stands: `pushed`, `2 unpushed` or `not pushed`, and `1 to pull` when origin has commits you don't.
 
-Press :k[⏎], or click a commit, to open it full screen. It shows the commit's files, each whole with that commit's changes in place, and its author and age in the title. :k[esc] goes back to History.
+Press :k[⏎], or click a commit, to open it full screen. It shows the commit's files and that commit's changes, read the same way, and its author and age in the title. :k[esc] goes back to History.
 
 Pulpo doesn't stage, commit or undo changes. Ask the agent, or use the terminal.

@@ -35,7 +35,7 @@ pulpo (one binary)
 ├── procs.rs    process trees (`ps`), to hang up what a terminal started
 ├── worktree.rs the workspaces Pulpo makes: worktree, includes, registry, ports, compose guess and override, setup and removal scripts
 ├── layout.rs   where you were, and what was open, across restarts and reboots
-├── viewer.rs   read-only file view (syntect), and the diffs Changes shows (inline, or side by side)
+├── viewer.rs   read-only file view (syntect), and the diffs Changes shows, inline with the words changed marked
 ├── editor.rs   editing a file, highlighted by the viewer's own code (identical by construction)
 ├── theme.rs    the colors on screen (UI, syntax, terminal palette): Pulpo Dark, or Ghostty's theme
 ├── tree.rs     lazy file tree, gitignore-aware (ignore crate), and the tree of a list of paths
@@ -120,9 +120,18 @@ file (`--unified=1000000`) with its changes inline, both sides highlighted
 (reloads run on a thread: `Request::read`, then `Changes::apply`, dropping
 a read that was overtaken or is another workspace's),
 and an overview ruler down its right edge (added, removed, both; the part in
-view lighter). With 140 columns for the diff (opened wide on a screen bigger
-than a 14" laptop), old and new sit side by side: removed lines beside the
-added ones after them.
+view lighter). Inline only, with the old and new numbers, and the words a
+changed line changed marked (`word_changes`, against the removed line in its
+place). `Changes::refold` makes a view over the lines: a change not approved
+(or a comment) shows with 3 lines around, and above back to where its scope
+starts when that's 10 lines up or less (`scopes`: each the nearest line above
+indented less, so any language); the rest folds into rows naming the scopes
+they hide, and an approved change into one row. `n` `p` go change by change,
+across files. Hunks come from one `git diff -U3` of the workspace on the read
+thread, each named by its path and changed lines (`hunk_id`), so approving
+one with `a` outlives the agent's edits elsewhere, and Pulpo quitting
+(`~/.local/state/pulpo/approved.json`, per workspace and commit); the viewer
+finds a line's hunk by its line number.
 
 Comments on lines or files are drafts on `Changes`, by line number, the
 lines' text and the commit shown, and stay per workspace while Pulpo runs.

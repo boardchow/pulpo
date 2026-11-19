@@ -17,7 +17,8 @@ Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌃b], then the key. 
 | :kp[f] | Files |
 | :kp[c] | Changes |
 | :kp[h] | History |
-| :kp[F], :kp[C] | The selected file, Changes, full screen |
+| :kp[F] | The selected file, full screen |
+| :kp[C] | Changes full screen, at the first change not approved |
 | :kp[H] | The selected commit, full screen |
 | :kp[1] to :kp[9] | The workspace with that number, in its terminal |
 | :kp[a] | The terminal that has waited longest for you |
@@ -125,6 +126,13 @@ A line cursor moves in the file. In Files, its line ends with who changed it las
 | :k[g] :k[G] or :k[home] :k[end] | First, last line |
 | :k[shift] :k[↓] :k[↑] or :k[J] :k[K] | Select lines, in Changes |
 | :k[esc] | Drop the selection, in Changes |
+
+In Changes:
+
+| Keys | Does |
+| --- | --- |
+| :k[n] :k[p] | Next, previous change, in the next files too |
+| :k[a] | Approve the change and go to the next one not approved. On an approved change, take it back |
 
 Writing a comment:
 
