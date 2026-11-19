@@ -105,7 +105,6 @@ pub struct Changes {
     pub code_width: usize,
     pub cursor: usize,
     pub anchor: Option<usize>,
-    /// The workspace's comments, those on its commits too.
     pub comments: Vec<Comment>,
     pub shown: Vec<Shown>,
     /// The next draw brings the cursor, or the comment being written, into view.
