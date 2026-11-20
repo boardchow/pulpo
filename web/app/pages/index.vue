@@ -75,9 +75,9 @@ function start({ el }) {
         </div>
       </main>
       <div class="shot" :class="{ playing }">
-        <video v-if="playing" src="/demo.mp4" poster="/screenshot.png" width="1920" height="1050" controls aria-label="Pulpo demo, with a voiceover" @vue:mounted="start" />
+        <video v-if="playing" src="/demo.mp4" poster="/screenshot.png" width="1920" height="1080" controls aria-label="Pulpo demo, with a voiceover" @vue:mounted="start" />
         <template v-else>
-          <img src="/screenshot.png" width="2560" height="1412" alt="Pulpo: projects, workspaces, files, changes and history on the left, a review of what the agent changed on the right">
+          <img src="/screenshot.png" width="2560" height="1440" alt="Pulpo reviewing what an agent changed: the files on the left, the code on the right, with a comment for the agent on line 13">
           <button type="button" class="play" aria-label="Play the demo, with sound" @click="playing = true">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" /></svg>
           </button>
