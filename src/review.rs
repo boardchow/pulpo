@@ -7,7 +7,7 @@ use ratatui::style::Color;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::ListState;
 
-use crate::git::{self, Commit, History};
+use crate::git;
 use crate::theme;
 use crate::tree::{self, Row};
 use crate::viewer::{self, Kind, ReviewDiff};
@@ -78,14 +78,7 @@ pub struct Hunk {
 
 pub struct Changes {
     pub root: PathBuf,
-    /// What the files are compared with: HEAD, or the parent of the commit shown.
     against: String,
-    /// Shown instead of what isn't committed.
-    pub commit: Option<Commit>,
-    /// The commit a workspace Pulpo made was copied at, where its history starts; otherwise each read finds it again.
-    copied: Option<String>,
-    /// Where the history starts, for its title.
-    pub since: String,
     loaded: bool,
     /// Bumped by each read asked for, so an older one arriving late is dropped.
     generation: u64,
@@ -105,30 +98,22 @@ pub struct Changes {
     pub shown: Vec<Shown>,
     /// The next draw brings the cursor, or the comment being written, into view.
     pub reveal: bool,
-    /// Which comment above the file ⌃b e and d take next, so each press reaches another.
+    /// Which comment above the file ⌃b d takes next, so each press reaches another.
     turn: usize,
-    pub history: History,
-    pub history_state: ListState,
-    /// How many commits History reads: a page more each time the list nears its end.
-    pub history_limit: usize,
     hunks: HashMap<PathBuf, Vec<Hunk>>,
     counts: HashMap<PathBuf, (usize, usize)>,
     pub approved: HashSet<u64>,
     hidden: Vec<Hide>,
 }
 
-pub const HISTORY_PAGE: usize = 100;
 const CONTEXT: usize = 3;
 const SCOPE_REACH: usize = 10;
 
 impl Changes {
-    pub fn new(root: &Path, copied: Option<String>) -> Changes {
+    pub fn new(root: &Path) -> Changes {
         Changes {
             root: root.to_path_buf(),
             against: "HEAD".into(),
-            commit: None,
-            since: if copied.is_some() { "since the copy".into() } else { String::new() },
-            copied,
             loaded: false,
             generation: 0,
             files: Vec::new(),
@@ -146,9 +131,6 @@ impl Changes {
             shown: Vec::new(),
             reveal: false,
             turn: 0,
-            history: History::default(),
-            history_state: ListState::default().with_selected(Some(0)),
-            history_limit: HISTORY_PAGE,
             hunks: HashMap::new(),
             counts: HashMap::new(),
             approved: HashSet::new(),
@@ -156,18 +138,9 @@ impl Changes {
         }
     }
 
-    pub fn of_commit(root: &Path, commit: &Commit) -> Changes {
-        let mut changes = Changes::new(root, None);
-        // The first commit has no parent: it's compared with the empty tree.
-        let parent = git(root, &["rev-parse", "--verify", "--quiet", &format!("{}^", commit.hash)]).unwrap_or_else(|| EMPTY_TREE.into());
-        changes.against = format!("{parent}..{}", commit.hash);
-        changes.commit = Some(commit.clone());
-        changes
-    }
-
     #[cfg(test)]
-    pub fn open(root: &Path, copied: Option<String>) -> Changes {
-        let mut changes = Changes::new(root, copied);
+    pub fn open(root: &Path) -> Changes {
+        let mut changes = Changes::new(root);
         changes.load();
         changes
     }
@@ -180,19 +153,11 @@ impl Changes {
 
     pub fn request(&mut self) -> Request {
         self.generation += 1;
-        Request {
-            root: self.root.clone(),
-            against: self.against.clone(),
-            copied: self.copied.clone(),
-            commit: self.commit.is_some(),
-            shown: self.diff.as_ref().map(|(p, _)| p.clone()),
-            history_limit: self.history_limit,
-            generation: self.generation,
-        }
+        Request { root: self.root.clone(), shown: self.diff.as_ref().map(|(p, _)| p.clone()), generation: self.generation }
     }
 
     pub fn apply(&mut self, read: Read) {
-        if read.root != self.root || read.against != self.against || read.generation != self.generation {
+        if read.root != self.root || read.generation != self.generation {
             return;
         }
         let first = !self.loaded || self.files.is_empty();
@@ -202,7 +167,7 @@ impl Changes {
             selected = read.diff.as_ref().map(|(p, _)| p.clone()).or(selected);
         }
         let (was, scroll) = (self.diff.take().map(|(p, _)| p), self.scroll);
-        (self.since, self.files, self.history, self.hunks) = (read.since, read.files, read.history, read.hunks);
+        (self.against, self.files, self.hunks) = (read.against, read.files, read.hunks);
         self.statuses.clear();
         for f in &self.files {
             for at in self.root.join(&f.path).ancestors().take_while(|a| a.starts_with(&self.root)) {
@@ -296,9 +261,15 @@ impl Changes {
         paths.sort();
         paths.dedup();
         for path in paths {
-            let diff = viewer::review_diff(&self.root, "HEAD", &path, !git::is_tracked(&self.root, &path));
+            let diff = viewer::review_diff(&self.root, &self.against, &path, !git::is_tracked(&self.root, &path));
             follow_code(&mut self.comments, &path, &diff);
         }
+    }
+
+    pub fn editing_at(&self) -> Option<(PathBuf, Option<usize>)> {
+        let (path, diff) = self.diff.as_ref()?;
+        let now = |i: usize| number(diff, i).filter(|(deleted, _)| !deleted).map(|(_, n)| n);
+        Some((path.clone(), (self.cursor..diff.lines.len()).chain((0..self.cursor).rev()).find_map(now)))
     }
 
     pub fn status_of(&self, path: &Path) -> Option<char> {
@@ -929,45 +900,34 @@ impl Changes {
 
 pub struct Request {
     root: PathBuf,
-    against: String,
-    copied: Option<String>,
-    commit: bool,
     shown: Option<PathBuf>,
-    history_limit: usize,
     generation: u64,
 }
 
 pub struct Read {
     root: PathBuf,
     against: String,
-    since: String,
     files: Vec<File>,
     diff: Option<(PathBuf, ReviewDiff)>,
-    history: History,
     hunks: HashMap<PathBuf, Vec<Hunk>>,
     generation: u64,
 }
 
 impl Request {
     pub fn read(self) -> Read {
-        let files: Vec<File> = changed(&self.root, &self.against, !self.commit).into_iter().map(|(path, status)| File { path, status }).collect();
+        let against = base(&self.root);
+        let files: Vec<File> = changed(&self.root, &against).into_iter().map(|(path, status)| File { path, status }).collect();
         let shown = self.shown.or_else(|| {
             let rows = tree::of_paths(&self.root, files.iter().map(|f| f.path.to_str().unwrap_or_default()));
             rows.into_iter().find(|r| !r.is_dir).map(|r| r.path)
         });
         let diff = shown.map(|path| {
             let untracked = files.iter().any(|f| self.root.join(&f.path) == path && f.status == '?');
-            let diff = viewer::review_diff(&self.root, &self.against, &path, untracked);
+            let diff = viewer::review_diff(&self.root, &against, &path, untracked);
             (path, diff)
         });
-        let (history, since) = if self.commit {
-            (History::default(), String::new())
-        } else {
-            let (base, since) = self.copied.map(|c| (c, "since the copy".to_string())).unwrap_or_else(|| self::base(&self.root));
-            (git::history(&self.root, &base, self.history_limit), since)
-        };
-        let hunks = hunks(&self.root, &self.against, &files);
-        Read { root: self.root, against: self.against, since, files, diff, history, hunks, generation: self.generation }
+        let hunks = hunks(&self.root, &against, &files);
+        Read { root: self.root, against, files, diff, hunks, generation: self.generation }
     }
 }
 
@@ -1214,22 +1174,17 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
 }
 
-const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
 /// Where a branch left the main one; the main branch itself is HEAD.
-fn base(root: &Path) -> (String, String) {
-    let uncommitted = || ("HEAD".to_string(), String::new());
+fn base(root: &Path) -> String {
     let branch = git(root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    // origin's first, as workspaces start there: a local main is often behind it.
+    let candidates = ["origin/main", "origin/master", "main", "master"];
     let main = git(root, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
-        .or_else(|| ["main", "master"].iter().find(|b| git(root, &["rev-parse", "--verify", "--quiet", b]).is_some()).map(|b| b.to_string()));
-    let Some(main) = main.filter(|m| m.trim_start_matches("origin/") != branch) else { return uncommitted() };
-    match git(root, &["merge-base", "HEAD", &main]) {
-        Some(commit) => (commit, format!("since {main}")),
-        None => uncommitted(),
-    }
+        .or_else(|| candidates.iter().find(|b| git(root, &["rev-parse", "--verify", "--quiet", b]).is_some()).map(|b| b.to_string()));
+    main.filter(|m| m.trim_start_matches("origin/") != branch).and_then(|main| git(root, &["merge-base", "HEAD", &main])).unwrap_or_else(|| "HEAD".into())
 }
 
-fn changed(root: &Path, against: &str, untracked: bool) -> Vec<(PathBuf, char)> {
+fn changed(root: &Path, against: &str) -> Vec<(PathBuf, char)> {
     let mut files: Vec<(PathBuf, char)> = Vec::new();
     if let Some(out) = git(root, &["diff", "--name-status", "--no-renames", "-z", against]) {
         let mut parts = out.split('\0').filter(|p| !p.is_empty());
@@ -1237,7 +1192,7 @@ fn changed(root: &Path, against: &str, untracked: bool) -> Vec<(PathBuf, char)> 
             files.push((PathBuf::from(path), status.chars().next().unwrap_or('M')));
         }
     }
-    if let Some(out) = git(root, &["ls-files", "--others", "--exclude-standard", "-z"]).filter(|_| untracked) {
+    if let Some(out) = git(root, &["ls-files", "--others", "--exclude-standard", "-z"]) {
         files.extend(out.split('\0').filter(|p| !p.is_empty()).map(|p| (PathBuf::from(p), '?')));
     }
     files
@@ -1259,9 +1214,9 @@ mod tests {
         std::fs::write(t.join("src/b.txt"), "b\n").unwrap();
         run(&["add", "."]);
         run(&["commit", "-qm", "start"]);
-        run(&["checkout", "-qb", "task"]);
         std::fs::write(t.join("a.txt"), "one\nTWO\nthree\n").unwrap();
         run(&["commit", "-qam", "agent"]);
+        run(&["checkout", "-qb", "task"]);
         // In .git, so it's no change to show.
         crate::agents::TEST_STATE.set(Some(t.join(".git/pulpo-state")));
         std::fs::write(t.join("src/b.txt"), "b\nmore\n").unwrap();
@@ -1270,10 +1225,9 @@ mod tests {
     }
 
     #[test]
-    fn shows_what_isnt_committed_as_a_tree() {
+    fn shows_what_the_branch_changed_as_a_tree() {
         let t = repo();
-        let mut changes = Changes::open(&t, None);
-        assert_eq!(changes.since, "since main");
+        let mut changes = Changes::open(&t);
         let rows: Vec<String> = changes.rows.iter().map(|r| r.name.clone()).collect();
         assert_eq!(rows, ["src", "b.txt", "c.txt"]);
         assert_eq!(changes.status_of(&t.join("src")), Some('M'));
@@ -1309,35 +1263,36 @@ mod tests {
         run(&["stash", "-qu"]);
         run(&["checkout", "-q", "main"]);
         std::fs::write(t.join("a.txt"), "main\n").unwrap();
-        let mut on_main = Changes::open(&t, None);
-        assert_eq!((on_main.since.as_str(), on_main.files.len()), ("", 1));
+        let mut on_main = Changes::open(&t);
+        assert_eq!(on_main.files.len(), 1);
         run(&["commit", "-qam", "done"]);
         on_main.load();
         assert!(on_main.files.is_empty());
-        assert_eq!(on_main.history.commits.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["done", "start"]);
         run(&["checkout", "-q", "task"]);
         run(&["stash", "pop", "-q"]);
-        let head = git(&t, &["rev-parse", "HEAD"]).unwrap();
-        let changes = Changes::open(&t, Some(head));
+        let changes = Changes::open(&t);
         assert_eq!(changes.files.iter().map(|f| f.path.display().to_string()).collect::<Vec<_>>(), vec!["src/b.txt", "c.txt"]);
-        assert!(changes.history.commits.is_empty());
+        run(&["add", "c.txt"]);
+        run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c"]);
+        let committed = Changes::open(&t);
+        assert_eq!(committed.files.iter().map(|f| (f.path.display().to_string(), f.status)).collect::<Vec<_>>(), [("c.txt".to_string(), 'A'), ("src/b.txt".to_string(), 'M')]);
         std::fs::remove_dir_all(&t).unwrap();
     }
 
     #[test]
-    fn shows_a_commit_on_its_own() {
+    fn edits_at_the_line_under_the_cursor() {
         let t = repo();
-        let history = Changes::open(&t, None).history;
-        let mut agent = Changes::of_commit(&t, &history.commits[0]);
-        agent.load();
-        assert_eq!(agent.files.iter().map(|f| (f.path.display().to_string(), f.status)).collect::<Vec<_>>(), [("a.txt".to_string(), 'M')]);
-        assert_eq!(agent.diff.as_ref().map(|(_, d)| (d.added, d.removed)), Some((1, 1)));
-        let run = |args: &[&str]| assert!(Command::new("git").current_dir(&t).args(args).output().unwrap().status.success());
-        run(&["checkout", "-q", "-f", "main"]);
-        let mut start = Changes::of_commit(&t, &Changes::open(&t, None).history.commits[0]);
-        start.load();
-        assert_eq!(start.files.len(), 2);
+        let mut changes = Changes::open(&t);
+        assert_eq!(changes.editing_at(), Some((t.join("src/b.txt"), Some(2))));
+        changes.move_cursor(-1, false);
+        assert_eq!(changes.editing_at(), Some((t.join("src/b.txt"), Some(1))));
+        changes.step(-1);
+        assert_eq!(changes.editing_at(), None);
         std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    fn checkout_main(t: &Path) {
+        assert!(Command::new("git").current_dir(t).args(["checkout", "-q", "main"]).output().unwrap().status.success());
     }
 
     fn comment(changes: &mut Changes, reading: bool, text: &str) {
@@ -1349,7 +1304,7 @@ mod tests {
     fn long_lines_wrap() {
         let t = repo();
         std::fs::write(t.join("src/b.txt"), format!("b\n{}\n", "x".repeat(25))).unwrap();
-        let mut changes = Changes::open(&t, None);
+        let mut changes = Changes::open(&t);
         changes.height = 10;
         changes.fit(17, None);
         assert_eq!(changes.shown, [Shown::Row(0), Shown::Row(1), Shown::Wrap { row: 1, piece: 1 }, Shown::Wrap { row: 1, piece: 2 }]);
@@ -1370,7 +1325,7 @@ mod tests {
     #[test]
     fn comments_say_where_they_are_and_show_under_their_lines() {
         let t = repo();
-        let mut changes = Changes::open(&t, None);
+        let mut changes = Changes::open(&t);
         assert_eq!(changes.left(), 2);
         comment(&mut changes, true, "why?");
         assert!(changes.commented(1) && !changes.commented(0));
@@ -1404,7 +1359,7 @@ mod tests {
     #[test]
     fn a_commented_change_folds_and_counts_as_done() {
         let t = repo();
-        let mut changes = Changes::open(&t, None);
+        let mut changes = Changes::open(&t);
         comment(&mut changes, true, "why?");
         (changes.cursor, changes.anchor) = (1, Some(0));
         comment(&mut changes, true, "both");
@@ -1419,8 +1374,9 @@ mod tests {
     #[test]
     fn comments_follow_their_code() {
         let t = repo();
+        checkout_main(&t);
         let b = t.join("src/b.txt");
-        let mut changes = Changes::open(&t, None);
+        let mut changes = Changes::open(&t);
         comment(&mut changes, true, "why?");
         let draft = Comment { text: "why now?".into(), ..changes.comments[0].clone() };
         std::fs::write(&b, "b\nnew\nmore\n").unwrap();
@@ -1496,6 +1452,7 @@ mod tests {
     #[test]
     fn folds_around_changes_and_keeps_approvals_through_edits() {
         let t = repo();
+        checkout_main(&t);
         let run = |args: &[&str]| assert!(Command::new("git").current_dir(&t).args(args).output().unwrap().status.success());
         let long = t.join("src/long.rs");
         let write = |a: &str, b: &str| {
@@ -1507,7 +1464,7 @@ mod tests {
         run(&["add", "src/long.rs"]);
         run(&["commit", "-qm", "long"]);
         write("a2", "b2");
-        let mut changes = Changes::open(&t, None);
+        let mut changes = Changes::open(&t);
         let row = changes.rows.iter().position(|r| r.path == long).unwrap();
         changes.state.select(Some(row));
         changes.follow();
@@ -1522,7 +1479,7 @@ mod tests {
         assert_eq!(changes.approve(), None);
         assert_eq!(changes.progress(&long), (1, 2));
         assert_eq!(load_approved().len(), 1);
-        let mut restarted = Changes::new(&t, None);
+        let mut restarted = Changes::new(&t);
         restarted.approved = load_approved();
         restarted.load();
         assert_eq!(restarted.progress(&long), (1, 2));
@@ -1573,6 +1530,7 @@ mod tests {
     #[test]
     fn scopes_and_hunks_hold_in_odd_cases() {
         let t = repo();
+        checkout_main(&t);
         let run = |args: &[&str]| assert!(Command::new("git").current_dir(&t).args(args).output().unwrap().status.success());
         let f = t.join("src/f.rs");
         let body = "        x;\n".repeat(30);
@@ -1582,7 +1540,7 @@ mod tests {
         std::fs::write(&f, format!("impl X {{\n    fn bar() {{\n    }}\n    fn foo(a, b) {{\n{body}        new;\n    }}\n}}\n")).unwrap();
         std::fs::write(t.join("src/__init__.py"), "").unwrap();
         run(&["config", "diff.noprefix", "true"]);
-        let mut changes = Changes::open(&t, None);
+        let mut changes = Changes::open(&t);
         assert_eq!(changes.progress(&t), (0, 4));
 
         changes.state.select(Some(0));
@@ -1605,31 +1563,6 @@ mod tests {
         let hunks = &parse_hunks(&t, diff)[&t.join("x")];
         assert_eq!(hunks.iter().map(|h| (h.old.clone(), h.new.clone())).collect::<Vec<_>>(), [(0..0, 1..3), (5..6, 7..8), (9..10, 11..12)]);
         assert_ne!(hunks[1].id, hunks[2].id);
-        std::fs::remove_dir_all(&t).unwrap();
-    }
-
-    #[test]
-    fn history_marks_what_origin_has() {
-        let t = repo();
-        let run = |args: &[&str]| assert!(Command::new("git").current_dir(&t).args(args).output().unwrap().status.success());
-        let subjects = |c: &Changes| c.history.commits.iter().map(|c| (c.subject.clone(), c.pushed)).collect::<Vec<_>>();
-        let changes = Changes::open(&t, None);
-        assert_eq!((subjects(&changes), changes.history.remote.is_none()), (vec![("agent".to_string(), false)], true));
-        run(&["update-ref", "refs/remotes/origin/task", "HEAD"]);
-        run(&["commit", "-qam", "more"]);
-        let changes = Changes::open(&t, None);
-        assert_eq!(subjects(&changes), [("more".to_string(), false), ("agent".to_string(), true)]);
-        run(&["update-ref", "refs/remotes/origin/task", "HEAD"]);
-        run(&["reset", "-q", "HEAD~1"]);
-        let changes = Changes::open(&t, None);
-        assert_eq!((subjects(&changes), changes.history.behind), (vec![("agent".to_string(), true)], 1));
-        run(&["checkout", "-q", "-f", "main"]);
-        run(&["commit", "-q", "--allow-empty", "-m", "later"]);
-        let mut on_main = Changes::open(&t, None);
-        assert_eq!((on_main.history.commits.len(), on_main.history.more), (2, false));
-        on_main.history_limit = 1;
-        on_main.load();
-        assert_eq!((subjects(&on_main), on_main.history.more), (vec![("later".to_string(), false)], true));
         std::fs::remove_dir_all(&t).unwrap();
     }
 }
