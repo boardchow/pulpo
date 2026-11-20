@@ -15,7 +15,7 @@ git commit -m "Fix the login check"
 git push -u origin HEAD
 ```
 
-History, at :kp[h], says `pushed` once origin has every commit. Open a pull request the way you usually do, for example with `gh pr create`.
+Open a pull request the way you usually do, for example with `gh pr create`.
 
 ## Merge without a pull request
 
@@ -29,9 +29,8 @@ This merges the workspace's branch into the branch checked out in the project's 
 
 ## Delete the workspace
 
-1. Press :kp[w] and select the workspace.
-2. Press :kp[x]. Pulpo asks first, and says what you'd lose: uncommitted changes, and commits on no branch.
-3. Press :k[y].
+1. Go to the workspace and press :kp[X], the [prefix](/docs/prefix-key) then X. Pulpo asks first, and says what you'd lose: uncommitted changes, and commits on no branch. In the workspace list, :k[⌃x] does the same for the selected workspace.
+2. Press :k[y]. Pulpo goes to another of your workspaces.
 
 Pulpo closes the workspace's terminals, runs your teardown script, and removes its containers, volumes, images and worktree.
 

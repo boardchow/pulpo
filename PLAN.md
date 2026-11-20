@@ -4,9 +4,9 @@ How Pulpo is built and what comes next. For using it, see the README.
 
 ## Scope
 
-Pulpo is a VS Code replacement in one Ghostty window: projects (your
-repositories), terminals (shells and Claude Code), changes, files, search.
-Terminals run in a background server, so quitting or rebuilding Pulpo
+Pulpo runs coding agents side by side, each in a workspace: its terminals,
+and a review of what it changed, full screen, a key away.
+Files (⌃b f) opens full screen only when asked, with its search; no history. Terminals run in a background server, so quitting or rebuilding Pulpo
 leaves them running (see "Terminals that keep running"). Git is the
 agents' job; the one place Pulpo does git is making and removing
 workspaces (git worktrees, see "Workspaces Pulpo makes"). Worktrees made otherwise
@@ -18,15 +18,15 @@ Pulpo made, as in Conductor.
 ```
 pulpo (one binary)
 ├── main.rs     terminal setup + event loop (one mpsc channel for everything)
-├── app.rs      state: focus, the prefix and its keys, the terminals' tabs, files, mouse, workspaces
-├── ui.rs       ratatui rendering: projects, workspaces, files, changes, history | terminal tabs
+├── app.rs      state: focus, the prefix and its keys, the terminals' tabs, the workspace list, the review, mouse
+├── ui.rs       ratatui rendering: the terminal and its tabs, the review, Files, the popups, the empty screen
 ├── keymap.rs   the prefix (cmd-p, ctrl-b), from keys.toml; `pulpo keytest` and the doctor read it
-├── input.rs    typing on the bottom line, with readline keys (ctrl-u, ctrl-w, alt-backspace)
-├── review.rs   Changes: what the workspace changed, as a tree, the selected file's diff
+├── input.rs    typing in a popup, with readline keys (ctrl-u, ctrl-w, alt-backspace)
+├── review.rs   the review: what the workspace's branch changed, as a tree, the selected file's diff
 ├── doctor.rs   `pulpo doctor` (the prefix, the hooks) and `pulpo keytest` (what a key sends)
 ├── project.rs  the project list, `~/.config/pulpo/projects`
-├── workspace.rs  per-checkout state (status, tree)
-├── search.rs   the search popup: file names filtered as you type (nucleo), tab for lines in files; the repositories to add
+├── workspace.rs  per-checkout state (branch, tree)
+├── search.rs   Files' search: file names filtered as you type (nucleo), tab for lines in files; the repositories in your home folder
 ├── term.rs     the terminal as Pulpo shows it: a vt100 mirror; snapshots, key and mouse encoding, selections
 ├── server.rs   `pulpo serve`: owns every terminal (PTY + emulator + state), upgrades in place
 ├── client.rs   connect to the server, or start it; its messages into the event loop
@@ -35,11 +35,11 @@ pulpo (one binary)
 ├── procs.rs    process trees (`ps`), to hang up what a terminal started
 ├── worktree.rs the workspaces Pulpo makes: worktree, includes, registry, ports, compose guess and override, setup and removal scripts
 ├── layout.rs   where you were, and what was open, across restarts and reboots
-├── viewer.rs   read-only file view (syntect), and the diffs Changes shows, inline with the words changed marked
+├── viewer.rs   Files' read-only view (syntect) with blame, and the diffs the review shows, inline with the words changed marked
 ├── editor.rs   editing a file, highlighted by the viewer's own code (identical by construction)
 ├── theme.rs    the colors on screen (UI, syntax, terminal palette): Pulpo Dark, or Ghostty's theme
-├── tree.rs     lazy file tree, gitignore-aware (ignore crate), and the tree of a list of paths
-├── git.rs      `git status --porcelain=v2` and `--numstat` parsers, the commits History shows
+├── tree.rs     Files' lazy tree, gitignore-aware (ignore crate), and the tree of a list of paths
+├── git.rs      the branch, blame
 ├── status.rs   program status reports (OSC 7501)
 └── agents.rs   optional hook-based agent status (`pulpo emit`, `pulpo hooks`)
 ```
@@ -50,52 +50,49 @@ Event sources feeding the loop:
 |----------------|--------------------------------------------|-----------------------------|
 | keyboard/mouse | crossterm reader thread                    | navigation, terminal input  |
 | server         | one reader thread on its socket            | terminal output, state, exit |
-| files          | `notify` watcher per workspace, throttled  | tree, git, viewer refresh   |
+| files          | `notify` watcher per workspace, throttled  | branch, review, Files refresh |
 | agents         | `notify` watcher on the event log          | agent status refresh        |
-| search         | background thread per query                | search results              |
+| search         | background thread per query or scan        | Files' search, repositories |
 
 ### Workspaces
 
-The sidebar has repositories (Projects) and the worktrees Pulpo made in every one
-(Workspaces, each with its project's name). A workspace only moves up: to the top when it starts
-waiting for you, above the quiet ones when it starts working (`App::reorder`, each frame); it stays
+The workspace list (⌃b w, or a click on the workspace's name) has the worktrees Pulpo made in every
+project (each with its project's name), then `+ new workspace`; typing filters it. A new workspace
+(⌃b n, or that row) is its repository picked (the projects first, the one on screen on top, then
+the repositories found in your home folder), then its name and, after Tab, its branch, all in one
+popup, centered over the screen veiled behind it, where questions and messages show too. ⌃b X,
+or ⌃x in the list, deletes one. A repository becomes a project once a workspace is made in it.
+A workspace only moves up: to the top when it starts waiting for you, above the quiet ones when
+it starts working (`App::reorder`, each frame); it stays
 put when it calms down, so reading one leaves it where it is.
-Each is a `Workspace`: a project's row is the repository's own checkout, so selecting a project
-opens it. Selecting a workspace of another project makes that project the current one.
-The current workspace decides what the terminal and the panels show: its
-terminals, files and changes. A terminal belongs to the checkout it
+Each is a `Workspace`; a project's own checkout is one too, unlisted: where `pulpo` run in a repository
+with no workspace yet opens.
+The current workspace decides what the screen shows: its
+terminals and its review. A terminal belongs to the checkout it
 was started in (`info.cwd`), so terminals that kept running fall back into
 their workspace on their own; one started outside every checkout goes to
 the workspace on screen. The app keeps the active terminal by id, remembered
 per workspace, and the workspace last used in each project (where `pulpo`,
 run in the repository, starts). A workspace's and a project's mark is the most
-urgent state of its own terminals.
+urgent state of its own terminals. Only the workspace on screen is read (its branch, the review).
 
 ### The screen
 
-Two columns and a bottom line, nothing else. Left: the pulpo, then two
-panels as tall as their rows: the projects, and every project's
-workspaces, the ones waiting for you on top. A project's and a workspace's mark come first on their row. Right: the workspace's
-terminals as tabs, drawn on the top of its frame (in the order of `terms`,
-which is the order they came in; the one on screen is kept by tag per
-workspace). There is always one: a shell opens in a checkout on screen without
-any, at most once a second for each, so a shell that exits at once isn't started
-again and again. Under Workspaces, three trees share the rest, 2:2:1:
-Files, Changes and History. ⏎ or a click on a file, a change or a
-commit, or editing, shows it in place of the terminal, and esc takes
-it back. Only a click moves the focus; hovering or scrolling a panel
-doesn't. The sidebar keeps the width it was dragged to while Pulpo runs. The bottom line is where you type a name, answer a
-question (y), or read a message; its right end shows the current checkout's branch.
+The terminal, its frame carrying the workspace's name, its tabs (in the order of `terms`,
+the one on screen kept by tag per workspace) and, on the right, how many other workspaces
+wait for you, and how many changes are left to review. ⌃b r opens the review full screen: the files
+left, the file right. A bottom line is where you
+read a message; its right end shows the branch. There is always a
+terminal: a shell opens in a checkout on screen without any, at most once a second for each,
+so a shell that exits at once isn't started again and again. With no project yet, the screen
+is the pulpo and "No workspaces"; ⏎ opens the repository finder.
 
-Keys go to what has the focus. The prefix (⌘p or ⌃b, then one key) is
-taken from anywhere first: p w t f c h move the focus, F C H open Files, Changes, the selected commit full screen, 1 to 9 go to that workspace (numbered in
-the list) and its terminal, n and x make and close what has it, N makes a workspace in any project (picked on the bottom line), [ ] change tabs, a goes to who waits, / opens the search
-popup (over everything; a file found opens full screen), d e r
-act on files, q and Q quit. < hides or shows the sidebar; ? shows the keybinds in a popup (any key closes it). The prefix waits 3 s for its key; a click cancels it. ⌃b twice sends one to the program. The editor
-saves with ⌘s or ⌃s and stays open; esc leaves it. A panel opens wide with the
-keys on its file; esc puts them on its tree (the file follows), ⏎ or tab
-back on the file. Esc steps back one level: file (or editor), tree,
-the terminal.
+Keys go to what has the focus: the terminal, the review or Files, each full screen. The prefix
+(⌃b) is taken from anywhere first: w the list, n a new workspace (in the review: a comment; in
+Files: a file), X deletes it, t and x a terminal, [ ] tabs, 1 to 9 a workspace, a who waits, r the
+review, f Files (where / searches, and e r d edit, rename, delete), e the editor (from the review), ?
+the keys, q and Q quit. The prefix waits 3 s for its key; a click cancels it. ⌃b twice
+sends one to the program. Only a click moves the focus.
 
 ### Agent status
 
@@ -105,16 +102,21 @@ resizing) is the program answering you, and runs shorter than 0.3 s are
 redraws. When a run of at least a second ends, or the bell rings, the
 terminal has something to read (magenta) until you go into it. The Claude
 Code hooks (`pulpo hooks install`) say exactly when Claude waits or stops, and
-what it asks, for the notification; the sidebar shows only the state. Each terminal Pulpo starts gets a
+what it asks, for the notification; the marks show only the state. Each terminal Pulpo starts gets a
 `PULPO_TAB` env var; `pulpo emit` records it, so hook events map to the right tab.
 A program that reports its own status (OSC 7501, `status.rs`) is taken at its
 word over both: blocked shows as waiting, working as working, and done or
 error leave something to read. A new shell prompt (OSC 133 A) ends its runs.
 
-### Changes
+### The review
 
-Changes is what isn't committed: the workspace against HEAD, so a commit
-takes its changes away (into History). The list of files comes from `git diff --name-status`
+The review is what the workspace's branch changed: against where it left
+origin's default branch (`review::base`, a merge-base, so merging main in
+shows nothing of main's), HEAD on the default branch itself, so committed
+work shows too. It opens full screen with ⌃b r, or a click on the frame's `n to review`, which
+counts the changes neither approved nor commented on. Sending it, or approving everything,
+closes it. ⌃b e opens the
+editor in its place, at the cursor's line. The list of files comes from `git diff --name-status`
 and `ls-files --others`; only the selected file's diff is read, as the whole
 file (`--unified=1000000`) with its changes inline, both sides highlighted
 (reloads run on a thread: `Request::read`, then `Changes::apply`, dropping
@@ -134,28 +136,11 @@ one with `a` outlives the agent's edits elsewhere, and Pulpo quitting
 finds a line's hunk by its line number.
 
 Comments on lines or files are drafts on `Changes`, by line number, the
-lines' text and the commit shown, and stay per workspace while Pulpo runs.
+lines' text, and stay per workspace while Pulpo runs.
 When the file changes, a comment moves to where its text went, or is marked
 outdated and sent quoting it. `Changes::fit` lays
-them out under their lines; ⌃b s pastes them all into the workspace's agent,
-then presses ⏎.
-
-### History
-
-Under Changes (a fifth of what Workspaces leaves): the commits since the workspace
-started, newest first. A workspace Pulpo made starts at the commit it was
-copied at (`base`, recorded when it is made), a checkout on another branch
-where it left the main one; the main branch shows all of it. It reads 100,
-then 100 more each time the selection comes within 20 of the end (the title
-says `100+`). A commit is pushed when `origin/<branch>` has it; the title says pushed, how many aren't,
-or not pushed, and how many origin has that HEAD doesn't. Read with Changes,
-on the same thread, so a commit or a push (refs move) updates both.
-
-⏎ or a click opens a commit full screen, read like Changes (its
-files against its parent, the first commit against the empty tree), its
-hash, subject, author and age in the title. It takes the place of the
-workspace's changes (`shelved`) while it is full screen; leaving it (esc,
-or the focus going elsewhere) brings them back, on History. Read-only, like the rest.
+them out under their lines; once every change is approved or commented on,
+they're pasted into the workspace's agent, for you to send with ⏎.
 
 ## Milestones
 
@@ -190,6 +175,7 @@ or the focus going elsewhere) brings them back, on History. Read-only, like the 
 - [x] Start again from Herdr's layout, keeping what's under it: projects and workspaces | terminal tabs | files over changes, a prefix from anywhere, the mouse for all of it. The palette, splits, layouts, the board, swarms, the graph, the review scroll, scrollback search and the theme picker are gone. A new workspace is yours at once, set up in the background.
 - [x] Workspaces as git worktrees, the industry's pattern (Conductor, Claude Code, Cursor): a branch from the remote's default branch, main's ignored files it needs, a block of ten ports, git in containers (see "Workspaces Pulpo makes").
 - [x] Workspace recipes: Conductor's settings read, an install guessed from lockfiles, a trust prompt for committed scripts (see "Workspaces Pulpo makes").
+- [x] Down to the essentials: the sidebar and History are gone, and Files (with the viewer and search) opens full screen only on ⌃b f. The terminal takes the screen, a list (⌃b w) holds the workspaces, a new one is a repository then a name, and the review opens full screen (⌃b r) when the frame says there are changes to review, against where the branch left main.
 - [ ] Codex support.
 
 ## Terminals that keep running
@@ -290,10 +276,9 @@ neither git nor ssh can ask on Pulpo's raw-mode terminal:
    A failure undoes what this call made: the worktree, and the branch if it
    made it (git won't delete a branch checked out elsewhere).
 
-Changes compares with the merge-base with the default branch (`base` is
-None for worktrees), so a rebase doesn't show main's commits as the
-workspace's. The file watcher sends `.git/worktrees/<id>/{HEAD,index}` to
-that worktree only; refs concern everyone. The sidebar lists a workspace's
+The review compares with the merge-base with origin's default branch, so a
+rebase doesn't show main's commits as the workspace's. The file watcher sends `.git/worktrees/<id>/{HEAD,index}` to
+that worktree only; refs concern everyone. The workspace list shows a workspace's
 worktree once, as the workspace. A registry entry whose folder is gone
 (deleted by hand) is forgotten, freeing its ports.
 
@@ -426,4 +411,4 @@ say nothing about what it runs.
   ⌘⇧N.
 - Dropped: a "setting up" marker for agents. A terminal's environment is
   fixed when it starts, and an agent wouldn't know to look for a file; the
-  sidebar already says it.
+  workspace's mark already says it.

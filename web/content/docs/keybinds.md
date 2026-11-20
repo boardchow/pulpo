@@ -7,133 +7,73 @@ order: 15
 
 Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌃b], then the key. In Pulpo, :kp[?] lists them.
 
-## Go to
+## Workspaces
 
 | Keys | Does |
 | --- | --- |
-| :kp[p] | Projects |
-| :kp[w] | Workspaces |
-| :kp[t] | The terminal |
-| :kp[f] | Files |
-| :kp[c] | Changes |
-| :kp[h] | History |
-| :kp[F] | The selected file, full screen |
-| :kp[C] | Changes full screen, at the first change not approved or commented on |
-| :kp[H] | The selected commit, full screen |
-| :kp[1] to :kp[9] | The workspace with that number, in its terminal |
+| :kp[w] | The workspace list |
+| :kp[n] | New workspace: pick its repository, then type its name |
+| :kp[X] | Delete the workspace you're in, after asking |
+| :kp[1] to :kp[9] | The first to ninth workspace in the list, in its terminal |
 | :kp[a] | The terminal that has waited longest for you |
-| :kp{k="["}, :kp{k="]"} | The previous, next terminal tab |
-| :kp[/] | Search |
 | :kp[?] | The list of every key. Any key closes it |
 
-## Show and hide
-
-| Keys | Does |
-| --- | --- |
-| :kp{k="<"} | Hide or show the left side: Projects, Workspaces, Files, Changes and History |
-
-## Create and close
-
-These act on the panel you're in.
-
-| Keys | Projects | Workspaces | Terminal | Files |
-| --- | --- | --- | --- | --- |
-| :kp[n] | Add a project | New workspace | New terminal | New file, or a folder if the name ends with `/` |
-| :kp[x] | Remove from the list, after asking | Delete the workspace, after asking | Close the terminal, asking if a program runs | Delete, after asking |
-
-These work from any panel:
-
-| Keys | Does |
-| --- | --- |
-| :kp[N] | New workspace in any project: :k[↑] :k[↓] picks the project, :k[⏎] asks for the name |
-| :kp[P] | New project |
-
-## Files only
-
-| Keys | Does |
-| --- | --- |
-| :kp[e] | Edit the selected file |
-| :kp[r] | Rename the selected file or folder |
-| :kp[d] | Delete it, after asking |
-
-## Changes only
-
-| Keys | Does |
-| --- | --- |
-| :kp[n] | Comment on the selected lines, or the selected file |
-| :kp[e] | Edit the comment at the cursor |
-| :kp[d] | Delete it, after asking |
-
-## Quit
-
-| Keys | Does |
-| --- | --- |
-| :kp[q] | Quit. The terminals keep running |
-| :kp[Q] | Stop every terminal and quit, after asking |
-
-Neither works while the editor has unsaved changes.
-
-## Terminal
+## Terminals
 
 Every key goes to the program, except the prefix.
 
 | Keys | Does |
 | --- | --- |
+| :kp[t] | New terminal |
+| :kp[x] | Close the terminal, asking if a program runs |
+| :kp{k="["}, :kp{k="]"} | The previous, next terminal tab |
 | :k[⌃b] :k[⌃b] | Sends :k[⌃b] to the program |
 
-## Projects and Workspaces
+## Files
 
 | Keys | Does |
 | --- | --- |
-| :k[↓] or :k[j] | Next row, and on into the other list at the end |
-| :k[↑] or :k[k] | Previous row, and on into the other list at the start |
-| :k[g] or :k[home] | First row |
-| :k[G] or :k[end] | Last row |
-| :k[→] | In Projects: go to Workspaces. In Workspaces: go to the terminal |
-| :k[←] | In Workspaces: go to Projects |
-| :k[⏎] | Go to the terminal |
+| :kp[f] | Open Files full screen, or close it |
+| :kp[/] | In Files: find a file by name. :k[tab] searches inside files, :k[⏎] opens it |
+| :kp[n] | In Files: new file in the selected folder, or a folder if the name ends with `/` |
+| :kp[e] :kp[r] :kp[d] | In Files: edit, rename, delete, after asking |
 
-## Files and Changes
+In the tree, :k[↓] :k[↑] or :k[j] :k[k] move, :k[pgdn] :k[pgup] go ten rows, :k[g] :k[G] the first and last, :k[→] :k[←] or :k[l] :k[h] fold, :k[⏎] reads the file and :k[esc] closes Files. Reading the file, the review's line keys work, :k[h] :k[l] scroll sideways, :k[0] goes back to the left edge, and :k[tab] or :k[esc] go back to the tree.
 
-In the tree:
+## Review
+
+| Keys | Does |
+| --- | --- |
+| :kp[r] | Open the review full screen, or close it |
+| :kp[n] | In the review: comment on the selected lines, or the selected file |
+| :kp[d] | In the review: delete the comment at the cursor, after asking |
+| :kp[e] | In the review: edit the file at the cursor's line |
+
+In the list of files:
 
 | Keys | Does |
 | --- | --- |
 | :k[↓] :k[↑] or :k[j] :k[k] | Next, previous row |
-| :k[pgdn] :k[pgup] | Ten rows down, up |
-| :k[g] :k[G] or :k[home] :k[end] | First, last row (Files only) |
 | :k[→] or :k[l] | Unfold a folder |
 | :k[←] or :k[h] | Fold a folder, or go to the one above |
-| :k[⏎] | Fold or unfold a folder; open a file full screen |
-| :k[esc] | Go to the terminal |
+| :k[⏎] | Fold or unfold a folder; go into a file |
+| :k[tab] | Go into the file |
+| :k[esc] | Close the review |
 
-Full screen, reading the file:
-
-| Keys | Does |
-| --- | --- |
-| :k[pgdn] :k[pgup] | Scroll a page down, up, keeping 2 lines in view |
-| :k[→] :k[←] or :k[l] :k[h] | Scroll sideways, in Files |
-| :k[0] | Back to the left edge, in Files |
-| :k[tab] | Go between the file and the tree |
-| :k[esc] | To the tree, then to the terminal beside it |
-
-A line cursor moves in the file. In Files, its line ends with who changed it last:
+In the file, a line cursor moves:
 
 | Keys | Does |
 | --- | --- |
 | :k[↓] :k[↑] or :k[j] :k[k] | Next, previous line |
 | :k[d] or :k[space], :k[u] | Half a page down, up |
 | :k[g] :k[G] or :k[home] :k[end] | First, last line |
-| :k[shift] :k[↓] :k[↑] or :k[J] :k[K] | Select lines, in Changes |
-| :k[esc] | Drop the selection, in Changes |
-
-In Changes:
-
-| Keys | Does |
-| --- | --- |
+| :k[pgdn] :k[pgup] | Scroll a page down, up, keeping 2 lines in view |
+| :k[shift] :k[↓] :k[↑] or :k[J] :k[K] | Select lines |
 | :k[n] :k[p] | Next, previous change, in the next files too |
 | :k[a] | Approve the change and go to the next one not approved or commented on. On an approved change, take it back |
 | :k[c] | Comment on the selected lines. On a commented change, open it to edit the comment |
+| :k[tab] | Go back to the list of files |
+| :k[esc] | Drop the selection, then go back to the list of files |
 
 Writing a comment:
 
@@ -144,22 +84,12 @@ Writing a comment:
 | :k[←] :k[→] :k[↑] :k[↓] | Move in the text |
 | :k[esc] | Cancel |
 
-## History
-
-| Keys | Does |
-| --- | --- |
-| :k[↓] :k[↑] or :k[j] :k[k] | Next, previous commit |
-| :k[pgdn] :k[pgup] | Ten commits down, up |
-| :k[g] :k[G] or :k[home] :k[end] | Newest, oldest commit loaded |
-| :k[⏎] | Open the commit full screen. :k[esc] comes back |
-| :k[esc] | Go to the terminal |
-
 ## Editor
 
 | Keys | Does |
 | --- | --- |
 | :k[⌃s] | Save |
-| :k[esc] | Leave. With unsaved changes, press twice to throw them away |
+| :k[esc] | Leave the editor. With unsaved changes, press twice to throw them away |
 | :k[⌃z] | Undo |
 | :k[⌃y] | Redo |
 | :k[⌃a] | Select all |
@@ -175,28 +105,34 @@ Writing a comment:
 
 Hold :k[shift] with a move to select.
 
-## Search
+## Quit
 
 | Keys | Does |
 | --- | --- |
-| :k[↓] :k[↑] | Next, previous result |
-| :k[⌃j] :k[⌃k], :k[⌃n] :k[⌃p] | Next, previous result |
-| :k[pgdn] :k[pgup] | Ten results down, up |
-| :k[tab] | Switch between file names and inside files |
-| :k[⏎] | Open the file full screen, at the line |
+| :kp[q] | Quit. The terminals keep running |
+| :kp[Q] | Stop every terminal and quit, after asking |
+
+Neither works while the editor has unsaved changes.
+
+## The workspace list
+
+| Keys | Does |
+| --- | --- |
+| Typing | Filter the list |
+| :k[↓] :k[↑], :k[⌃n] :k[⌃p] or :k[⌃j] :k[⌃k] | Next, previous row |
+| :k[⏎] | Go to the workspace. On `+ new workspace`: make one |
+| :k[⌃x] | Delete the selected workspace, after asking |
+| :k[⌫], :k[⌥⌫] or :k[⌃w], :k[⌃u] | Delete a character, a word, everything |
 | :k[esc] | Close |
 
-In the new project list, :k[↓] :k[↑], :k[pgdn] :k[pgup] and :k[esc] work the same, and :k[⏎] adds the selected repository, or the path you typed.
+In the list of repositories, typing filters, :k[↓] :k[↑] and :k[pgdn] :k[pgup] move, :k[⏎] picks the selected repository, or the path you typed, and :k[esc] closes it.
 
-## Typing a name or a search
+Naming a new workspace:
 
 | Keys | Does |
 | --- | --- |
-| :k[⌫] | Delete a character |
-| :k[⌥⌫], :k[⌃w] | Delete a word |
-| :k[⌃u] | Clear |
-| :k[tab] | In New workspace: switch between the name and the branch |
-| :k[⏎] | Confirm |
+| :k[tab] | Switch between the name and the branch |
+| :k[⏎] | Make the workspace |
 | :k[esc] | Cancel |
 
 ## Questions
@@ -210,14 +146,15 @@ In the new project list, :k[↓] :k[↑], :k[pgdn] :k[pgup] and :k[esc] work the
 
 | Action | Does |
 | --- | --- |
-| Click | Focus a panel, select a row, go to a tab. A file in Files or Changes, or a commit, opens full screen. `+` opens a terminal |
-| Click a selected folder | Fold or unfold it |
-| Double-click | A workspace: its terminal |
+| Click the workspace's name | Open the workspace list |
+| Click `◆ 2 waiting` | Go to the terminal that has waited longest |
+| Click a tab, `+` | Go to that terminal, open a new one |
+| Click `3 to review` | Open the review |
+| Click a row in a list | Select it. In the workspace list, go there |
 | Drag in a terminal | Select text and copy it. Hold :k[shift] if the program uses the mouse |
-| Drag a border | Resize the left side |
-| Wheel | Scroll. With :k[shift], scroll sideways in Files |
+| Wheel | Scroll. With :k[shift], scroll sideways in Files and the editor |
 | Click the marks beside a change | Jump to that change |
-| Click a line in Files or Changes, full screen | Put the line cursor there. In Changes, drag or :k[shift]-click selects lines |
-| Click a comment in Changes, full screen | Edit it |
-| Ctrl-click in a terminal | Open a link, or a path like `src/app.rs:120` in Files |
+| Click a line in the review | Put the line cursor there. Drag or :k[shift]-click selects lines |
+| Click a comment in the review | Edit it |
+| Ctrl-click in a terminal | Open a link, or a path like `src/app.rs:120` in the editor, at that line |
 | Click outside a list or question | Close it, or answer no |
