@@ -7,9 +7,9 @@ order: 11
 
 ## Projects
 
-A project is a git repository you work on with Pulpo. Running `pulpo` in a repository adds it, and so does making a workspace in it. Your projects come first when :kp[n] (the [prefix](/docs/prefix-key), then n) asks for a new workspace's repository.
+A project is a git repository you work on with Pulpo. Opening a repository or making a workspace in it with :kp[n] (the [prefix](/docs/prefix-key), then n) adds it, and so does running `pulpo` in one. Your projects come first in that list, then the other repositories in your home folder.
 
-Running `pulpo` in a project's folder with no workspace yet opens on the project's own folder, on the branch it has checked out. While terminals run there, the workspace list shows it too, marked `project`.
+Running `pulpo` in a project's folder with no workspace yet opens on the project's own folder, on the branch it has checked out. To open a project's folder from inside Pulpo, press :kp[n], pick the repository and leave the name empty. While terminals run there, the workspace list shows it too, marked `project`. :k[⌃x] on it there closes its terminals and hides it: its folder stays.
 
 ## Workspaces
 

@@ -74,6 +74,7 @@ pub struct Picker {
 pub enum Confirm {
     DeleteFile(PathBuf),
     DeleteWorkspace(PathBuf),
+    HideProject(PathBuf),
     CloseTerminal(usize),
     DeleteComment(Comment),
     StopAll,
@@ -1292,6 +1293,7 @@ impl App {
         match confirm {
             Confirm::DeleteFile(path) => self.delete(&path),
             Confirm::DeleteWorkspace(root) => self.remove_workspace(&root),
+            Confirm::HideProject(root) => self.hide_project(&root),
             Confirm::CloseTerminal(id) => self.close_terminal(id),
             Confirm::DeleteComment(comment) => {
                 if let Some(changes) = &mut self.changes {
@@ -1390,7 +1392,7 @@ impl App {
         }
     }
 
-    fn picked(&self) -> Option<Pick> {
+    pub fn picked(&self) -> Option<Pick> {
         self.picks().get(self.picker.as_ref()?.state.selected()?).cloned()
     }
 
@@ -1429,12 +1431,19 @@ impl App {
                 let what = if wt.kind == worktree::Kind::Worktree { "folder" } else { "copy" };
                 let kept = worktree::kept_branch(&wt).map(|b| format!("; branch {b} stays")).unwrap_or_default();
                 let place = self.place(&wt.root).unwrap_or(wt.name.clone());
-                let question = format!("delete workspace {place}: its {what}, containers and database{lost}{kept}?");
+                let question = format!("delete workspace {place}: its {what}, containers and database{lost}{}{kept}?", self.stopping(&root));
                 self.ask(question, Confirm::DeleteWorkspace(wt.root));
             }
             None if self.workspaces[i].is_worktree() => self.message = Some(format!("{name} is still being made")),
-            None => self.message = Some(format!("{name} is the project's own folder: only the workspaces Pulpo made are deleted")),
+            None => self.ask(format!("hide project {name}: close its terminals{}; its folder stays?", self.stopping(&root)), Confirm::HideProject(root)),
         }
+    }
+
+    fn stopping(&self, root: &Path) -> String {
+        let mut running: Vec<String> = self.terms.iter().filter(|t| t.info.cwd == root).filter_map(|t| t.info.running.clone()).collect();
+        running.sort();
+        running.dedup();
+        if running.is_empty() { String::new() } else { format!(", stopping {}", running.join(" and ")) }
     }
 
     fn edit(&mut self) {
@@ -2376,6 +2385,27 @@ impl App {
     fn remove_workspace(&mut self, root: &Path) {
         let Some(wt) = self.worktrees.iter().find(|s| s.root == root).cloned() else { return };
         self.remove(wt, true);
+    }
+
+    fn hide_project(&mut self, root: &Path) {
+        // Its workspaces are listed only while it is a project.
+        if !self.workspaces.iter().any(|w| w.repo == root && w.is_worktree()) {
+            project::unregister(root);
+        }
+        if self.ws().root == root
+            && let Some(next) = self.picks().into_iter().find_map(|p| match p {
+                Pick::Go(i) if self.workspaces[i].root != root => Some(i),
+                _ => None,
+            })
+        {
+            self.set_current(next);
+        }
+        self.load_workspaces();
+        let ids: Vec<usize> = self.terms.iter().filter(|t| t.info.cwd == root).map(|t| t.id).collect();
+        for id in ids {
+            self.close_terminal(id);
+        }
+        self.message = Some(format!("project {} hidden; its folder stays", root.file_name().unwrap_or_default().to_string_lossy()));
     }
 
     fn remove(&mut self, wt: worktree::Worktree, asked: bool) {
