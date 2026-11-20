@@ -13,7 +13,7 @@ Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌃b], then the key. 
 | --- | --- |
 | :kp[w] | The workspace list |
 | :kp[n] | New workspace: pick its repository, then type its name |
-| :kp[X] | Delete the workspace you're in, after asking |
+| :kp[X] | Delete the workspace you're in, after asking. In a project's own folder: hide the project, its folder stays |
 | :kp[1] to :kp[9] | The first to ninth workspace in the list, in its terminal |
 | :kp[a] | The terminal that has waited longest for you |
 | :kp[?] | The list of every key. Any key closes it |
@@ -121,7 +121,7 @@ Neither works while the editor has unsaved changes.
 | Typing | Filter the list |
 | :k[↓] :k[↑], :k[⌃n] :k[⌃p] or :k[⌃j] :k[⌃k] | Next, previous row |
 | :k[⏎] | Go to the workspace. On `+ new workspace`: make one |
-| :k[⌃x] | Delete the selected workspace, after asking |
+| :k[⌃x] | Delete the selected workspace, after asking. On a project: hide it, its folder stays |
 | :k[⌫], :k[⌥⌫] or :k[⌃w], :k[⌃u] | Delete a character, a word, everything |
 | :k[esc] | Close |
 

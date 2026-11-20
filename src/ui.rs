@@ -531,7 +531,11 @@ fn draw_picker(frame: &mut Frame, app: &mut App, area: Rect) {
             Pick::New => ListItem::new(Line::from(vec![Span::from(" + ").fg(theme::blue()).bold(), Span::from("new workspace").fg(theme::muted())])),
         })
         .collect();
-    let (popup, inner) = popup(frame, area, "", " ⏎ go · ⌃x delete it · esc close ", app.message.as_deref(), items.len().clamp(1, 14) + 2);
+    let x = match app.picked() {
+        Some(Pick::Go(i)) if !app.workspaces[i].is_worktree() => "hide",
+        _ => "delete",
+    };
+    let (popup, inner) = popup(frame, area, "", &format!(" ⏎ go · ⌃x {x} it · esc close "), app.message.as_deref(), items.len().clamp(1, 14) + 2);
     let [input, _, list] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(inner);
     (app.areas.popup, app.areas.popup_list) = (popup, list);
     let Some(picker) = &mut app.picker else { return };
@@ -651,7 +655,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
             vec![
                 (prefixed("w"), "go to one: type to filter"),
                 (prefixed("n"), "new workspace: pick its repository, then name it"),
-                (prefixed("X"), "delete this workspace, after asking"),
+                (prefixed("X"), "delete this workspace, or hide this project, after asking"),
                 (prefixed("1-9"), "the first to ninth workspace in the list"),
                 (prefixed("a"), "the next one waiting for you"),
             ],

@@ -60,8 +60,11 @@ The workspace list (⌃b w, or a click on the workspace's name) has the worktree
 project (each with its project's name), then `+ new workspace`; typing filters it. A new workspace
 (⌃b n, or that row) is its repository picked (the projects first, the one on screen on top, then
 the repositories found in your home folder), then its name and, after Tab, its branch, all in one
-popup, centered over the screen veiled behind it, where questions and messages show too. ⌃b X,
-or ⌃x in the list, deletes one. A repository becomes a project once a workspace is made in it.
+popup, centered over the screen veiled behind it, where questions and messages show too. With no
+name or branch, ⏎ opens the project's own folder instead. ⌃b X, or ⌃x in the list, deletes one.
+On a project's own folder they hide it instead: its terminals close, so it leaves the list, and if
+it has no workspace it stops being a project; its folder stays. A repository becomes a project
+once a workspace is made in it, or it is opened.
 A workspace only moves up: to the top when it starts waiting for you, above the quiet ones when
 it starts working (`App::reorder`, each frame); it stays
 put when it calms down, so reading one leaves it where it is.
