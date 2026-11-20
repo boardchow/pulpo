@@ -70,9 +70,16 @@ impl Search {
         search
     }
 
-    pub fn set_repos(&mut self, repos: Vec<String>, tx: &Sender<Msg>) {
-        if self.mode == Mode::Repos {
-            self.files = Arc::new(repos);
+    pub fn repos(home: PathBuf, projects: Vec<String>, tx: &Sender<Msg>) -> Self {
+        let mut search = Search::new(Mode::Repos, home, tx);
+        search.files = Arc::new(projects);
+        search.update(tx);
+        search
+    }
+
+    pub fn set_repos(&mut self, found: Vec<String>, tx: &Sender<Msg>) {
+        if self.mode == Mode::Repos && self.scanning {
+            self.files = Arc::new(self.files.iter().cloned().chain(found).collect());
             self.scanning = false;
             self.update(tx);
         }

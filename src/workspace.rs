@@ -15,7 +15,7 @@ pub struct Workspace {
     pub status: Status,
     pub tree: Tree,
     pub files_state: ListState,
-    /// `git status` runs off the UI thread, one at a time; changes meanwhile ask for another.
+    /// The branch is read off the UI thread, one read at a time; changes meanwhile ask for another.
     status_since: Option<Instant>,
     status_stale: bool,
     ignore: Gitignore,
@@ -54,7 +54,7 @@ impl Workspace {
         self.reselect(selected);
     }
 
-    /// Whether to start a `git status` now.
+    /// Whether to start reading the branch now.
     pub fn begin_status(&mut self) -> bool {
         if self.reading_status() {
             self.status_stale = true;

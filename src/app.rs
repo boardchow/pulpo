@@ -19,21 +19,18 @@ use crate::layout::{self, Layout};
 use crate::proto::{Info, PROTOCOL, ToClient, ToServer};
 use crate::review::{Changes, Comment, Shown};
 use crate::search::{Mode, Search, expand_home};
+use crate::viewer::{Source, Viewer};
 use crate::worktree;
 use crate::status::Status;
 use crate::term::Term;
-use crate::viewer::{Source, Viewer};
 use crate::project;
 use crate::workspace::Workspace;
 
 const NOTICE_EVERY: Duration = Duration::from_secs(10);
 const MESSAGE_FOR: Duration = Duration::from_secs(5);
 const UNSAVED: &str = "unsaved changes in the editor: ⌃s saves them, esc twice throws them away";
-const READ_ONLY: &str = "a commit is only to read";
 const PREFIX_FOR: Duration = Duration::from_secs(3);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
-/// Another workspace only shows how many changes it has: its `git status` can wait this long.
-const OTHERS_STATUS: Duration = Duration::from_secs(3);
 /// How long a terminal just switched to may wait for its snapshot before it's drawn empty.
 const SNAPSHOT: Duration = Duration::from_millis(100);
 /// A resumed agent reprints its conversation meanwhile: that isn't news.
@@ -41,62 +38,64 @@ const RESUMING: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Focus {
-    Projects,
-    Workspaces,
     Terminal,
+    Review,
     Files,
-    Changes,
-    History,
 }
 
-pub enum Ask {
-    /// Which of `projects` the workspace is made in.
-    Project(usize),
-    /// The text is the name; this, the branch (empty: from the name).
-    Workspace(String),
-    /// The text is the branch; this, the name.
-    Branch(String),
-    File(PathBuf),
+pub enum FileAsk {
+    New(PathBuf),
     Rename(PathBuf),
 }
 
-pub struct Prompt {
-    pub ask: Ask,
+pub struct FileInput {
+    pub ask: FileAsk,
     pub text: String,
 }
 
+#[derive(Clone)]
+pub enum Pick {
+    Go(usize),
+    New,
+}
+
+pub struct Naming {
+    pub repo: PathBuf,
+    pub name: String,
+    pub branch: String,
+    pub on_branch: bool,
+}
+
+pub struct Picker {
+    pub query: String,
+    pub state: ListState,
+}
+
 pub enum Confirm {
-    RemoveProject(PathBuf),
+    DeleteFile(PathBuf),
     DeleteWorkspace(PathBuf),
     CloseTerminal(usize),
-    DeleteFile(PathBuf),
     DeleteComment(Comment),
     StopAll,
 }
 
 #[derive(Default, Clone)]
 pub struct Areas {
-    pub projects: Rect,
-    pub workspaces: Rect,
+    pub name: Rect,
+    pub waiting: Rect,
+    pub to_review: Rect,
     pub tabs: Vec<(Option<usize>, Rect)>,
     pub term: Rect,
-    pub files_tree: Rect,
-    pub files_file: Rect,
+    pub review: Rect,
     pub changes_tree: Rect,
     pub changes_file: Rect,
     pub changes_ruler: Rect,
-    pub history: Rect,
-    pub panels: Vec<(Focus, Rect)>,
     pub editor: Rect,
-    pub left_divider: Rect,
+    pub files_tree: Rect,
+    pub files_file: Rect,
     pub yes: Rect,
     pub popup: Rect,
     pub popup_list: Rect,
-}
-
-#[derive(Clone, Copy)]
-enum Drag {
-    Sidebar,
 }
 
 pub struct Selecting {
@@ -110,8 +109,6 @@ pub struct App {
     pub workspaces: Vec<Workspace>,
     pub worktrees: Vec<worktree::Worktree>,
     pub current: usize,
-    pub projects_state: ListState,
-    pub workspaces_state: ListState,
     pub no_projects: bool,
     pub focus: Focus,
     pub agents: Agents,
@@ -121,18 +118,18 @@ pub struct App {
     prefixed_at: Option<Instant>,
     pub quit: bool,
     pub help: bool,
-    pub left_hidden: bool,
-    pub prompt: Option<Prompt>,
     pub asking: Option<(String, Confirm)>,
     pub message: Option<String>,
     message_since: Option<(String, Instant)>,
+    pub picker: Option<Picker>,
+    pub naming: Option<Naming>,
+    /// Only while Files is open.
     pub search: Option<Search>,
-    pub repos: Option<Search>,
+    pub file_input: Option<FileInput>,
     pub viewer: Viewer,
+    pub repos: Option<Search>,
     pub editor: Option<Editor>,
     discard: bool,
-    pub files_expanded: bool,
-    pub changes_expanded: bool,
     pub writing: Option<Comment>,
     /// A byte index in its text.
     pub writing_at: usize,
@@ -140,10 +137,6 @@ pub struct App {
     drafts: HashMap<PathBuf, Vec<Comment>>,
     pub reading: bool,
     pub changes: Option<Changes>,
-    /// The workspace's changes, while a commit is shown in their place.
-    pub shelved: Option<Changes>,
-    pub left_width: Option<u16>,
-    dragging: Option<Drag>,
     pub selecting: Option<Selecting>,
     last_click: Option<(Position, Instant)>,
     pub keymap: Keymap,
@@ -152,6 +145,8 @@ pub struct App {
     /// Whether each worked, until you go there.
     setup_ended: HashMap<PathBuf, bool>,
     copying: HashSet<(PathBuf, String)>,
+    /// Repositories that become projects only if the workspace made in them is.
+    new_projects: HashSet<PathBuf>,
     removing: HashSet<PathBuf>,
     gone: HashSet<PathBuf>,
     last_term: HashMap<PathBuf, String>,
@@ -166,11 +161,9 @@ pub struct App {
     spawning: HashMap<u64, (bool, PathBuf)>,
     /// The shell a setup that worked hands its tab's place to.
     handing_over: HashSet<u64>,
-    /// The project a new workspace is made in.
-    pub new_in: PathBuf,
     /// When each folder last got a shell of its own, so one that exits at once isn't started again and again.
     kept: HashMap<PathBuf, Instant>,
-    /// The Workspaces list, top first, and each row's urgency when last placed.
+    /// The workspaces in the picker, top first, and each row's urgency when last placed.
     order: Vec<PathBuf>,
     placed: HashMap<PathBuf, u8>,
     next_token: u64,
@@ -184,10 +177,7 @@ pub struct App {
     last_reconnect: Option<Instant>,
     offline: bool,
     term_size: (u16, u16),
-    fs_dirty: HashSet<PathBuf>,
-    /// Other workspaces changed since their last `git status`.
-    stale: HashSet<PathBuf>,
-    others_read: Instant,
+    fs_dirty: bool,
     reload_list: bool,
     watcher: RecommendedWatcher,
     watched: HashSet<PathBuf>,
@@ -210,8 +200,6 @@ impl App {
             workspaces: Vec::new(),
             worktrees: Vec::new(),
             current: 0,
-            projects_state: ListState::default().with_selected(Some(0)),
-            workspaces_state: ListState::default().with_selected(Some(0)),
             no_projects: false,
             focus: Focus::Terminal,
             agents,
@@ -221,29 +209,25 @@ impl App {
             prefixed_at: None,
             quit: false,
             help: false,
-            left_hidden: false,
-            prompt: None,
             asking: None,
             message: keys_error.or_else(|| {
                 (!crate::agents::hooks_installed())
                     .then(|| "run `pulpo hooks install` to see what agents run and ask in each terminal".into())
             }),
             message_since: None,
+            picker: None,
+            naming: None,
             search: None,
-            repos: None,
+            file_input: None,
             viewer: Viewer::default(),
+            repos: None,
             editor: None,
             discard: false,
-            files_expanded: false,
-            changes_expanded: false,
             writing: None,
             writing_at: 0,
             drafts: HashMap::new(),
             reading: false,
             changes: None,
-            shelved: None,
-            left_width: None,
-            dragging: None,
             selecting: None,
             last_click: None,
             keymap,
@@ -251,6 +235,7 @@ impl App {
             setting_up: HashMap::new(),
             setup_ended: HashMap::new(),
             copying: HashSet::new(),
+            new_projects: HashSet::new(),
             removing: HashSet::new(),
             gone: HashSet::new(),
             last_term: layout.terminals.clone().into_iter().collect(),
@@ -262,7 +247,6 @@ impl App {
             link,
             spawning: HashMap::new(),
             handing_over: HashSet::new(),
-            new_in: PathBuf::new(),
             kept: HashMap::new(),
             order: Vec::new(),
             placed: HashMap::new(),
@@ -277,9 +261,7 @@ impl App {
             last_reconnect: None,
             offline: false,
             term_size: (24, 80),
-            fs_dirty: HashSet::new(),
-            stale: HashSet::new(),
-            others_read: Instant::now(),
+            fs_dirty: false,
             reload_list: false,
             watcher,
             watched: HashSet::new(),
@@ -310,7 +292,6 @@ impl App {
     fn load_workspaces(&mut self) {
         let (current, repo) = self.workspaces.get(self.current).map(|w| (w.root.clone(), w.repo.clone())).unzip();
         let mut old = std::mem::take(&mut self.workspaces);
-        let known: HashSet<PathBuf> = old.iter().map(|w| w.root.clone()).collect();
         let mut reuse = |root: PathBuf, repo: &Path| match old.iter().position(|w| w.root == root) {
             Some(i) => old.swap_remove(i),
             None => Workspace::new(root, repo.to_path_buf()),
@@ -342,14 +323,6 @@ impl App {
         if self.no_projects {
             // No folder, so nothing is watched or run until a project is added.
             self.workspaces.push(reuse(PathBuf::new(), Path::new("")));
-            if self.repos.is_none() {
-                self.open_repo_picker();
-            }
-        }
-        for i in 0..self.workspaces.len() {
-            if !known.contains(&self.workspaces[i].root) {
-                self.read_status(i);
-            }
         }
         match current.as_ref().map(|c| self.workspaces.iter().position(|w| &w.root == c)) {
             None => self.current = self.current.min(self.workspaces.len() - 1),
@@ -360,7 +333,6 @@ impl App {
                 self.set_current(i);
             }
         }
-        self.sync_lists();
         self.sync_watches();
         // Once the list and the current workspace are settled.
         for s in gone {
@@ -390,28 +362,23 @@ impl App {
             // The workspace on screen is still there to keep its editor.
             if self.current < self.workspaces.len() && self.editing() {
                 self.message = Some(UNSAVED.into());
-                self.sync_lists();
                 return false;
             }
-            let approved = self.shelved.take().or(self.changes.take()).map(|changes| {
+            let approved = self.changes.take().map(|changes| {
                 self.drafts.insert(changes.root, changes.comments);
                 changes.approved
             });
             self.writing = None;
             self.current = i;
             self.editor = None;
+            self.focus = Focus::Terminal;
             self.viewer.close();
-            self.search = None;
-            self.files_expanded = false;
-            self.changes_expanded = false;
+            (self.search, self.file_input) = (None, None);
             self.selecting = None;
-            self.workspaces[i].refresh();
-            self.stale.remove(&self.workspaces[i].root);
             if !self.workspaces[i].reading_status() {
                 self.read_status(i);
             }
-            let base = self.worktrees.iter().find(|s| s.root == self.workspaces[i].root).and_then(|s| s.base.clone());
-            let mut changes = Changes::new(&self.workspaces[i].root, base);
+            let mut changes = Changes::new(&self.workspaces[i].root);
             changes.comments = self.drafts.remove(&changes.root).unwrap_or_default();
             changes.approved = approved.unwrap_or_else(crate::review::load_approved);
             self.changes = Some(changes);
@@ -424,11 +391,9 @@ impl App {
                 self.message = Some("this workspace's setup failed: its setup tab shows why".into());
             }
             self.keep_a_terminal();
-            self.preview();
         }
         let ws = &self.workspaces[i];
         self.last_workspace.insert(ws.repo.clone(), ws.root.clone());
-        self.sync_lists();
         true
     }
 
@@ -436,18 +401,7 @@ impl App {
         self.editor.as_ref().is_some_and(|e| e.dirty)
     }
 
-    pub fn projects(&self) -> Vec<usize> {
-        let mut out: Vec<usize> = Vec::new();
-        for (i, w) in self.workspaces.iter().enumerate() {
-            if !out.iter().any(|&o| self.workspaces[o].repo == w.repo) {
-                out.push(i);
-            }
-        }
-        out.sort_by_key(|&i| self.workspaces[i].name.to_lowercase());
-        out
-    }
-
-    /// The workspaces Pulpo made, as `reorder` last left them; a project's own folder is its row in Projects.
+    /// The workspaces Pulpo made, as `reorder` last left them.
     pub fn workspace_order(&self) -> Vec<usize> {
         let mut all: Vec<usize> = self.order.iter().filter_map(|root| self.workspaces.iter().position(|w| &w.root == root)).collect();
         let unplaced: Vec<usize> = (0..self.workspaces.len()).filter(|&i| self.workspaces[i].is_worktree() && !all.contains(&i)).collect();
@@ -478,22 +432,10 @@ impl App {
         Some(if ws.is_worktree() { format!("{repo}/{}", ws.name) } else { repo.clone() })
     }
 
-    fn sync_lists(&mut self) {
-        let repo = &self.ws().repo;
-        let in_repos = self.projects().iter().position(|&i| &self.workspaces[i].repo == repo);
-        let in_workspaces = self.workspace_order().iter().position(|&i| i == self.current);
-        self.projects_state.select(in_repos);
-        self.workspaces_state.select(in_workspaces);
-    }
-
     pub fn on_fs(&mut self, paths: &[PathBuf]) {
         for path in paths {
-            for w in &self.workspaces {
-                // A build writes thousands of files: once a workspace is marked, skip matching its .gitignore.
-                if !self.fs_dirty.contains(&w.root) && w.is_affected(path) {
-                    self.fs_dirty.insert(w.root.clone());
-                }
-            }
+            // A build writes thousands of files: once marked, skip matching the .gitignore.
+            self.fs_dirty = self.fs_dirty || self.ws().is_affected(path);
             let added_or_removed = self.workspaces.iter().any(|w| {
                 path.strip_prefix(w.repo.join(".git/worktrees")).is_ok_and(|rel| rel.components().count() == 1)
             });
@@ -503,37 +445,24 @@ impl App {
     }
 
     pub fn fs_pending(&self) -> bool {
-        !self.fs_dirty.is_empty() || self.reload_list || (!self.stale.is_empty() && self.others_read.elapsed() >= OTHERS_STATUS)
+        self.fs_dirty || self.reload_list
     }
 
     pub fn flush_fs(&mut self) {
         if std::mem::take(&mut self.reload_list) {
             self.load_workspaces();
         }
-        let dirty = std::mem::take(&mut self.fs_dirty);
-        let current = self.ws().root.clone();
-        self.stale.extend(dirty.iter().filter(|root| **root != current).cloned());
-        if dirty.contains(&current) {
+        if std::mem::take(&mut self.fs_dirty) {
             self.read_status(self.current);
-        }
-        if !self.stale.is_empty() && self.others_read.elapsed() >= OTHERS_STATUS {
-            self.others_read = Instant::now();
-            let stale = std::mem::take(&mut self.stale);
-            for i in 0..self.workspaces.len() {
-                if stale.contains(&self.workspaces[i].root) {
-                    self.read_status(i);
-                }
-            }
-        }
-        if dirty.contains(&self.ws().root) {
-            // Only the current workspace's tree shows; another's is rebuilt when it becomes current.
-            self.ws_mut().refresh();
-            if let Some(next) = self.viewer.reload() {
-                self.load_preview(next);
-            }
             self.reload_changes();
-            if let Some(search) = &mut self.search {
-                search.rescan(&self.tx);
+            if self.focus == Focus::Files {
+                self.ws_mut().refresh();
+                if let Some(next) = self.viewer.reload() {
+                    self.load_preview(next);
+                }
+                if let Some(search) = &mut self.search {
+                    search.rescan(&self.tx);
+                }
             }
             if let Some(editor) = &mut self.editor
                 && editor.reload_if_changed()
@@ -565,19 +494,6 @@ impl App {
         }
     }
 
-    fn load_preview(&self, (path, stamp): (PathBuf, crate::viewer::Stamp)) {
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(Msg::Viewed(Box::new(crate::viewer::load(path, stamp))));
-        });
-    }
-
-    pub fn on_viewed(&mut self, loaded: crate::viewer::Loaded) {
-        if let Some(next) = self.viewer.loaded(loaded) {
-            self.load_preview(next);
-        }
-    }
-
     fn reload_changes(&mut self) {
         if self.making(&self.ws().root) {
             return;
@@ -596,23 +512,11 @@ impl App {
         if changes.diff.as_ref().is_some_and(|(path, _)| *path == draft.path) {
             changes.follow_draft(draft);
         } else {
-            // Its file left Changes: kept, the comment keeps the file there.
+            // Its file left the review: kept, the comment keeps the file there.
             self.keep_writing();
         }
     }
 
-    fn open_commit(&mut self) {
-        let Some(changes) = &self.changes else { return };
-        let Some(commit) = changes.history_state.selected().and_then(|i| changes.history.commits.get(i)) else { return };
-        let commit = Changes::of_commit(&changes.root, commit);
-        self.shelved = self.changes.take();
-        self.changes = Some(commit);
-        self.writing = None;
-        (self.focus, self.changes_expanded, self.reading) = (Focus::Changes, true, false);
-        self.reload_changes();
-    }
-
-    /// A commit is shown only full screen: leaving it brings the workspace's changes back.
     pub fn settle(&mut self) {
         if self.watching != self.active {
             if let Some(term) = self.watching.and_then(|id| self.terms.iter_mut().find(|t| t.id == id)) {
@@ -622,14 +526,6 @@ impl App {
             self.watched_at = Instant::now();
             self.link.send(&ToServer::Watch { id: self.active.map(|id| id as u32) });
         }
-        if self.shelved.is_some() && !(self.focus == Focus::Changes && self.changes_expanded) {
-            self.changes = self.shelved.take();
-            self.writing = None;
-            if self.focus == Focus::Changes {
-                self.focus = Focus::History;
-            }
-            self.reload_changes();
-        }
         if self.focus == Focus::Files && self.reading && self.editor.is_none()
             && let Some((path, stamp)) = self.viewer.blame_due()
         {
@@ -638,6 +534,19 @@ impl App {
                 let blame = git::blame(&path);
                 let _ = tx.send(Msg::Blamed(path, stamp, blame));
             });
+        }
+    }
+
+    fn load_preview(&self, (path, stamp): (PathBuf, crate::viewer::Stamp)) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Viewed(Box::new(crate::viewer::load(path, stamp))));
+        });
+    }
+
+    pub fn on_viewed(&mut self, loaded: crate::viewer::Loaded) {
+        if let Some(next) = self.viewer.loaded(loaded) {
+            self.load_preview(next);
         }
     }
 
@@ -664,16 +573,35 @@ impl App {
             changes.comments.clear();
         }
         self.select_term(id);
-        self.set_focus(Focus::Terminal);
+        self.close_review();
         self.message = Some("review typed in: ⏎ sends it".into());
     }
 
     fn finish_review(&mut self) {
         match &self.changes {
             Some(changes) if changes.left() == 0 && !changes.comments.is_empty() => self.send_review(),
-            Some(changes) if changes.left() == 0 => self.set_focus(Focus::Terminal),
+            Some(changes) if changes.left() == 0 => self.close_review(),
             _ => {}
         }
+    }
+
+    fn open_review(&mut self) {
+        self.set_focus(Focus::Review);
+        self.reading = true;
+        if let Some(changes) = &mut self.changes {
+            self.message = changes.first_unapproved();
+        }
+        self.reload_changes();
+    }
+
+    fn close_review(&mut self) {
+        if self.editing() {
+            self.message = Some(UNSAVED.into());
+            return;
+        }
+        self.keep_writing();
+        self.editor = None;
+        self.set_focus(Focus::Terminal);
     }
 
     fn write_comment(&mut self, comment: Option<Comment>) {
@@ -686,29 +614,24 @@ impl App {
                 }
             }
             None if self.reading => self.message = Some("nothing to comment on here".into()),
-            None => self.message = Some("comments go on a file, or on its lines full screen".into()),
+            None => self.message = Some("comments go on a file, or on its lines".into()),
         }
     }
 
     fn comment_command(&mut self, c: char) {
         let (reading, p) = (self.reading, self.keymap.label());
         let Some(changes) = &mut self.changes else { return };
-        if changes.commit.is_some() {
-            self.message = Some(READ_ONLY.into());
-            return;
-        }
         if c == 'n' {
             let comment = changes.commenting(reading);
             return self.write_comment(comment);
         }
         let (here, above, root) = (changes.comment_at(reading), !changes.above().is_empty(), changes.root.clone());
-        match (c, here) {
-            ('e', Some(comment)) => self.write_comment(Some(comment)),
-            ('d', Some(comment)) => {
+        match here {
+            Some(comment) => {
                 let at = comment.at(&root);
                 self.ask(format!("delete the comment on {at}?"), Confirm::DeleteComment(comment));
             }
-            _ if reading && above => self.message = Some(format!("no comment here; for those above the file, tab to the tree, then {p} e or d")),
+            _ if reading && above => self.message = Some(format!("no comment here; for those above the file, tab to the tree, then {p} d")),
             _ if reading => self.message = Some("no comment here: c makes one".into()),
             _ => self.message = Some(format!("no comment here: {p} n makes one")),
         }
@@ -753,7 +676,7 @@ impl App {
         }
     }
 
-    fn add_repo(&mut self, input: &str, typed: bool) -> bool {
+    fn add_repo(&mut self, input: &str, typed: bool) -> Option<PathBuf> {
         let path = expand_home(input);
         if typed
             && path.is_absolute()
@@ -762,25 +685,14 @@ impl App {
         {
             self.message = Some(e);
             if !path.exists() {
-                return false;
+                return None;
             }
         }
-        match git::toplevel(&path).and_then(|top| git::main_repo(&top)) {
-            Some(repo) => {
-                project::register(&repo);
-                self.load_workspaces();
-                let Some(i) = self.workspaces.iter().position(|w| w.root == repo) else {
-                    self.message = Some("couldn't save the project list".into());
-                    return false;
-                };
-                self.set_current(i);
-                true
-            }
-            None => {
-                self.message = Some(format!("not a git repository: {}", path.display()));
-                false
-            }
-        }
+        let Some(repo) = git::toplevel(&path).and_then(|top| git::main_repo(&top)) else {
+            self.message = Some(format!("not a git repository: {}", path.display()));
+            return None;
+        };
+        Some(repo)
     }
 
     fn spawn_in(&mut self, cwd: PathBuf, program: &str, args: &[String], focus: bool) -> u64 {
@@ -1014,12 +926,20 @@ impl App {
     pub fn on_paste(&mut self, text: &str) {
         if self.writing.is_some() {
             self.insert_in_comment(&text.replace("\r\n", "\n").replace('\r', "\n"));
-        } else if let Some(prompt) = &mut self.prompt {
-            prompt.text.push_str(text.trim());
-        } else if let Some(search) = self.repos.as_mut().or(self.search.as_mut()) {
+        } else if let Some(search) = &mut self.repos {
             search.query.push_str(text.trim());
             search.update(&self.tx);
-        } else if self.focus == Focus::Files
+        } else if let Some(picker) = &mut self.picker {
+            picker.query.push_str(text.trim());
+            picker.state.select(Some(0));
+        } else if let Some(naming) = &mut self.naming {
+            if naming.on_branch { &mut naming.branch } else { &mut naming.name }.push_str(text.trim());
+        } else if let Some(search) = &mut self.search {
+            search.query.push_str(text.trim());
+            search.update(&self.tx);
+        } else if let Some(input) = &mut self.file_input {
+            input.text.push_str(text.trim());
+        } else if self.focus != Focus::Terminal
             && let Some(editor) = &mut self.editor
         {
             if editor.find_typing {
@@ -1095,8 +1015,12 @@ impl App {
             }
         }
         for (label, cwd, detail) in notices {
-            let place = self.place(&cwd).map(|place| format!(" in {place}")).unwrap_or_default();
-            notify(&format!("{label}{place}: {detail}"));
+            let place = self.place(&cwd);
+            notify(&format!("{label}{}: {detail}", place.as_ref().map(|p| format!(" in {p}")).unwrap_or_default()));
+            // Terminal apps hold notifications back while their window is in front, as Pulpo's is.
+            if let Some(place) = place.filter(|_| cwd != self.ws().root) {
+                self.message = Some(format!("◆ {place}: {detail}"));
+            }
         }
     }
 
@@ -1228,13 +1152,10 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> bool {
-        if self.no_projects {
-            return self.repos_key(key);
-        }
         let pressed = Key::of(key);
-        let open = self.repos.is_some() || self.search.is_some() || self.prompt.is_some() || self.asking.is_some() || self.help;
+        let open = self.repos.is_some() || self.picker.is_some() || self.naming.is_some() || self.search.is_some() || self.file_input.is_some() || self.asking.is_some() || self.help;
         if open && !self.prefixed && self.keymap.is_prefix(pressed) {
-            (self.repos, self.search, self.prompt, self.asking, self.help) = (None, None, None, None, false);
+            (self.repos, self.picker, self.naming, self.search, self.file_input, self.asking, self.help) = (None, None, None, None, None, None, false);
             self.prefixed = true;
             self.prefixed_at = Some(Instant::now());
             return false;
@@ -1244,14 +1165,23 @@ impl App {
             return false;
         }
         if self.repos.is_some() {
-            return self.repos_key(key);
+            self.repos_key(key);
+            return false;
+        }
+        if self.picker.is_some() {
+            self.picker_key(key);
+            return false;
+        }
+        if self.naming.is_some() {
+            self.naming_key(key);
+            return false;
         }
         if self.search.is_some() {
             self.search_key(key);
             return false;
         }
-        if self.prompt.is_some() {
-            self.prompt_key(key);
+        if self.file_input.is_some() {
+            self.file_input_key(key);
             return false;
         }
         if self.writing.is_some() && !self.prefixed && !self.keymap.is_prefix(pressed) {
@@ -1284,75 +1214,54 @@ impl App {
             self.message = None;
         }
         match self.focus {
+            Focus::Terminal if self.no_projects => {
+                if key.code == KeyCode::Enter {
+                    self.open_picker();
+                }
+            }
             Focus::Terminal => {
                 self.selecting = None;
                 if let Some(term) = self.term_mut() {
                     term.key(key);
                 }
             }
-            Focus::Projects | Focus::Workspaces => self.list_key(key),
+            Focus::Review => self.review_key(key),
             Focus::Files => self.files_key(key),
-            Focus::Changes => self.changes_key(key),
-            Focus::History => self.history_key(key),
         }
         false
     }
 
     fn command(&mut self, key: Key) -> bool {
         let KeyCode::Char(c) = key.code else { return false };
+        let review = self.focus == Focus::Review;
+        let files = self.focus == Focus::Files;
         match c {
-            'p' => self.set_focus(Focus::Projects),
-            'w' => self.set_focus(Focus::Workspaces),
-            't' => self.set_focus(Focus::Terminal),
-            'f' => self.set_focus(Focus::Files),
-            'c' => self.set_focus(Focus::Changes),
-            'h' => self.set_focus(Focus::History),
-            'F' => {
-                self.set_focus(Focus::Files);
-                self.files_expanded = true;
-            }
-            'C' => {
-                self.set_focus(Focus::Changes);
-                (self.changes_expanded, self.reading) = (true, true);
-                if let Some(changes) = &mut self.changes {
-                    self.message = changes.first_unapproved();
-                }
-            }
-            'H' => {
-                self.set_focus(Focus::History);
-                // A commit already full screen gives the workspace's changes back first.
-                self.settle();
-                self.open_commit();
-            }
-            'n' | 'e' | 'd' if self.focus == Focus::Changes => self.comment_command(c),
-            'n' => self.new_here(),
-            'N' => self.pick_project(),
-            'P' => self.open_repo_picker(),
-            'x' => self.close_here(),
+            'w' => self.open_picker(),
+            'f' if files => self.close_files(),
+            'f' if self.no_projects => self.open_picker(),
+            'f' => self.open_files(),
+            'n' if files => self.new_file(),
+            'r' if files => self.start_rename(),
+            'd' if files => self.ask_delete(),
+            'e' if files => self.edit_file(),
+            '/' if files => self.start_search(),
+            '/' => self.message = Some(format!("{} f first: search is in Files", self.keymap.label())),
+            'n' | 'd' if review && self.editor.is_none() => self.comment_command(c),
+            'n' | 't' | 'r' | 'e' if self.no_projects => self.open_picker(),
+            'n' => self.open_repo_picker(),
+            'X' => self.ask_to_delete(self.current),
+            't' if self.offline => self.retry_server(),
+            't' => self.new_terminal(true),
+            'x' if self.focus == Focus::Terminal => self.close_terminal_here(),
             '[' => self.cycle_tab(-1),
             ']' => self.cycle_tab(1),
             'a' => self.next_waiting(),
             '1'..='9' => self.go_to_workspace(c as usize - '1' as usize),
+            'r' if review => self.close_review(),
+            'r' => self.open_review(),
+            'e' if review => self.edit(),
+            'e' => self.message = Some(format!("{} r first: the editor opens on the change you're reading", self.keymap.label())),
             '?' => self.help = true,
-            '<' => {
-                self.left_hidden = !self.left_hidden;
-                let expanded = match self.focus {
-                    Focus::Files if self.editor.is_some() => true,
-                    Focus::Files => self.files_expanded,
-                    Focus::Changes => self.changes_expanded,
-                    _ => false,
-                };
-                if self.left_hidden && expanded {
-                    self.reading = true;
-                } else if self.left_hidden && self.focus != Focus::Terminal {
-                    self.set_focus(Focus::Terminal);
-                }
-            }
-            '/' => self.start_search(),
-            'd' | 'e' | 'r' if self.focus != Focus::Files => self.message = Some(format!("{} f first: that's for files", self.keymap.label())),
-            'd' => self.ask_delete(),
-            'e' => self.edit(),
-            'r' => self.start_rename(),
             'q' | 'Q' | 'u' if self.editing() => {
                 self.message = Some(UNSAVED.into());
             }
@@ -1381,15 +1290,9 @@ impl App {
 
     fn confirmed(&mut self, confirm: Confirm) -> bool {
         match confirm {
-            Confirm::RemoveProject(repo) => {
-                let name = repo.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                project::unregister(&repo);
-                self.message = Some(format!("removed {name} from the list (files kept)"));
-                self.load_workspaces();
-            }
+            Confirm::DeleteFile(path) => self.delete(&path),
             Confirm::DeleteWorkspace(root) => self.remove_workspace(&root),
             Confirm::CloseTerminal(id) => self.close_terminal(id),
-            Confirm::DeleteFile(path) => self.delete(&path),
             Confirm::DeleteComment(comment) => {
                 if let Some(changes) = &mut self.changes {
                     changes.delete(&comment);
@@ -1412,9 +1315,6 @@ impl App {
 
     fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
-        if focus != Focus::Terminal {
-            self.left_hidden = false;
-        }
         self.discard = false;
         self.reading = false;
         match focus {
@@ -1422,180 +1322,173 @@ impl App {
                 self.retry_server();
                 self.keep_a_terminal();
             }
-            Focus::Files => self.preview(),
-            Focus::Changes => {
+            Focus::Review => {
                 if let Some(changes) = &mut self.changes {
                     changes.follow();
                 }
             }
-            _ => {}
+            Focus::Files => {}
         }
     }
 
-    fn new_here(&mut self) {
-        match self.focus {
-            Focus::Projects => self.open_repo_picker(),
-            Focus::Workspaces => self.ask_workspace(self.ws().repo.clone()),
-            Focus::Terminal => self.new_terminal(true),
-            Focus::Files => {
-                let root = self.ws().root.clone();
-                let dir = match self.ws().selected_row() {
-                    Some(row) if row.is_dir => row.path.clone(),
-                    Some(row) => row.path.parent().map_or(root.clone(), Path::to_path_buf),
-                    None => root,
-                };
-                self.prompt = Some(Prompt { ask: Ask::File(dir), text: String::new() });
+    fn close_terminal_here(&mut self) {
+        let Some(term) = self.term() else { return };
+        let (id, label) = (term.id, term.label().to_string());
+        match term.info.running.clone() {
+            Some(program) => self.ask(format!("{program} is running in {label}: close it?"), Confirm::CloseTerminal(id)),
+            None => self.close_terminal(id),
+        }
+    }
+
+    pub fn project_name(&self, i: usize) -> &str {
+        let w = &self.workspaces[i];
+        self.workspaces.iter().find(|r| r.root == w.repo).map_or(&w.name, |r| &r.name)
+    }
+
+    pub fn picks(&self) -> Vec<Pick> {
+        let query = self.picker.as_ref().map_or(String::new(), |p| p.query.trim().to_lowercase());
+        let shown = |i: &usize| query.is_empty() || [&self.workspaces[*i].name, self.project_name(*i)].iter().any(|n| n.to_lowercase().contains(&query));
+        // A project's own folder only while terminals run there, so they stay reachable.
+        let projects = (0..self.workspaces.len()).filter(|&i| !self.no_projects && !self.workspaces[i].is_worktree() && self.terms.iter().any(|t| t.info.cwd == self.workspaces[i].root));
+        let mut picks: Vec<Pick> = self.workspace_order().into_iter().chain(projects).filter(shown).map(Pick::Go).collect();
+        picks.push(Pick::New);
+        picks
+    }
+
+    fn open_picker(&mut self) {
+        if self.no_projects {
+            return self.open_repo_picker();
+        }
+        self.keep_writing();
+        self.picker = Some(Picker { query: String::new(), state: ListState::default().with_selected(Some(0)) });
+    }
+
+    fn picker_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => self.picker = None,
+            KeyCode::Enter => self.pick(),
+            KeyCode::Up => self.picker_step(-1),
+            KeyCode::Down => self.picker_step(1),
+            KeyCode::Char('k' | 'p') if ctrl => self.picker_step(-1),
+            KeyCode::Char('j' | 'n') if ctrl => self.picker_step(1),
+            KeyCode::Char('x') if ctrl => self.ask_to_remove(),
+            _ => {
+                if let Some(picker) = &mut self.picker
+                    && input::edit(&mut picker.query, key)
+                {
+                    picker.state.select(Some(0));
+                }
             }
-            Focus::Changes | Focus::History => self.message = Some("commits are the agents' to make".into()),
         }
     }
 
-    fn close_here(&mut self) {
-        if matches!(self.focus, Focus::Projects | Focus::Workspaces) && self.editing() {
+    fn picker_step(&mut self, delta: isize) {
+        let last = self.picks().len().saturating_sub(1);
+        if let Some(picker) = &mut self.picker {
+            picker.state.select(Some(picker.state.selected().unwrap_or(0).saturating_add_signed(delta).min(last)));
+        }
+    }
+
+    fn picked(&self) -> Option<Pick> {
+        self.picks().get(self.picker.as_ref()?.state.selected()?).cloned()
+    }
+
+    fn pick(&mut self) {
+        let Some(pick) = self.picked() else { return };
+        self.picker = None;
+        match pick {
+            Pick::Go(i) => {
+                if self.set_current(i) {
+                    self.set_focus(Focus::Terminal);
+                }
+            }
+            Pick::New => self.open_repo_picker(),
+        }
+    }
+
+    fn ask_to_remove(&mut self) {
+        let Some(Pick::Go(i)) = self.picked() else { return };
+        self.picker = None;
+        self.ask_to_delete(i);
+    }
+
+    fn ask_to_delete(&mut self, i: usize) {
+        if self.no_projects {
+            return;
+        }
+        if self.editing() {
             self.message = Some(UNSAVED.into());
             return;
         }
-        match self.focus {
-            Focus::Projects => {
-                let (repo, name) = (self.ws().repo.clone(), self.ws().name.clone());
-                if project::registered().contains(&repo) {
-                    self.ask(format!("remove {name} from the list? its files stay."), Confirm::RemoveProject(repo));
-                }
+        let (root, name) = (self.workspaces[i].root.clone(), self.workspaces[i].name.clone());
+        match self.worktrees.iter().find(|s| s.root == root).cloned() {
+            Some(wt) => {
+                let lost = worktree::unsaved(&wt);
+                let lost = if lost.is_empty() { String::new() } else { format!(", losing {}", lost.join(" and ")) };
+                let what = if wt.kind == worktree::Kind::Worktree { "folder" } else { "copy" };
+                let kept = worktree::kept_branch(&wt).map(|b| format!("; branch {b} stays")).unwrap_or_default();
+                let place = self.place(&wt.root).unwrap_or(wt.name.clone());
+                let question = format!("delete workspace {place}: its {what}, containers and database{lost}{kept}?");
+                self.ask(question, Confirm::DeleteWorkspace(wt.root));
             }
-            Focus::Workspaces => match self.worktrees.iter().find(|s| s.root == self.ws().root).cloned() {
-                Some(wt) => {
-                    let lost = worktree::unsaved(&wt);
-                    let lost = if lost.is_empty() { String::new() } else { format!(", losing {}", lost.join(" and ")) };
-                    let what = if wt.kind == worktree::Kind::Worktree { "folder" } else { "copy" };
-                    let kept = worktree::kept_branch(&wt).map(|b| format!("; branch {b} stays")).unwrap_or_default();
-                    let place = self.place(&wt.root).unwrap_or(wt.name.clone());
-                    let question = format!("delete workspace {place}: its {what}, containers and database{lost}{kept}?");
-                    self.ask(question, Confirm::DeleteWorkspace(wt.root));
-                }
-                None => self.message = Some(format!("this is the project itself: {p} p, then {p} x takes it off the list", p = self.keymap.label())),
-            },
-            Focus::Terminal => {
-                let Some(term) = self.term() else { return };
-                let (id, label) = (term.id, term.label().to_string());
-                match term.info.running.clone() {
-                    Some(program) => self.ask(format!("{program} is running in {label}: close it?"), Confirm::CloseTerminal(id)),
-                    None => self.close_terminal(id),
-                }
-            }
-            Focus::Files => self.ask_delete(),
-            Focus::Changes | Focus::History => {}
+            None if self.workspaces[i].is_worktree() => self.message = Some(format!("{name} is still being made")),
+            None => self.message = Some(format!("{name} is the project's own folder: only the workspaces Pulpo made are deleted")),
         }
     }
 
-    fn pick_project(&mut self) {
-        let projects = self.projects();
-        let at = projects.iter().position(|&i| self.workspaces[i].repo == self.ws().repo).unwrap_or(0);
-        self.prompt = Some(Prompt { ask: Ask::Project(at), text: String::new() });
-    }
-
-    fn ask_workspace(&mut self, repo: PathBuf) {
-        self.new_in = repo;
-        self.prompt = Some(Prompt { ask: Ask::Workspace(String::new()), text: String::new() });
-    }
-
-    fn prompt_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        if let Some(Prompt { ask: Ask::Project(at), .. }) = &self.prompt {
-            let (at, projects) = (*at, self.projects());
-            let step = |by: usize| Ask::Project((at + by) % projects.len().max(1));
-            match key.code {
-                KeyCode::Esc => self.prompt = None,
-                KeyCode::Enter => match projects.get(at) {
-                    Some(&i) => self.ask_workspace(self.workspaces[i].repo.clone()),
-                    None => self.prompt = None,
-                },
-                KeyCode::Up | KeyCode::Left => self.prompt = Some(Prompt { ask: step(projects.len().saturating_sub(1)), text: String::new() }),
-                KeyCode::Down | KeyCode::Right => self.prompt = Some(Prompt { ask: step(1), text: String::new() }),
-                _ => {}
-            }
+    fn edit(&mut self) {
+        if self.editor.is_some() {
             return;
         }
-        let Some(prompt) = &mut self.prompt else { return };
-        match key.code {
-            KeyCode::Esc => self.prompt = None,
-            KeyCode::Enter => {
-                if let Some(Prompt { ask, text }) = self.prompt.take() {
-                    let (text, ask) = match ask {
-                        Ask::Branch(name) => (name, Ask::Workspace(text)),
-                        ask => (text, ask),
-                    };
-                    let text = text.trim().to_string();
-                    if !text.is_empty() {
-                        match ask {
-                            Ask::Workspace(branch) => self.create_workspace(&text, Some(branch.trim()).filter(|b| !b.is_empty())),
-                            Ask::File(dir) => self.create(&dir, &text),
-                            Ask::Rename(path) => self.rename(&path, &text),
-                            Ask::Branch(_) | Ask::Project(_) => {}
-                        }
-                    }
-                }
-            }
-            KeyCode::Tab | KeyCode::BackTab => {
-                let (Ask::Workspace(other) | Ask::Branch(other)) = &mut prompt.ask else { return };
-                let text = std::mem::replace(&mut prompt.text, std::mem::take(other));
-                prompt.ask = if matches!(prompt.ask, Ask::Workspace(_)) { Ask::Branch(text) } else { Ask::Workspace(text) };
-            }
-            // Workspace names are lowercase, like Compose projects.
-            KeyCode::Char(c) if !ctrl && matches!(prompt.ask, Ask::Workspace(_)) => prompt.text.push(c.to_ascii_lowercase()),
-            _ => {
-                input::edit(&mut prompt.text, key);
-            }
+        match self.changes.as_ref().and_then(Changes::editing_at) {
+            Some((path, line)) => self.open_editor(path, line),
+            None => self.message = Some("select a file to edit".into()),
         }
     }
 
-    fn list_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Down | KeyCode::Char('j') => self.step(1),
-            KeyCode::Up | KeyCode::Char('k') => self.step(-1),
-            KeyCode::Home | KeyCode::Char('g') => self.step(i32::MIN),
-            KeyCode::End | KeyCode::Char('G') => self.step(i32::MAX),
-            KeyCode::Right if self.focus == Focus::Projects => self.set_focus(Focus::Workspaces),
-            KeyCode::Enter | KeyCode::Right => self.set_focus(Focus::Terminal),
-            KeyCode::Left if self.focus == Focus::Workspaces => self.set_focus(Focus::Projects),
-            _ => {}
+    fn open_editor(&mut self, path: PathBuf, line: Option<usize>) {
+        match Editor::open(path, line) {
+            Ok(editor) => {
+                self.editor = Some(editor);
+                self.discard = false;
+            }
+            Err(e) => self.message = Some(e),
         }
     }
 
-    fn step(&mut self, delta: i32) {
-        let (projects, workspaces) = (self.projects().len(), self.workspace_order().len());
-        let (state, len) = match self.focus {
-            Focus::Projects => (&mut self.projects_state, projects),
-            _ => (&mut self.workspaces_state, workspaces),
-        };
-        let to = state.selected().map_or(0, |from| from as i64 + delta as i64);
-        // One past the end of a list: on into the other, as if they were one.
-        match self.focus {
-            Focus::Projects if delta == 1 && to >= projects as i64 && workspaces > 0 => {
-                self.set_focus(Focus::Workspaces);
-                self.workspaces_state.select(Some(0));
-            }
-            Focus::Workspaces if delta == -1 && to < 0 && projects > 0 => {
-                self.set_focus(Focus::Projects);
-                self.projects_state.select(Some(projects - 1));
-            }
-            _ => state.select(Some(to.clamp(0, len.saturating_sub(1) as i64) as usize)),
+    fn close_editor(&mut self) {
+        let Some(editor) = self.editor.take() else { return };
+        self.discard = false;
+        if self.focus == Focus::Files {
+            self.viewer.close();
+            self.viewer.open_at(editor.path.clone(), None);
+            self.viewer.scroll = editor.scroll;
+            self.reading = false;
+        } else {
+            self.reload_changes();
         }
-        self.on_select();
     }
 
-    fn on_select(&mut self) {
-        match self.focus {
-            Focus::Projects => {
-                if let Some(project) = self.projects_state.selected().and_then(|i| self.projects().get(i).copied()) {
-                    self.set_current(project);
-                }
-            }
-            _ => {
-                if let Some(i) = self.workspaces_state.selected().and_then(|i| self.workspace_order().get(i).copied()) {
-                    self.set_current(i);
-                }
-            }
+    fn open_files(&mut self) {
+        if self.editing() {
+            self.message = Some(UNSAVED.into());
+            return;
         }
+        self.editor = None;
+        self.set_focus(Focus::Files);
+        self.ws_mut().refresh();
+        self.preview();
+    }
+
+    fn close_files(&mut self) {
+        if self.editing() {
+            self.message = Some(UNSAVED.into());
+            return;
+        }
+        (self.editor, self.search) = (None, None);
+        self.viewer.close();
+        self.set_focus(Focus::Terminal);
     }
 
     fn preview(&mut self) {
@@ -1612,30 +1505,23 @@ impl App {
         if self.editor.is_some() {
             return self.editor_key(key);
         }
-        if self.files_expanded {
-            let page = self.viewer.height.saturating_sub(2).max(1) as isize;
-            match key.code {
-                KeyCode::Esc if self.reading => (self.reading, self.left_hidden) = (false, false),
-                KeyCode::Esc => self.files_expanded = false,
-                KeyCode::Tab | KeyCode::BackTab => {
-                    self.reading = !self.reading;
-                    self.left_hidden &= self.reading;
+        let page = self.viewer.height.saturating_sub(2).max(1) as isize;
+        match key.code {
+            KeyCode::Esc if self.reading => self.reading = false,
+            KeyCode::Esc => self.close_files(),
+            KeyCode::Tab | KeyCode::BackTab => self.reading = !self.reading,
+            KeyCode::PageDown if self.reading => self.viewer.scroll_by(page),
+            KeyCode::PageUp if self.reading => self.viewer.scroll_by(-page),
+            KeyCode::Left | KeyCode::Char('h') if self.reading => self.viewer.scroll_sideways(-8),
+            KeyCode::Right | KeyCode::Char('l') if self.reading => self.viewer.scroll_sideways(8),
+            KeyCode::Char('0') if self.reading => self.viewer.scroll_sideways(0),
+            _ if self.reading => {
+                if let Some(rows) = scroll_rows(key, self.viewer.height) {
+                    self.viewer.move_mark(rows);
                 }
-                KeyCode::PageDown => self.viewer.scroll_by(page),
-                KeyCode::PageUp => self.viewer.scroll_by(-page),
-                _ if self.reading => match scroll_keys(key, self.viewer.height) {
-                    Some(Scroll::Rows(rows)) => self.viewer.move_mark(rows),
-                    Some(Scroll::Sideways(columns)) => self.viewer.scroll_sideways(columns),
-                    None => {}
-                },
-                _ => self.tree_key(key),
             }
-            return;
+            _ => self.tree_key(key),
         }
-        if key.code == KeyCode::Esc {
-            return self.set_focus(Focus::Terminal);
-        }
-        self.tree_key(key);
     }
 
     fn tree_key(&mut self, key: KeyEvent) {
@@ -1651,8 +1537,7 @@ impl App {
             KeyCode::Left | KeyCode::Char('h') => self.fold_tree(false),
             KeyCode::Enter => match row {
                 Some((true, expanded)) => self.fold_tree(!expanded),
-                Some((false, _)) if self.files_expanded => self.reading = true,
-                Some((false, _)) => (self.files_expanded, self.reading) = (true, true),
+                Some((false, _)) => self.reading = true,
                 None => {}
             },
             _ => {}
@@ -1715,10 +1600,38 @@ impl App {
         }
     }
 
+    fn new_file(&mut self) {
+        let root = self.ws().root.clone();
+        let dir = match self.ws().selected_row() {
+            Some(row) if row.is_dir => row.path.clone(),
+            Some(row) => row.path.parent().map_or(root.clone(), Path::to_path_buf),
+            None => root,
+        };
+        self.file_input = Some(FileInput { ask: FileAsk::New(dir), text: String::new() });
+    }
+
     fn start_rename(&mut self) {
         let Some(path) = self.selected_path() else { return };
         let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        self.prompt = Some(Prompt { ask: Ask::Rename(path), text: name });
+        self.file_input = Some(FileInput { ask: FileAsk::Rename(path), text: name });
+    }
+
+    fn file_input_key(&mut self, key: KeyEvent) {
+        let Some(input) = &mut self.file_input else { return };
+        match key.code {
+            KeyCode::Esc => self.file_input = None,
+            KeyCode::Enter => {
+                let Some(FileInput { ask, text }) = self.file_input.take() else { return };
+                match (ask, text.trim()) {
+                    (_, "") => {}
+                    (FileAsk::New(dir), name) => self.create(&dir, name),
+                    (FileAsk::Rename(path), name) => self.rename(&path, name),
+                }
+            }
+            _ => {
+                input::edit(&mut input.text, key);
+            }
+        }
     }
 
     fn inside(&mut self, dir: &Path, name: &str) -> Option<PathBuf> {
@@ -1774,7 +1687,6 @@ impl App {
             return;
         }
         self.ws_mut().reveal(&path);
-        self.set_focus(Focus::Files);
         if folder {
             self.message = Some(format!("created {rel}/"));
         } else {
@@ -1782,37 +1694,60 @@ impl App {
         }
     }
 
-    fn edit(&mut self) {
+    fn edit_file(&mut self) {
         if self.editor.is_some() {
             return;
         }
         match self.selected_path() {
             Some(path) if path.is_file() => {
-                let line = matches!(&self.viewer.source, Some(Source::File(p)) if *p == path).then(|| self.viewer.scroll + 1);
+                let line = matches!(&self.viewer.source, Some(Source::File(p)) if *p == path).then(|| self.viewer.mark.unwrap_or(self.viewer.scroll) + 1);
                 self.open_editor(path, line);
             }
             _ => self.message = Some("select a file to edit".into()),
         }
     }
 
-    fn open_editor(&mut self, path: PathBuf, line: Option<usize>) {
-        match Editor::open(path, line) {
-            Ok(editor) => {
-                self.editor = Some(editor);
-                self.discard = false;
-            }
-            Err(e) => self.message = Some(e),
+    fn start_search(&mut self) {
+        self.search = Some(Search::new(Mode::Files, self.ws().root.clone(), &self.tx));
+    }
+
+    pub fn on_search(&mut self, generation: usize, hits: Vec<crate::search::Hit>) {
+        if let Some(search) = &mut self.search {
+            search.on_results(generation, hits);
         }
     }
 
-    fn close_editor(&mut self) {
-        let Some(editor) = self.editor.take() else { return };
-        self.viewer.close();
-        self.viewer.open_at(editor.path.clone(), None);
-        self.viewer.scroll = editor.scroll;
-        self.files_expanded = true;
-        (self.reading, self.left_hidden) = (false, false);
-        self.discard = false;
+    fn search_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(search) = &mut self.search else { return };
+        match key.code {
+            KeyCode::Esc => self.search = None,
+            KeyCode::Enter => self.open_hit(),
+            KeyCode::Tab | KeyCode::BackTab => search.toggle(&self.tx),
+            KeyCode::Up => search.step(-1),
+            KeyCode::Down => search.step(1),
+            KeyCode::Char('k' | 'p') if ctrl => search.step(-1),
+            KeyCode::Char('j' | 'n') if ctrl => search.step(1),
+            KeyCode::PageUp => search.step(-10),
+            KeyCode::PageDown => search.step(10),
+            _ => {
+                if input::edit(&mut search.query, key) {
+                    search.update(&self.tx);
+                }
+            }
+        }
+    }
+
+    fn open_hit(&mut self) {
+        let Some(hit) = self.search.as_ref().and_then(Search::selected).cloned() else { return };
+        if self.editing() {
+            self.message = Some(UNSAVED.into());
+            return;
+        }
+        (self.search, self.editor) = (None, None);
+        self.ws_mut().reveal(&hit.path);
+        self.viewer.open_at(hit.path, hit.line);
+        self.reading = true;
     }
 
     fn editor_key(&mut self, key: KeyEvent) {
@@ -1911,19 +1846,12 @@ impl App {
         editor.follow_cursor();
     }
 
-    fn start_search(&mut self) {
-        self.search = Some(Search::new(Mode::Files, self.ws().root.clone(), &self.tx));
-    }
-
     fn open_repo_picker(&mut self) {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-        self.repos = Some(Search::new(Mode::Repos, home, &self.tx));
-    }
-
-    pub fn on_search(&mut self, generation: usize, hits: Vec<crate::search::Hit>) {
-        if let Some(search) = self.search.as_mut().or(self.repos.as_mut()) {
-            search.on_results(generation, hits);
-        }
+        let mut projects: Vec<PathBuf> = project::registered().into_iter().filter(|r| r.is_dir()).collect();
+        projects.sort_by_key(|repo| *repo != self.ws().repo);
+        let shown = projects.iter().map(|p| p.strip_prefix(&home).map_or(p.display().to_string(), |rel| format!("~/{}", rel.display()))).collect();
+        self.repos = Some(Search::repos(home, shown, &self.tx));
     }
 
     pub fn on_repos(&mut self, repos: Vec<String>) {
@@ -1932,63 +1860,16 @@ impl App {
         }
     }
 
-    fn search_key(&mut self, key: KeyEvent) {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let Some(search) = &mut self.search else { return };
+    fn repos_key(&mut self, key: KeyEvent) {
+        let Some(search) = &mut self.repos else { return };
         match key.code {
-            KeyCode::Esc => self.search = None,
-            KeyCode::Enter => self.open_hit(),
-            KeyCode::Tab | KeyCode::BackTab => search.toggle(&self.tx),
-            KeyCode::Up => self.search_step(-1),
-            KeyCode::Down => self.search_step(1),
-            KeyCode::Char('k' | 'p') if ctrl => self.search_step(-1),
-            KeyCode::Char('j' | 'n') if ctrl => self.search_step(1),
-            KeyCode::PageUp => self.search_step(-10),
-            KeyCode::PageDown => self.search_step(10),
-            _ => {
-                if input::edit(&mut search.query, key) {
-                    search.update(&self.tx);
-                }
-            }
-        }
-    }
-
-    fn search_step(&mut self, delta: isize) {
-        if let Some(search) = &mut self.search {
-            search.step(delta);
-        }
-    }
-
-    fn open_hit(&mut self) {
-        let Some(hit) = self.search.as_ref().and_then(Search::selected).cloned() else { return };
-        let (path, line) = (hit.path, hit.line);
-        if self.editing() {
-            self.message = Some(UNSAVED.into());
-            return;
-        }
-        self.search = None;
-        self.editor = None;
-        self.set_focus(Focus::Files);
-        self.show_file(path, line);
-        self.files_expanded = true;
-        self.reading = true;
-    }
-
-    fn show_file(&mut self, path: PathBuf, line: Option<usize>) {
-        self.ws_mut().reveal(&path);
-        self.viewer.open_at(path, line);
-    }
-
-    fn repos_key(&mut self, key: KeyEvent) -> bool {
-        let Some(search) = &mut self.repos else { return false };
-        match key.code {
-            KeyCode::Esc if self.no_projects => return true,
             KeyCode::Esc => self.repos = None,
             KeyCode::Enter => {
                 let picked = search.selected().map(|h| h.rel.clone()).or_else(|| (!search.query.is_empty()).then(|| search.query.clone()));
                 let typed = picked.as_ref() == Some(&search.query);
-                if picked.is_some_and(|picked| self.add_repo(&picked, typed)) {
+                if let Some(repo) = picked.and_then(|picked| self.add_repo(&picked, typed)) {
                     self.repos = None;
+                    self.naming = Some(Naming { repo, name: String::new(), branch: String::new(), on_branch: false });
                 }
             }
             KeyCode::Up => search.step(-1),
@@ -2002,48 +1883,40 @@ impl App {
                 }
             }
         }
-        false
     }
 
-    fn changes_key(&mut self, key: KeyEvent) {
-        if self.changes_expanded {
-            let Some(changes) = &mut self.changes else { return };
-            // Uppercase letters come with shift too.
-            let shift = key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::Up | KeyCode::Down);
-            match key.code {
-                KeyCode::Esc if self.reading && changes.anchor.is_some() => changes.anchor = None,
-                KeyCode::Esc if self.reading => (self.reading, self.left_hidden) = (false, false),
-                KeyCode::Esc => self.changes_expanded = false,
-                KeyCode::Tab | KeyCode::BackTab => {
-                    self.reading = !self.reading;
-                    self.left_hidden &= self.reading;
+    fn review_key(&mut self, key: KeyEvent) {
+        if self.editor.is_some() {
+            return self.editor_key(key);
+        }
+        let Some(changes) = &mut self.changes else { return };
+        // Uppercase letters come with shift too.
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT) && matches!(key.code, KeyCode::Up | KeyCode::Down);
+        match key.code {
+            KeyCode::Esc if self.reading && changes.anchor.is_some() => changes.anchor = None,
+            KeyCode::Esc if self.reading => self.reading = false,
+            KeyCode::Esc => self.close_review(),
+            KeyCode::Tab | KeyCode::BackTab => self.reading = !self.reading,
+            KeyCode::PageDown => changes.page(true),
+            KeyCode::PageUp => changes.page(false),
+            KeyCode::Char(c @ ('n' | 'p')) if self.reading => self.message = changes.next_change(c == 'n', false),
+            KeyCode::Char('a') if self.reading => {
+                let left = changes.left();
+                self.message = changes.approve();
+                if changes.left() < left {
+                    self.finish_review();
                 }
-                KeyCode::PageDown => changes.page(true),
-                KeyCode::PageUp => changes.page(false),
-                KeyCode::Char(c @ ('n' | 'p')) if self.reading => self.message = changes.next_change(c == 'n', false),
-                KeyCode::Char('a') if self.reading && changes.commit.is_some() => self.message = Some(READ_ONLY.into()),
-                KeyCode::Char('a') if self.reading => {
-                    let left = changes.left();
-                    self.message = changes.approve();
-                    if changes.left() < left {
-                        self.finish_review();
-                    }
-                }
-                KeyCode::Char('c') if self.reading => self.comment_command('n'),
-                KeyCode::Char('J') if self.reading => changes.move_cursor(1, true),
-                KeyCode::Char('K') if self.reading => changes.move_cursor(-1, true),
-                _ if self.reading => match scroll_keys(key, changes.height) {
-                    Some(Scroll::Rows(rows)) => changes.move_cursor(rows, shift),
-                    Some(Scroll::Sideways(_)) | None => {}
-                },
-                _ => self.changes_tree_key(key),
             }
-            return;
+            KeyCode::Char('c') if self.reading => self.comment_command('n'),
+            KeyCode::Char('J') if self.reading => changes.move_cursor(1, true),
+            KeyCode::Char('K') if self.reading => changes.move_cursor(-1, true),
+            _ if self.reading => {
+                if let Some(rows) = scroll_rows(key, changes.height) {
+                    changes.move_cursor(rows, shift);
+                }
+            }
+            _ => self.changes_tree_key(key),
         }
-        if key.code == KeyCode::Esc {
-            return self.set_focus(Focus::Terminal);
-        }
-        self.changes_tree_key(key);
     }
 
     fn changes_tree_key(&mut self, key: KeyEvent) {
@@ -2051,42 +1924,13 @@ impl App {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => changes.step(1),
             KeyCode::Up | KeyCode::Char('k') => changes.step(-1),
-            KeyCode::PageDown => changes.step(10),
-            KeyCode::PageUp => changes.step(-10),
             KeyCode::Right | KeyCode::Char('l') => changes.fold(true),
             KeyCode::Left | KeyCode::Char('h') => changes.fold(false),
             KeyCode::Enter => match changes.selected().map(|r| (r.is_dir, r.expanded)) {
                 Some((true, expanded)) => changes.fold(!expanded),
-                Some((false, _)) if self.changes_expanded => self.reading = true,
-                Some((false, _)) => (self.changes_expanded, self.reading) = (true, true),
+                Some((false, _)) => self.reading = true,
                 None => {}
             },
-            _ => {}
-        }
-    }
-
-    fn history_step(&mut self, delta: isize) {
-        let Some(changes) = self.shelved.as_mut().or(self.changes.as_mut()) else { return };
-        let len = changes.history.commits.len();
-        let next = changes.history_state.selected().unwrap_or(0).saturating_add_signed(delta).min(len.saturating_sub(1));
-        changes.history_state.select(Some(next));
-        // Near the end, the next page; once, until it's read.
-        if changes.history.more && next + 20 >= len && changes.history_limit <= len {
-            changes.history_limit += crate::review::HISTORY_PAGE;
-            self.reload_changes();
-        }
-    }
-
-    fn history_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Down | KeyCode::Char('j') => self.history_step(1),
-            KeyCode::Up | KeyCode::Char('k') => self.history_step(-1),
-            KeyCode::PageDown => self.history_step(10),
-            KeyCode::PageUp => self.history_step(-10),
-            KeyCode::Home | KeyCode::Char('g') => self.history_step(isize::MIN / 2),
-            KeyCode::End | KeyCode::Char('G') => self.history_step(isize::MAX / 2),
-            KeyCode::Enter => self.open_commit(),
-            KeyCode::Esc => self.set_focus(Focus::Terminal),
             _ => {}
         }
     }
@@ -2095,7 +1939,7 @@ impl App {
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
             self.prefixed = false;
             // A click on the file is read first: keeping an emptied draft deletes a comment, which shifts the others.
-            let on_file = self.changes_expanded && mouse.kind == MouseEventKind::Down(MouseButton::Left) && self.areas.changes_file.contains(Position::new(mouse.column, mouse.row));
+            let on_file = mouse.kind == MouseEventKind::Down(MouseButton::Left) && self.areas.changes_file.contains(Position::new(mouse.column, mouse.row));
             if !on_file {
                 self.keep_writing();
             }
@@ -2104,20 +1948,29 @@ impl App {
             self.help = !matches!(mouse.kind, MouseEventKind::Down(_));
             return;
         }
-        if self.repos.is_some() || self.search.is_some() {
+        if self.repos.is_some() || self.picker.is_some() || self.search.is_some() {
             self.popup_mouse(mouse);
             return;
         }
-        if self.prompt.is_some() || self.asking.is_some() {
-            if matches!(mouse.kind, MouseEventKind::Down(_)) {
-                let pos = Position::new(mouse.column, mouse.row);
-                self.prompt = None;
-                if let Some((_, confirm)) = self.asking.take()
-                    && self.areas.yes.contains(pos)
-                    && self.confirmed(confirm)
-                {
-                    self.quit = true;
-                }
+        if self.file_input.is_some() {
+            if matches!(mouse.kind, MouseEventKind::Down(_)) && !self.areas.popup.contains(Position::new(mouse.column, mouse.row)) {
+                self.file_input = None;
+            }
+            return;
+        }
+        if self.naming.is_some() {
+            if matches!(mouse.kind, MouseEventKind::Down(_)) && !self.areas.popup.contains(Position::new(mouse.column, mouse.row)) {
+                self.naming = None;
+            }
+            return;
+        }
+        if self.asking.is_some() {
+            if matches!(mouse.kind, MouseEventKind::Down(_))
+                && let Some((_, confirm)) = self.asking.take()
+                && self.areas.yes.contains(Position::new(mouse.column, mouse.row))
+                && self.confirmed(confirm)
+            {
+                self.quit = true;
             }
             return;
         }
@@ -2125,30 +1978,11 @@ impl App {
         let areas = self.areas.clone();
         let down = mouse.kind == MouseEventKind::Down(MouseButton::Left);
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
-        let (wheel, sideways): (i32, isize) = match mouse.kind {
-            MouseEventKind::ScrollUp if shift => (0, -6),
-            MouseEventKind::ScrollDown if shift => (0, 6),
-            MouseEventKind::ScrollUp => (-3, 0),
-            MouseEventKind::ScrollDown => (3, 0),
-            MouseEventKind::ScrollLeft => (0, -4),
-            MouseEventKind::ScrollRight => (0, 4),
-            _ => (0, 0),
+        let wheel: i32 = match mouse.kind {
+            MouseEventKind::ScrollUp if !shift => -3,
+            MouseEventKind::ScrollDown if !shift => 3,
+            _ => 0,
         };
-        if let Some(drag) = self.dragging {
-            match mouse.kind {
-                MouseEventKind::Drag(MouseButton::Left) => match drag {
-                    Drag::Sidebar => self.left_width = Some(pos.x + 1),
-                },
-                _ => self.dragging = None,
-            }
-            return;
-        }
-        if down {
-            self.dragging = areas.left_divider.contains(pos).then_some(Drag::Sidebar);
-            if self.dragging.is_some() {
-                return;
-            }
-        }
         if let Some(selecting) = self.selecting.as_mut().filter(|s| s.dragging)
             && matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left))
         {
@@ -2174,25 +2008,13 @@ impl App {
         if down {
             self.last_click = Some((pos, Instant::now()));
         }
-        let row = |area: Rect, offset: usize| (pos.y - area.y) as usize + offset;
 
-        if down && areas.projects.contains(pos) {
-            self.set_focus(Focus::Projects);
-            let i = row(areas.projects, self.projects_state.offset());
-            if i < self.projects().len() {
-                self.projects_state.select(Some(i));
-                self.on_select();
-            }
-        } else if down && areas.workspaces.contains(pos) {
-            self.set_focus(Focus::Workspaces);
-            let i = row(areas.workspaces, self.workspaces_state.offset());
-            if i < self.workspace_order().len() {
-                self.workspaces_state.select(Some(i));
-                self.on_select();
-                if double {
-                    self.set_focus(Focus::Terminal);
-                }
-            }
+        if down && areas.name.contains(pos) {
+            self.open_picker();
+        } else if down && areas.to_review.contains(pos) {
+            self.open_review();
+        } else if down && areas.waiting.contains(pos) {
+            self.next_waiting();
         } else if let Some(&(tab, _)) = areas.tabs.iter().find(|(_, r)| r.contains(pos)) {
             if down {
                 match tab {
@@ -2205,69 +2027,69 @@ impl App {
             }
         } else if areas.term.contains(pos) {
             self.mouse_in_terminal(mouse, pos, wheel);
-        } else if areas.files_tree.contains(pos) {
-            if down {
-                self.focus = Focus::Files;
+        } else if areas.editor.contains(pos) {
+            let Some(editor) = &mut self.editor else { return };
+            if self.focus == Focus::Terminal {
+                self.focus = Focus::Review;
             }
-            if down && self.editor.is_none() {
+            let (r, column) = ((pos.y - areas.editor.y) as usize, (pos.x.saturating_sub(areas.editor.x)) as usize);
+            let column = column.saturating_sub(editor.gutter());
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => editor.click(r, column, shift),
+                MouseEventKind::Drag(MouseButton::Left) => editor.click(r, column, true),
+                MouseEventKind::ScrollLeft => editor.scroll_sideways(-4),
+                MouseEventKind::ScrollRight => editor.scroll_sideways(4),
+                MouseEventKind::ScrollUp if shift => editor.scroll_sideways(-6),
+                MouseEventKind::ScrollDown if shift => editor.scroll_sideways(6),
+                _ if wheel != 0 => editor.scroll_by(wheel as isize),
+                _ => {}
+            }
+        } else if areas.files_tree.contains(pos) && self.editor.is_none() {
+            if down {
                 self.reading = false;
                 let w = self.ws_mut();
-                let i = row(areas.files_tree, w.files_state.offset());
+                let i = (pos.y - areas.files_tree.y) as usize + w.files_state.offset();
                 if i < w.tree.rows.len() {
                     let again = w.files_state.selected() == Some(i);
                     w.files_state.select(Some(i));
                     self.preview();
                     match self.ws().selected_row().map(|r| (r.is_dir, r.expanded)) {
                         Some((true, expanded)) if again || double => self.fold_tree(!expanded),
-                        Some((false, _)) => (self.files_expanded, self.reading) = (true, double),
+                        Some((false, _)) => self.reading = double,
                         _ => {}
                     }
                 }
-            } else if wheel != 0 && self.editor.is_none() {
+            } else if wheel != 0 {
                 self.tree_step(wheel.signum() as isize);
             }
-        } else if areas.files_file.contains(pos) {
-            if down {
-                self.focus = Focus::Files;
-            }
-            if down {
-                self.reading = self.files_expanded;
-            }
-            if let Some(editor) = &mut self.editor {
-                let (r, column) = ((pos.y - areas.editor.y) as usize, (pos.x.saturating_sub(areas.editor.x)) as usize);
-                let column = column.saturating_sub(editor.gutter());
-                match mouse.kind {
-                    MouseEventKind::Down(MouseButton::Left) => editor.click(r, column, shift),
-                    MouseEventKind::Drag(MouseButton::Left) => editor.click(r, column, true),
-                    _ if wheel != 0 => editor.scroll_by(wheel as isize),
-                    _ if sideways != 0 => editor.scroll_sideways(sideways),
-                    _ => {}
+        } else if areas.files_file.contains(pos) && self.editor.is_none() {
+            match mouse.kind {
+                MouseEventKind::ScrollLeft => self.viewer.scroll_sideways(-4),
+                MouseEventKind::ScrollRight => self.viewer.scroll_sideways(4),
+                MouseEventKind::ScrollUp if shift => self.viewer.scroll_sideways(-6),
+                MouseEventKind::ScrollDown if shift => self.viewer.scroll_sideways(6),
+                _ if wheel != 0 => self.viewer.scroll_by(wheel as isize),
+                _ if down => {
+                    self.reading = true;
+                    let line = self.viewer.scroll + (pos.y - areas.files_file.y) as usize;
+                    self.viewer.mark = Some(line.min(self.viewer.row_count().saturating_sub(1)));
                 }
-            } else if wheel != 0 {
-                self.viewer.scroll_by(wheel as isize);
-            } else if sideways != 0 {
-                self.viewer.scroll_sideways(sideways);
-            } else if down {
-                let line = self.viewer.scroll + (pos.y - areas.files_file.y) as usize;
-                self.viewer.mark = Some(line.min(self.viewer.row_count().saturating_sub(1)));
+                _ => {}
             }
         } else if areas.changes_tree.contains(pos) {
             if down {
-                self.focus = Focus::Changes;
-            }
-            if down {
-                self.reading = false;
+                (self.focus, self.reading) = (Focus::Review, false);
             }
             let Some(changes) = &mut self.changes else { return };
             if down {
-                let i = row(areas.changes_tree, changes.state.offset());
+                let i = (pos.y - areas.changes_tree.y) as usize + changes.state.offset();
                 if i < changes.rows.len() {
                     let again = changes.state.selected() == Some(i);
                     changes.state.select(Some(i));
                     changes.follow();
                     match changes.selected().map(|r| (r.is_dir, r.expanded)) {
                         Some((true, expanded)) if again || double => changes.fold(!expanded),
-                        Some((false, _)) => (self.changes_expanded, self.reading) = (true, double),
+                        Some((false, _)) => self.reading = double,
                         _ => {}
                     }
                 }
@@ -2282,7 +2104,7 @@ impl App {
             }
         } else if areas.changes_file.contains(pos) {
             if down {
-                (self.focus, self.reading) = (Focus::Changes, true);
+                (self.focus, self.reading) = (Focus::Review, true);
             }
             if let Some(changes) = &mut self.changes {
                 let at = (pos.y - areas.changes_file.y) as usize;
@@ -2310,25 +2132,8 @@ impl App {
                     }
                 }
             }
-        } else if areas.history.contains(pos) {
-            if down {
-                (self.focus, self.reading) = (Focus::History, false);
-                self.settle();
-                let Some(changes) = &mut self.changes else { return };
-                let i = row(areas.history, changes.history_state.offset());
-                if i < changes.history.commits.len() {
-                    changes.history_state.select(Some(i));
-                    self.open_commit();
-                }
-            } else if wheel != 0 {
-                self.history_step(wheel.signum() as isize);
-            }
-        } else if let Some(&(focus, _)) = areas.panels.iter().find(|(_, r)| r.contains(pos)) {
-            match focus {
-                Focus::Projects | Focus::Workspaces if down => self.set_focus(focus),
-                _ if down => (self.focus, self.reading) = (focus, false),
-                _ => {}
-            }
+        } else if down && areas.review.contains(pos) {
+            self.focus = Focus::Review;
         }
     }
 
@@ -2336,18 +2141,31 @@ impl App {
         let pos = Position::new(mouse.column, mouse.row);
         let (popup, list) = (self.areas.popup, self.areas.popup_list);
         let down = mouse.kind == MouseEventKind::Down(MouseButton::Left);
+        if let Some(offset) = self.picker.as_ref().map(|p| p.state.offset()) {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => self.picker_step(-1),
+                MouseEventKind::ScrollDown => self.picker_step(1),
+                _ if down && list.contains(pos) => {
+                    let at = (pos.y - list.y) as usize + offset;
+                    if at < self.picks().len()
+                        && let Some(picker) = &mut self.picker
+                    {
+                        picker.state.select(Some(at));
+                        self.pick();
+                    }
+                }
+                _ if down && !popup.contains(pos) => self.picker = None,
+                _ => {}
+            }
+            return;
+        }
+        let Some(list_of) = self.repos.as_mut().or(self.search.as_mut()) else { return };
         let delta = match mouse.kind {
             MouseEventKind::ScrollUp => -1,
             MouseEventKind::ScrollDown => 1,
-            _ if down && list.contains(pos) => {
-                let offset_and_at = match (&self.search, &self.repos) {
-                    (Some(s), _) | (None, Some(s)) => (s.state.offset(), s.state.selected().unwrap_or(0)),
-                    (None, None) => return,
-                };
-                (pos.y - list.y) as isize + offset_and_at.0 as isize - offset_and_at.1 as isize
-            }
-            _ if down && !popup.contains(pos) && !self.no_projects => {
-                (self.search, self.repos) = (None, None);
+            _ if down && list.contains(pos) => (pos.y - list.y) as isize + list_of.state.offset() as isize - list_of.state.selected().unwrap_or(0) as isize,
+            _ if down && !popup.contains(pos) => {
+                (self.repos, self.search) = (None, None);
                 return;
             }
             _ => return,
@@ -2356,17 +2174,12 @@ impl App {
         if down {
             self.last_click = Some((pos, Instant::now()));
         }
+        list_of.step(delta);
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        if self.search.is_some() {
-            self.search_step(delta);
-            if double {
-                self.search_key(enter);
-            }
-        } else if let Some(repos) = &mut self.repos {
-            repos.step(delta);
-            if double {
-                self.repos_key(enter);
-            }
+        match (double, self.repos.is_some()) {
+            (true, true) => self.repos_key(enter),
+            (true, false) => self.search_key(enter),
+            _ => {}
         }
     }
 
@@ -2403,7 +2216,7 @@ impl App {
         }
         let mut parts = word.split(':');
         let path = PathBuf::from(parts.next().unwrap_or_default());
-        let line = parts.next().and_then(|n| n.parse::<usize>().ok()).map(|n| n.saturating_sub(1));
+        let line = parts.next().and_then(|n| n.parse::<usize>().ok());
         let path = if path.is_absolute() { path } else { cwd.join(path) };
         if !path.is_file() {
             self.message = Some(format!("no link or file at {word:?}"));
@@ -2413,21 +2226,42 @@ impl App {
             self.message = Some(UNSAVED.into());
             return;
         }
-        self.editor = None;
-        self.search = None;
-        self.focus = Focus::Files;
-        self.show_file(path, line);
-        self.files_expanded = true;
-        self.reading = true;
+        self.open_files();
+        self.ws_mut().reveal(&path);
+        self.open_editor(path, line);
     }
 
-    fn create_workspace(&mut self, name: &str, branch: Option<&str>) {
-        let (repo, name, branch, tx) = (self.new_in.clone(), name.to_string(), branch.map(str::to_string), self.tx.clone());
+    fn naming_key(&mut self, key: KeyEvent) {
+        let Some(naming) = &mut self.naming else { return };
+        match key.code {
+            KeyCode::Esc => self.naming = None,
+            KeyCode::Tab | KeyCode::BackTab => naming.on_branch = !naming.on_branch,
+            KeyCode::Enter => match typed_name(&naming.name) {
+                name if name.is_empty() => self.message = Some("type the workspace's name".into()),
+                name => {
+                    let Some(naming) = self.naming.take() else { return };
+                    let branch = Some(naming.branch.trim().to_string()).filter(|b| !b.is_empty());
+                    self.create_workspace(naming.repo, name, branch);
+                }
+            },
+            _ => {
+                let text = if naming.on_branch { &mut naming.branch } else { &mut naming.name };
+                input::edit(text, key);
+            }
+        }
+    }
+
+    fn create_workspace(&mut self, repo: PathBuf, name: String, branch: Option<String>) {
+        let tx = self.tx.clone();
         // Asked twice: the first copy is still being made.
         if !self.copying.insert((repo.clone(), name.clone())) {
             self.message = Some(format!("workspace {name} is being made already"));
             return;
         }
+        if !project::registered().contains(&repo) {
+            self.new_projects.insert(repo.clone());
+        }
+        project::register(&repo);
         self.load_workspaces();
         if let Some(i) = self.workspaces.iter().position(|w| w.root == worktree::root_of(&repo, &name)) {
             self.set_current(i);
@@ -2441,9 +2275,13 @@ impl App {
 
     pub fn on_copied(&mut self, copy: (PathBuf, String), made: Result<(PathBuf, Vec<String>), String>) {
         self.copying.remove(&copy);
+        let new_project = self.new_projects.remove(&copy.0);
         let (root, mut notes) = match made {
             Ok(made) => made,
             Err(e) => {
+                if new_project {
+                    project::unregister(&copy.0);
+                }
                 self.message = Some(e);
                 self.load_workspaces();
                 return;
@@ -2545,8 +2383,11 @@ impl App {
             let ok = child.wait().is_ok_and(|status| status.success());
             let _ = tx.send(Msg::Removed(root, log, ok));
         });
-        if let Some(main) = self.workspaces.iter().position(|w| w.root == wt.repo).filter(|_| asked) {
-            self.set_current(main);
+        if asked && self.ws().root == wt.root {
+            let main = self.workspaces.iter().position(|w| w.root == wt.repo);
+            if let Some(next) = self.workspace_order().into_iter().find(|&i| self.workspaces[i].root != wt.root).or(main) {
+                self.set_current(next);
+            }
         }
         self.removing.insert(wt.root.clone());
         let ids: Vec<usize> = self.terms.iter().filter(|t| t.info.cwd == wt.root).map(|t| t.id).collect();
@@ -2616,23 +2457,15 @@ fn run_in_background(script: &str, dir: &Path, wt: &worktree::Worktree, log: &Pa
         .spawn()
 }
 
-enum Scroll {
-    Rows(isize),
-    Sideways(isize),
-}
-
-fn scroll_keys(key: KeyEvent, height: usize) -> Option<Scroll> {
+fn scroll_rows(key: KeyEvent, height: usize) -> Option<isize> {
     let half = (height / 2).max(1) as isize;
     Some(match key.code {
-        KeyCode::Down | KeyCode::Char('j') => Scroll::Rows(1),
-        KeyCode::Up | KeyCode::Char('k') => Scroll::Rows(-1),
-        KeyCode::PageDown | KeyCode::Char('d' | ' ') => Scroll::Rows(half),
-        KeyCode::PageUp | KeyCode::Char('u') => Scroll::Rows(-half),
-        KeyCode::Home | KeyCode::Char('g') => Scroll::Rows(isize::MIN / 2),
-        KeyCode::End | KeyCode::Char('G') => Scroll::Rows(isize::MAX / 2),
-        KeyCode::Left | KeyCode::Char('h') => Scroll::Sideways(-8),
-        KeyCode::Right | KeyCode::Char('l') => Scroll::Sideways(8),
-        KeyCode::Char('0') => Scroll::Sideways(0),
+        KeyCode::Down | KeyCode::Char('j') => 1,
+        KeyCode::Up | KeyCode::Char('k') => -1,
+        KeyCode::PageDown | KeyCode::Char('d' | ' ') => half,
+        KeyCode::PageUp | KeyCode::Char('u') => -half,
+        KeyCode::Home | KeyCode::Char('g') => isize::MIN / 2,
+        KeyCode::End | KeyCode::Char('G') => isize::MAX / 2,
         _ => return None,
     })
 }
@@ -2671,6 +2504,11 @@ fn clipboard() -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+pub fn typed_name(text: &str) -> String {
+    let dashed = text.trim().to_lowercase().replace(char::is_whitespace, "-");
+    dashed.chars().filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-_".contains(*c)).collect()
+}
+
 pub fn shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())
 }
@@ -2691,7 +2529,14 @@ fn rise<T: PartialEq>(order: &mut Vec<T>, item: T, urgency: impl Fn(&T) -> u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::rise;
+    use super::{rise, typed_name};
+
+    #[test]
+    fn names_a_workspace_as_typed() {
+        assert_eq!(typed_name("  Fix Login page! "), "fix-login-page");
+        assert_eq!(typed_name("FND-12_api"), "fnd-12_api");
+        assert_eq!(typed_name("é/../"), "");
+    }
 
     #[test]
     fn rows_only_move_up() {

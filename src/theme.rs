@@ -53,7 +53,7 @@ const fn mix(fg: u32, bg: u32, alpha: u32) -> u32 {
 
 pub fn veiled(color: Color, fallback: Color) -> Color {
     match color {
-        Color::Rgb(r, g, b) => rgb(mix(u32::from_be_bytes([0, r, g, b]), PULPO_DARK.bg, 0x70)),
+        Color::Rgb(r, g, b) => rgb(mix(u32::from_be_bytes([0, r, g, b]), PULPO_DARK.bg, 0x38)),
         _ => fallback,
     }
 }

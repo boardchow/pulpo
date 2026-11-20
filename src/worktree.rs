@@ -40,8 +40,6 @@ pub struct Worktree {
     pub ports: Vec<(String, u16)>,
     pub images: Vec<String>,
     #[serde(default)]
-    pub base: Option<String>,
-    #[serde(default)]
     pub kind: Kind,
     #[serde(default)]
     pub port: Option<u16>,
@@ -481,7 +479,6 @@ pub fn create(repo: &Path, name: &str, branch: Option<&str>, config: &Config) ->
             main_project: main_project.clone(),
             ports: config.ports.iter().cloned().zip(ports[BLOCK as usize..].iter().copied()).collect(),
             images: config.images.clone(),
-            base: None,
             kind: Kind::Worktree,
             port: Some(ports[0]),
             branch: Some(branch.clone()),
