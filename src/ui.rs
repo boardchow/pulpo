@@ -589,7 +589,7 @@ fn draw_naming(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = format!(" New workspace in {} ", naming.repo.file_name().unwrap_or_default().to_string_lossy());
     let (popup, inner) = popup(frame, area, &title, " tab branch · ⏎ make it · esc close ", app.message.as_deref(), 2);
     let [name, branch] = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(inner);
-    frame.render_widget(field("name   ", &naming.name, "like fix-login", !naming.on_branch), name);
+    frame.render_widget(field("name   ", &naming.name, "like fix-login, or none to work in the project", !naming.on_branch), name);
     frame.render_widget(field("branch ", &naming.branch, "from the name", naming.on_branch), branch);
     app.areas.popup = popup;
 }
