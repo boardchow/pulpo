@@ -9,40 +9,28 @@ order: 4
 
 A [workspace](/docs/projects-and-workspaces) is a copy of your project in its own folder, on its own branch.
 
-1. Press :kp[w] to go to Workspaces, then :kp[n].
-2. Type a name, like `fix-login`. Names use lowercase letters, digits, `-` and `_`. Capitals turn lowercase as you type.
-3. Press :k[⏎].
+1. Press :kp[n], the [prefix](/docs/prefix-key) then n. The list of repositories opens: your projects first, the one you're in on top, then the other git repositories in your home folder. Type to filter, or type a path like `~/code/api`.
+2. Press :k[⏎] on the repository. The popup asks for the name.
+3. Type a name, like `fix-login`, and press :k[⏎]. Names use lowercase letters, digits, `-` and `_`: spaces turn into `-`.
 
-The workspace shows in Workspaces, and a shell opens in it. Pulpo makes it in the current project, from origin's default branch, fetched first, on the branch `<you>/fix-login`. `<you>` is your git user name in lowercase, unless you [set a branch prefix](/docs/configuration).
-
-## Create a workspace in another project
-
-1. Press :kp[N] from any panel. The bottom line shows the current project.
-2. Press :k[↑] or :k[↓] to switch to another project, then :k[⏎]. The bottom line asks for the workspace's name.
-3. Type the name and press :k[⏎].
+A shell opens in the workspace. Pulpo makes it from origin's default branch, fetched first, on the branch `<you>/fix-login`. `<you>` is your git user name in lowercase, unless you [set a branch prefix](/docs/configuration).
 
 ## Name the branch yourself
 
 To use a branch name of your own, for example a ticket's, press :k[tab] after typing the workspace's name. Type or paste the branch, then press :k[⏎]. The workspace's name stays the folder's name.
 
-Pulpo creates the branch. If a branch of that name already has commits of its own, Pulpo refuses: pick another name.
+If a branch of that name already has commits of its own, Pulpo refuses: pick another name.
 
 ## Start an agent
 
-Type your agent's command, like `claude` or `codex`, in the workspace's shell. To run something next to it, like tests or a dev server, press :kp[n] from the terminal to open another tab. :kp{k="["} and :kp{k="]"} switch between tabs.
+Type your agent's command, like `claude` or `codex`, in the workspace's shell. To run something next to it, like tests or a dev server, press :kp[t] to open another terminal. :kp{k="["} and :kp{k="]"} switch between them.
 
 ## Move between workspaces
 
-Each of these goes to the workspace's terminal:
-
 | To | Press |
 | --- | --- |
-| Go to workspace 1 to 9 | :kp[1] to :kp[9] |
+| Go to the first to ninth workspace in the list | :kp[1] to :kp[9] |
 | Go to the agent that waits for you, or a workspace whose setup ended | :kp[a] |
-| Pick from the list | :kp[w], then :k[↑] :k[↓] and :k[⏎] |
+| Pick from the list | :kp[w], then type to filter, :k[↑] :k[↓] and :k[⏎] |
 
-The numbers follow the list, which moves the workspaces that wait for you to the top. See [the two lists](/docs/projects-and-workspaces#the-two-lists).
-
-## Add another repository
-
-Press :kp[p], then :kp[n]. Pick one of the git repositories Pulpo finds in your home folder, or type a path like `~/code/api`, then press :k[⏎]. Its new workspaces join the same list, with the project's name on the right.
+The numbers follow [the workspace list](/docs/projects-and-workspaces#the-workspace-list), which moves the workspaces that wait for you to the top.

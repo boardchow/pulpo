@@ -24,7 +24,7 @@ Other commands you may see, like `pulpo serve`, are internal and aren't meant to
 
 Opens Pulpo and adds the repository that contains `path`. If `path` is in a worktree, Pulpo adds the repository it belongs to. If `path` is in a workspace Pulpo made, Pulpo opens that workspace and adds nothing.
 
-In a project's folder, Pulpo opens on the workspace of that project you were on last. In a workspace's folder, it opens that workspace. Elsewhere, it opens where you were last. With no project yet, it opens the list of repositories to add.
+In a project's folder, Pulpo opens on the workspace of that project you were on last. In a workspace's folder, it opens that workspace. Elsewhere, it opens where you were last. With no project yet, it says there's no workspace: :k[⏎] starts one.
 
 ## pulpo hooks
 

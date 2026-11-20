@@ -5,29 +5,31 @@ section: Guides
 order: 7
 ---
 
-## Search
+## Open Files
 
-Press :kp[/] and type part of a file's name. Press :k[tab] to search inside files instead, and :k[tab] again to go back to names.
-
-Search covers the files of the workspace on screen, except the ones git ignores. Text in lowercase matches any case; type a capital letter to match case exactly. Files over 1 MB and binary files are skipped.
+Press :kp[f], the [prefix](/docs/prefix-key) then f. Files takes the whole screen: the workspace as a tree on the left, the selected file on the right. Names are colored by what the workspace changed: green new, blue changed, red deleted. :kp[f] again, or :k[esc] from the tree, goes back to the terminal.
 
 | To | Press |
 | --- | --- |
-| Move | :k[↑] :k[↓], or :k[⌃k] :k[⌃j], or :k[⌃p] :k[⌃n] |
-| Open | :k[⏎]: the file full screen, at the line |
-| Close | :k[esc] |
+| Move, fold a folder | :k[↑] :k[↓], :k[←] :k[→] |
+| Read the file | :k[⏎] or click it, then :k[tab] back to the tree |
+| Scroll it | :k[j] :k[k], :k[d] :k[u], :k[pgdn] :k[pgup], and sideways :k[h] :k[l] |
 
-## Browse files
+The line cursor's line ends with who changed it last, when, and the commit's subject.
 
-Press :kp[f]. Files, under Workspaces, shows the workspace as a tree, with names colored by git status: green new, blue changed, red deleted.
+## Search
 
-Move with :k[↑] :k[↓], fold with :k[←] :k[→], and press :k[⏎] or click a file to read it full screen. Full screen, the keys are the same as in [Changes](/docs/review-changes#read-a-change-full-screen). The line cursor's line ends with who changed it last, when, and the commit's subject.
+In Files, press :kp[/] and type part of a file's name. Press :k[tab] to search inside files instead, and :k[tab] again to go back to names. :k[⏎] opens the file, at the line.
 
-From a terminal, Ctrl-click a path like `src/app.rs:120` to open it in Files at that line.
+Search covers the files of the workspace, except the ones git ignores. Text in lowercase matches any case; type a capital letter to match case exactly. Files over 1 MB and binary files are skipped.
+
+## Create, rename and delete
+
+In Files, :kp[n] makes a file in the selected folder and opens it in the editor; end the name with `/` to make a folder. :kp[r] renames the selected file or folder, and :kp[d] deletes it, after asking whether git can restore it. Names stay inside the workspace.
 
 ## Edit a file
 
-Select the file in Files and press :kp[e]. The editor opens at the line you were reading.
+Press :kp[e] on a file in Files, or in the [review](/docs/review-changes) on the line to fix. From a terminal, Ctrl-click a path like `src/app.rs:120`. The editor opens at that line.
 
 | To | Press |
 | --- | --- |
@@ -36,16 +38,4 @@ Select the file in Files and press :kp[e]. The editor opens at the line you were
 | Find | :k[⌃f], then :k[⏎] for the next match and :k[⇧⏎] for the previous one |
 | Leave | :k[esc]. With unsaved changes, press it twice to throw them away |
 
-Copy, cut, paste and select all are :k[⌃c], :k[⌃x], :k[⌃v] and :k[⌃a]. See [Keybinds](/docs/keybinds) for every key.
-
-While you have unsaved changes, Pulpo won't switch workspace or quit. If the file changes on disk and you haven't edited it, the editor reloads it.
-
-## Create, rename and delete
-
-In Files:
-
-- :kp[n] makes a file in the selected folder and opens it in the editor. End the name with `/` to make a folder.
-- :kp[r] renames the selected file or folder.
-- :kp[d] deletes it, after asking. The question says whether git can restore it.
-
-Names stay inside the workspace: Pulpo refuses a path that leads out of it.
+See [Keybinds](/docs/keybinds#editor) for every key. While you have unsaved changes, Pulpo won't switch workspace or quit.

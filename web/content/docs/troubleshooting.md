@@ -11,7 +11,6 @@ order: 18
 | --- | --- |
 | The prefix does nothing | Run `pulpo keytest` and press it. If :k[⌃b] doesn't show up, [choose another prefix](/docs/configuration#keys) |
 | :k[⌃␣] as the prefix does nothing | macOS uses it to switch input sources. Run `pulpo doctor`: it says how to free it |
-| *`⌃b f` first: that's for files* | :kp[e], :kp[r] and :kp[d] act on files in Files only. Press :kp[f] first |
 | *using the default keys* | `keys.toml` has an error. Fix it, or run `pulpo doctor` to see it |
 | *unsaved changes in the editor* | Save with :k[⌃s], or press :k[esc] twice to throw the changes away. Until then, Pulpo won't switch workspace or quit |
 
@@ -62,4 +61,3 @@ If a setup fails, its *setup* tab ends with what went wrong. Fix the cause, then
 | Message | Fix |
 | --- | --- |
 | *could not delete workspace* | Open the log it names, in `~/.local/state/pulpo/logs/`. Fix the cause, then delete the workspace again |
-| *this is the project itself* | Projects aren't deleted, only taken off the list: :kp[p], then :kp[x] |

@@ -11,7 +11,7 @@ Press :k[⌃b], release it, then press one key. In these docs that's written :kp
 
 While Pulpo waits for the second key, the bottom left corner shows :k[⌃b]. If no key comes within three seconds, the prefix is dropped.
 
-The prefix works everywhere, including while a program runs in a terminal. Every other key goes to the program or panel you're in, so Pulpo never takes a key your agent or editor needs.
+The prefix works everywhere, including while a program runs in a terminal. Every other key goes to the program, the review or Files, wherever you are, so Pulpo never takes a key your agent or editor needs.
 
 :kp[?] lists every key. Any key closes the list.
 
@@ -21,14 +21,7 @@ The prefix works everywhere, including while a program runs in a terminal. Every
 
 ## Keys act on where you are
 
-The same key does what fits the panel you're in:
-
-| Key | Projects | Workspaces | Terminal | Files |
-| --- | --- | --- | --- | --- |
-| :kp[n] | Add a project | New workspace | New terminal | New file |
-| :kp[x] | Remove from the list | Delete the workspace | Close the terminal | Delete the file |
-
-:kp[e], :kp[r] and :kp[d] edit, rename and delete files in Files. In Changes, :kp[n], :kp[e] and :kp[d] make, edit and delete [comments](/docs/review-changes#comment-for-the-agent).
+In the [review](/docs/review-changes), :kp[n] and :kp[d] make and delete comments, and :kp[e] edits the file. In [Files](/docs/edit-files), :kp[n], :kp[e], :kp[r] and :kp[d] make, edit, rename and delete files. Everywhere else, :kp[n] makes a new workspace.
 
 ## Change the prefix
 

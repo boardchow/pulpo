@@ -27,7 +27,7 @@ Each project and workspace has its own terminals, as tabs. A tab shows the progr
 
 | To | Press | Or |
 | --- | --- | --- |
-| Open a terminal | :kp[n] in the terminal | Click `+` |
+| Open a terminal | :kp[t] | Click `+` |
 | Go to the previous, next tab | :kp{k="["}, :kp{k="]"} | Click the tab |
 | Close the terminal | :kp[x]. Pulpo asks if a program still runs in it | |
 
@@ -41,4 +41,4 @@ Every key goes to the program in the terminal, except the [prefix](/docs/prefix-
 | --- | --- |
 | Wheel | Scrolls back through the output, up to 5,000 lines. In full-screen programs like `less`, it sends the arrow keys |
 | Drag | Selects text and copies it. Hold :k[shift] when the program uses the mouse |
-| Ctrl-click | Opens a link in your browser, or a path like `src/app.rs:120` in Files |
+| Ctrl-click | Opens a link in your browser, or a path like `src/app.rs:120` in the [editor](/docs/edit-files) |
