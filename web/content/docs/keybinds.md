@@ -132,7 +132,7 @@ Naming a new workspace:
 | Keys | Does |
 | --- | --- |
 | :k[tab] | Switch between the name and the branch |
-| :k[⏎] | Make the workspace |
+| :k[⏎] | Make the workspace. With no name or branch: work in the project's own folder |
 | :k[esc] | Cancel |
 
 ## Questions

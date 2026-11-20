@@ -2237,6 +2237,10 @@ impl App {
             KeyCode::Esc => self.naming = None,
             KeyCode::Tab | KeyCode::BackTab => naming.on_branch = !naming.on_branch,
             KeyCode::Enter => match typed_name(&naming.name) {
+                _ if naming.name.trim().is_empty() && naming.branch.trim().is_empty() => {
+                    let Some(naming) = self.naming.take() else { return };
+                    self.open_project(&naming.repo);
+                }
                 name if name.is_empty() => self.message = Some("type the workspace's name".into()),
                 name => {
                     let Some(naming) = self.naming.take() else { return };
@@ -2248,6 +2252,16 @@ impl App {
                 let text = if naming.on_branch { &mut naming.branch } else { &mut naming.name };
                 input::edit(text, key);
             }
+        }
+    }
+
+    fn open_project(&mut self, repo: &Path) {
+        project::register(repo);
+        self.load_workspaces();
+        if let Some(i) = self.workspaces.iter().position(|w| w.root == repo)
+            && self.set_current(i)
+        {
+            self.set_focus(Focus::Terminal);
         }
     }
 
