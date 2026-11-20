@@ -14,7 +14,7 @@ Run several coding agents, each on its own branch and ports. Pulpo marks the one
 curl -fsSL https://pulpo.sh/install | sh
 ```
 
-Then run `pulpo` inside a git repository.
+Then run `pulpo` from any folder.
 
 Pulpo needs macOS and runs in any terminal app. It runs any agent that works in a terminal, and with Claude Code or Codex it shows exactly what each one is doing. See [Installation](https://pulpo.sh/docs/installation) for details.
 

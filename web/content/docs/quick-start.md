@@ -5,19 +5,18 @@ section: Get started
 order: 3
 ---
 
-You need Pulpo [installed](/docs/installation), Claude Code or Codex, and a git repository with at least one commit. Any other agent that runs in a terminal works too, but Pulpo can only guess its status. Open Pulpo in your repository, replacing `~/code/my-app` with its path:
+You need Pulpo [installed](/docs/installation), Claude Code or Codex, and a git repository with at least one commit. Any other agent that runs in a terminal works too, but Pulpo can only guess its status. Run Pulpo from any folder:
 
 ```sh
-cd ~/code/my-app
 pulpo
 ```
 
-Pulpo opens on a shell in the repository, which is now a [project](/docs/projects-and-workspaces).
+Outside a repository, with no project yet, Pulpo says `No workspaces`.
 
 ::steps
 1. **Try the prefix.** Every Pulpo action is :k[⌃b], released, then one key. It works even while a program runs in the terminal. Press :k[⌃b], release it, then press :k[?]. The list of every key opens; press any key to close it. To learn more, see [the prefix key](/docs/prefix-key).
 
-2. **Create a workspace.** A workspace is a copy of your project on its own branch, so an agent's edits stay out of everything else. Press :kp[n], then :k[⏎] on your repository, at the top of the list. Type `add-tests` and press :k[⏎]. A shell opens in the workspace, on the branch `<you>/add-tests` (shown bottom right), where `<you>` is your git user name in lowercase.
+2. **Create a workspace.** A workspace is a copy of your project on its own branch, so an agent's edits stay out of everything else. Press :kp[n] (or :k[⏎] while Pulpo says `No workspaces`). The list shows the git repositories in your home folder: type part of your repository's name, or its path, and press :k[⏎]. Type `add-tests` and press :k[⏎]. A shell opens in the workspace, on the branch `<you>/add-tests` (shown bottom right), where `<you>` is your git user name in lowercase. Your repository is now a [project](/docs/projects-and-workspaces): it comes first in that list from now on.
 
 3. **Start an agent.** Type `claude` or `codex`, press :k[⏎], and give it a task. While it works, its tab shows a spinner.
 
