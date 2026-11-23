@@ -30,6 +30,7 @@ Type your agent's command, like `claude` or `codex`, in the workspace's shell. T
 | To | Press |
 | --- | --- |
 | Go to the first to ninth workspace in the list | :kp[1] to :kp[9] |
+| Go to the previous, next workspace | :kp[⇧↑], :kp[⇧↓] |
 | Go to the agent that waits for you, or a workspace whose setup ended | :kp[a] |
 | Pick from the list | :kp[w], then type to filter, :k[↑] :k[↓] and :k[⏎] |
 

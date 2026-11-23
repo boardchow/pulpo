@@ -21,27 +21,20 @@ A reboot stops the server and its terminals. The next time you open Pulpo, it re
 
 The bottom line says how many terminals came back, and how many agent sessions resumed. What they printed before the reboot doesn't come back.
 
-## Tabs
-
-Each project and workspace has its own terminals, as tabs. A tab shows the program running in it, like `claude` or `codex`, and its [mark](/docs/agent-status#read-the-marks).
-
-| To | Press | Or |
-| --- | --- | --- |
-| Open a terminal | :kp[t] | Click `+` |
-| Go to the previous, next tab | :kp{k="["}, :kp{k="]"} | Click the tab |
-| Close the terminal | :kp[x]. Pulpo asks if a program still runs in it | |
-
 ## Panes
 
-Split the screen to see several terminals at once, like a shell next to an agent. Each pane shows one terminal, and the focused pane has the bright frame.
+Each project and workspace shows its terminals side by side, as panes. A pane's frame shows the program running in it, like `claude` or `codex`, and its [mark](/docs/agent-status#read-the-marks). The focused pane has the bright frame.
 
 | To | Press | Or |
 | --- | --- | --- |
+| Open a terminal, in a split of the focused pane | :kp[t] | |
 | Split the pane right, down | :kp[\\], :kp[-] | |
 | Move between panes | :kp[←] :kp[↑] :kp[↓] :kp[→]. Within a second, the arrows keep moving without the prefix | Click a pane |
+| Go to the previous, next pane | :kp{k="["}, :kp{k="]"} | |
 | Zoom the pane, or show them all | :kp[z] | |
+| Close the terminal | :kp[x]. Pulpo asks if a program still runs in it | |
 
-A split opens a new terminal in the same workspace. Closing a pane's terminal gives its room to the next pane. Pulpo keeps your panes when you quit and open it again.
+Closing a pane's terminal gives its room to the next pane. Pulpo keeps your panes when you quit and open it again.
 
 A project or workspace always has a terminal. A shell opens, in your `$SHELL`, when you go to one without any, and when you close or exit its last one.
 

@@ -15,6 +15,7 @@ Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌃b], then the key. 
 | :kp[n] | New workspace: pick its repository, then type its name |
 | :kp[X] | Delete the workspace you're in, after asking. In a project's own folder: hide the project, its folder stays |
 | :kp[1] to :kp[9] | The first to ninth workspace in the list, in its terminal |
+| :kp[⇧↑], :kp[⇧↓] | The previous, next workspace. For a second after, the keys work without the prefix |
 | :kp[a] | The terminal that has waited longest for you |
 | :kp[?] | The list of every key. Any key closes it |
 
@@ -24,9 +25,9 @@ Every key goes to the program, except the prefix.
 
 | Keys | Does |
 | --- | --- |
-| :kp[t] | New terminal |
+| :kp[t] | New terminal, in a split of the focused pane |
 | :kp[x] | Close the terminal, asking if a program runs |
-| :kp{k="["}, :kp{k="]"} | The previous, next terminal tab |
+| :kp{k="["}, :kp{k="]"} | The previous, next pane |
 | :kp[\\], :kp[-] | Split the pane right, down |
 | :kp[←] :kp[↑] :kp[↓] :kp[→] | Move between panes. For a second after, the arrows keep moving |
 | :kp[z] | Zoom the pane, or show them all |
@@ -149,9 +150,9 @@ Naming a new workspace:
 
 | Action | Does |
 | --- | --- |
-| Click the workspace's name | Open the workspace list |
+| Click a workspace in the sidebar | Go there. `+ new` makes one |
+| Click the workspace's name | Open the workspace list (when the window is too narrow for the sidebar) |
 | Click `◆ 2 waiting` | Go to the terminal that has waited longest |
-| Click a tab, `+` | Go to that terminal, open a new one |
 | Click a pane | Focus it |
 | Click `3 to review` | Open the review |
 | Click a row in a list | Select it. In the workspace list, go there |

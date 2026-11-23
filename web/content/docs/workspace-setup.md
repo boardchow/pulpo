@@ -34,8 +34,8 @@ The setup script runs in the workspace's folder, in the background, after the [c
 
 `teardown` works the same way, and runs before a workspace is deleted. `fresh` runs when the project has no database to copy.
 
-The workspace's *setup* tab shows each step as it runs, and ends with *✓ Workspace … is ready* and its ports. A terminal then opens beside it and takes you there, unless you had moved to another tab. If you were in another workspace, this one shows ✓ until you go there, which opens that terminal. Closing the *setup* tab doesn't stop the setup.
+The workspace's *setup* terminal shows each step as it runs, and ends with *✓ Workspace … is ready* and its ports. A terminal then opens beside it and takes you there, unless you had moved to another terminal. If you were in another workspace, this one shows ✓ until you go there, which opens that terminal. Closing the *setup* terminal doesn't stop the setup.
 
 ## When setup fails
 
-The *setup* tab ends with what went wrong, and you stay on it, with a terminal beside it to debug in. The workspace shows ✗ until you go there, which opens the *setup* tab. A container that stops at boot fails the setup too, with its last logs. The log is also in `~/.local/state/pulpo/logs/`. Fix the cause, then run the remaining steps in the workspace's terminal, or delete the workspace and create it again.
+The *setup* terminal ends with what went wrong, and you stay on it, with a terminal beside it to debug in. The workspace shows ✗ until you go there, which opens the *setup* terminal. A container that stops at boot fails the setup too, with its last logs. The log is also in `~/.local/state/pulpo/logs/`. Fix the cause, then run the remaining steps in the workspace's terminal, or delete the workspace and create it again.

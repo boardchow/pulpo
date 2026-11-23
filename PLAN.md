@@ -18,8 +18,8 @@ Pulpo made, as in Conductor.
 ```
 pulpo (one binary)
 ├── main.rs     terminal setup + event loop (one mpsc channel for everything)
-├── app.rs      state: focus, the prefix and its keys, the terminals' tabs, the workspace list, the review, mouse
-├── ui.rs       ratatui rendering: the terminal and its tabs, the review, Files, the popups, the empty screen
+├── app.rs      state: focus, the prefix and its keys, the terminals' panes, the workspace list, the review, mouse
+├── ui.rs       ratatui rendering: the terminals as panes, the review, Files, the popups, the empty screen
 ├── keymap.rs   the prefix (cmd-p, ctrl-b), from keys.toml; `pulpo keytest` and the doctor read it
 ├── input.rs    typing in a popup, with readline keys (ctrl-u, ctrl-w, alt-backspace)
 ├── review.rs   the review: what the workspace's branch changed, as a tree, the selected file's diff
@@ -56,7 +56,7 @@ Event sources feeding the loop:
 
 ### Workspaces
 
-The workspace list (⌃b w, or a click on the workspace's name) has the worktrees Pulpo made in every
+The workspace list (⌃b w, or a click on the workspace's name when there is no sidebar) has the worktrees Pulpo made in every
 project (each with its project's name), then `+ new workspace`; typing filters it. A new workspace
 (⌃b n, or that row) is its repository picked (the projects first, the one on screen on top, then
 the repositories found in your home folder), then its name and, after Tab, its branch, all in one
@@ -81,24 +81,29 @@ urgent state of its own terminals. Only the workspace on screen is read (its bra
 
 ### The screen
 
-The terminal, its frame carrying the workspace's name, its tabs (in the order of `terms`,
-the one on screen kept by tag per workspace) and, on the right, how many other workspaces
-wait for you, and how many changes are left to review. ⌃b r opens the review full screen: the files
+The workspaces down the left (`draw_sidebar`, 30 columns), under the pulpo and the version (its legs
+move while any terminal works): a mark and a name each, numbered as
+⌃b 1 to 9 count them, in the picker's order, then `+ new`; ⌃b ⇧↑ ⇧↓ step through them. Too narrow
+for it (the terminals need 60 columns beside it), it is left out and the workspace's name moves
+back onto the frame. The frames carry, on the right, how many other workspaces wait for you, and how many changes are
+left to review (the terminal on screen is kept by tag per workspace). ⌃b r opens the review full screen: the files
 left, the file right. A bottom line is where you
 read a message; its right end shows the branch. There is always a
 terminal: a shell opens in a checkout on screen without any, at most once a second for each,
 so a shell that exits at once isn't started again and again. With no project yet, the screen
 is the pulpo and "No workspaces"; ⏎ opens the repository finder.
 
-A workspace's panes are a tree of splits (`panes.rs`), each leaf a terminal, halves only. With
-more than one, each pane has its own frame and the tabs sit on a line above; the tabs are the
-workspace's terminals, and going to one that isn't on screen swaps it into the focused pane.
-`App::arrange` keeps the tree to the workspace's terminals, each frame; the server sends output
-for every terminal on screen (`Watch { ids }`). The tree is kept in `layout.json` by the terminals' tags.
+A workspace's terminals are all on screen, as a tree of splits (`panes.rs`), each leaf a terminal,
+halves only. Each pane has its own frame with the terminal's name and mark; the top right one also
+carries the waiting and to review badges, and with no sidebar the top left one the workspace's name.
+A terminal that appears (a split, a setup, a shell kept) is split off the last pane by `App::arrange`,
+which runs each frame, keeps the tree to the workspace's terminals and does nothing before the server
+is ready. The server sends output for every terminal on screen (`Watch { ids }`). The tree is kept in
+`layout.json` by the terminals' tags.
 
 Keys go to what has the focus: the terminal, the review or Files, each full screen. The prefix
 (⌃b) is taken from anywhere first: w the list, n a new workspace (in the review: a comment; in
-Files: a file), X deletes it, t and x a terminal, [ ] tabs, \ and - split, arrows move between panes (and keep
+Files: a file), X deletes it, t (a split) and x a terminal, [ ] panes, \ and - split, arrows move between panes (and keep
 moving for a second without the prefix), z zooms, 1 to 9 a workspace, a who waits, r the
 review, f Files (where / searches, and e r d edit, rename, delete), e the editor (from the review), ?
 the keys, q and Q quit. The prefix waits 3 s for its key; a click cancels it. ⌃b twice

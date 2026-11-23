@@ -18,7 +18,7 @@ A workspace is a copy of a project for one task: a [git worktree](#workspaces-ar
 | Its own | Means |
 | --- | --- |
 | Folder and branch | Agents never edit each other's files |
-| Terminals | Each workspace keeps its own tabs |
+| Terminals | Each workspace keeps its own terminals |
 | Ports | Ten ports from 20000 up, the first in `PULPO_PORT` |
 | Compose project | Containers, volumes and a copy of the database, with [Docker Compose](/docs/docker) |
 
@@ -35,9 +35,13 @@ A worktree is a second checkout of the same repository. It shares the project's 
 
 Pulpo locks each worktree, so `git worktree prune` leaves it alone. Worktrees made outside Pulpo, by agents or by hand, don't show in the list.
 
+## The sidebar
+
+The workspaces are listed down the left of the terminal, in the order of [the workspace list](#the-workspace-list). Click a row to go there. A window too narrow for the sidebar hides it, and the workspace's name shows on the terminal's frame instead.
+
 ## The workspace list
 
-Press :kp[w], or click the workspace's name on the terminal's frame. The list shows every project's workspaces, with the project's name on the right, and a last row that makes a new one. Type to filter it.
+Press :kp[w], or click the workspace's name on the terminal's frame when the sidebar is hidden. The list shows every project's workspaces, with the project's name on the right, and a last row that makes a new one. Type to filter it.
 
 Each workspace row starts with its mark: a spinner while it works or sets up, ✓ or ✗ once its setup worked or failed, ◆ when it waits for you, ○ when it's quiet. :kp[1] to :kp[9] go to the first to ninth workspace in the list.
 

@@ -13,7 +13,7 @@ order: 5
 | ◆ | The terminal waits for you: the agent asked something or finished, the bell rang, or a program stopped after running for a second or more |
 | ○ | Quiet |
 
-Each terminal tab shows its mark. A workspace shows the mark of its most urgent terminal. A ◆ clears once you look at that terminal.
+Each terminal's frame shows its mark. A workspace shows the mark of its most urgent terminal. A ◆ clears once you look at that terminal.
 
 A workspace being [set up](/docs/workspace-setup) shows the spinner, then ✓ or ✗ until you go there.
 
