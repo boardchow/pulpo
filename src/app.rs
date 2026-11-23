@@ -89,8 +89,9 @@ pub struct Areas {
     pub name: Rect,
     pub waiting: Rect,
     pub to_review: Rect,
-    pub tabs: Vec<(Option<usize>, Rect)>,
     pub panes: Vec<(usize, Rect)>,
+    /// The sidebar's rows: a workspace, or none for "new workspace".
+    pub sidebar: Vec<(Option<usize>, Rect)>,
     pub review: Rect,
     pub changes_tree: Rect,
     pub changes_file: Rect,
@@ -835,7 +836,6 @@ impl App {
                     return;
                 }
                 if let Some(down) = token.and_then(|t| self.splits.remove(&t)) {
-                    self.arrange();
                     let root = self.ws().root.clone();
                     if let (Some(at), Some(tree)) = (self.active, self.panes.get_mut(&root)) {
                         tree.split(&at, id, down);
@@ -1051,11 +1051,7 @@ impl App {
         }
         for (label, cwd, detail) in notices {
             let place = self.place(&cwd);
-            notify(&format!("{label}{}: {detail}", place.as_ref().map(|p| format!(" in {p}")).unwrap_or_default()));
-            // Terminal apps hold notifications back while their window is in front, as Pulpo's is.
-            if let Some(place) = place.filter(|_| cwd != self.ws().root) {
-                self.message = Some(format!("◆ {place}: {detail}"));
-            }
+            notify(&format!("{label}{}: {detail}", place.map(|p| format!(" in {p}")).unwrap_or_default()));
         }
     }
 
@@ -1102,12 +1098,6 @@ impl App {
     }
 
     fn select_term(&mut self, id: usize) {
-        let root = self.ws().root.clone();
-        if let (Some(old), Some(tree)) = (self.active, self.panes.get_mut(&root))
-            && !tree.contains(&id)
-        {
-            tree.replace(&old, id);
-        }
         self.active = Some(id);
         self.selecting = None;
         if let Some(term) = self.terms.iter().find(|t| t.id == id) {
@@ -1128,26 +1118,22 @@ impl App {
     fn adopt_panes(&mut self) {
         for (root, node) in std::mem::take(&mut self.old_panes) {
             let id = |tag: &String| self.terms.iter().find(|t| &t.info.tag == tag).map(|t| t.id);
-            if self.panes.get(&root).is_none_or(|tree| tree.leaves().len() < 2)
-                && let Some(tree) = node.filter_map(&id)
-            {
+            if let Some(tree) = node.filter_map(&id) {
                 self.panes.insert(root, tree);
             }
         }
     }
 
-    /// The panes on screen, or when the workspace has just one, its tabs.
     fn cycle_order(&self) -> Vec<usize> {
-        let leaves = self.workspaces.get(self.current).and_then(|w| self.panes.get(&w.root)).map(Node::leaves).unwrap_or_default();
-        if leaves.len() > 1 { leaves } else { self.workspace_terms().into_iter().map(|i| self.terms[i].id).collect() }
+        self.workspaces.get(self.current).and_then(|w| self.panes.get(&w.root)).map(Node::leaves).unwrap_or_default()
     }
 
     fn remove_term(&mut self, id: usize) {
-        let tabs = self.cycle_order();
+        let panes = self.cycle_order();
         self.terms.retain(|t| t.id != id);
         if self.active == Some(id) {
-            let at = tabs.iter().position(|&t| t == id).unwrap_or(0);
-            let next = tabs.get(at + 1).or(at.checked_sub(1).and_then(|p| tabs.get(p))).copied();
+            let at = panes.iter().position(|&t| t == id).unwrap_or(0);
+            let next = panes.get(at + 1).or(at.checked_sub(1).and_then(|p| panes.get(p))).copied();
             self.active = None;
             if let Some(next) = next {
                 self.select_term(next);
@@ -1157,22 +1143,20 @@ impl App {
     }
 
     pub fn arrange(&mut self) {
-        if self.no_projects || self.workspaces.is_empty() {
+        if !self.ready || self.no_projects || self.workspaces.is_empty() {
             return;
         }
         let root = self.ws().root.clone();
-        let ids: Vec<usize> = self.workspace_terms().into_iter().map(|i| self.terms[i].id).collect();
-        let tree = self.panes.remove(&root).and_then(|tree| tree.filter_map(&|id| ids.contains(id).then_some(*id)));
-        let tree = match (tree, self.active) {
-            (Some(mut tree), Some(active)) => {
-                if !tree.contains(&active) {
-                    tree.replace(&tree.leaves()[0], active);
-                }
-                Some(tree)
+        let mut ids: Vec<usize> = self.workspace_terms().into_iter().map(|i| self.terms[i].id).collect();
+        ids.sort_by_key(|id| self.active != Some(*id));
+        let mut tree = self.panes.remove(&root).and_then(|tree| tree.filter_map(&|id| ids.contains(id).then_some(*id)));
+        for id in ids {
+            match &mut tree {
+                None => tree = Some(Node::Leaf(id)),
+                Some(tree) if !tree.contains(&id) => tree.add(id),
+                Some(_) => {}
             }
-            (None, Some(active)) => Some(Node::Leaf(active)),
-            (tree, None) => tree,
-        };
+        }
         if let Some(tree) = tree {
             self.panes.insert(root, tree);
         }
@@ -1204,11 +1188,12 @@ impl App {
         true
     }
 
-    fn split_pane(&mut self, down: bool) {
+    fn split_pane(&mut self, down: Option<bool>) {
         let Some(area) = self.active.and_then(|id| self.areas.panes.iter().find(|(pane, _)| *pane == id)).map(|(_, area)| *area) else { return };
         if self.focus != Focus::Terminal {
             return;
         }
+        let down = down.unwrap_or(area.width < 2 * area.height);
         if if down { area.height < MIN_SPLIT_HEIGHT } else { area.width < MIN_SPLIT_WIDTH } {
             self.message = Some("this pane is too small to split".into());
             return;
@@ -1217,19 +1202,29 @@ impl App {
         self.splits.insert(token, down);
     }
 
-    fn cycle_tab(&mut self, dir: isize) {
-        let tabs: Vec<usize> = self.workspace_terms().into_iter().map(|i| self.terms[i].id).collect();
-        if tabs.is_empty() {
+    fn step_workspace(&mut self, delta: isize) {
+        let rows = self.listed();
+        let Some(at) = rows.iter().position(|&i| i == self.current) else { return };
+        let next = rows[(at as isize + delta).rem_euclid(rows.len() as isize) as usize];
+        if next != self.current && self.set_current(next) {
+            self.set_focus(Focus::Terminal);
+            self.repeat = Some(Instant::now() + REPEAT_FOR);
+        }
+    }
+
+    fn cycle_pane(&mut self, dir: isize) {
+        let panes = self.cycle_order();
+        if panes.is_empty() {
             return;
         }
-        let at = self.active.and_then(|id| tabs.iter().position(|&t| t == id)).unwrap_or(0);
-        let next = tabs[(at as isize + dir).rem_euclid(tabs.len() as isize) as usize];
+        let at = self.active.and_then(|id| panes.iter().position(|&t| t == id)).unwrap_or(0);
+        let next = panes[(at as isize + dir).rem_euclid(panes.len() as isize) as usize];
         self.select_term(next);
         self.set_focus(Focus::Terminal);
     }
 
     fn go_to_workspace(&mut self, n: usize) {
-        match self.workspace_order().get(n) {
+        match self.listed().get(n) {
             Some(&i) if self.set_current(i) => self.set_focus(Focus::Terminal),
             Some(_) => {}
             None => self.message = Some(format!("no workspace {}", n + 1)),
@@ -1333,7 +1328,11 @@ impl App {
             self.prefixed_at = Some(Instant::now());
             return false;
         }
-        if repeating && let Some(dir) = arrow(pressed) && self.focus_pane(dir) {
+        if repeating && arrow(pressed).is_some_and(|dir| self.focus_pane(dir)) {
+            return false;
+        }
+        if repeating && let Some(delta) = workspace_step(pressed) {
+            self.step_workspace(delta);
             return false;
         }
         if !self.offline {
@@ -1362,6 +1361,10 @@ impl App {
             self.focus_pane(dir);
             return false;
         }
+        if let Some(delta) = workspace_step(key) {
+            self.step_workspace(delta);
+            return false;
+        }
         let KeyCode::Char(c) = key.code else { return false };
         let review = self.focus == Focus::Review;
         let files = self.focus == Focus::Files;
@@ -1381,13 +1384,14 @@ impl App {
             'n' => self.open_repo_picker(),
             'X' => self.ask_to_delete(self.current),
             't' if self.offline => self.retry_server(),
+            't' if self.active.is_some() && self.focus == Focus::Terminal => self.split_pane(None),
             't' => self.new_terminal(true),
             'x' if self.focus == Focus::Terminal => self.close_terminal_here(),
-            '\\' => self.split_pane(false),
-            '-' => self.split_pane(true),
+            '\\' => self.split_pane(Some(false)),
+            '-' => self.split_pane(Some(true)),
             'z' if self.focus == Focus::Terminal => self.zoomed = !self.zoomed,
-            '[' => self.cycle_tab(-1),
-            ']' => self.cycle_tab(1),
+            '[' => self.cycle_pane(-1),
+            ']' => self.cycle_pane(1),
             'a' => self.next_waiting(),
             '1'..='9' => self.go_to_workspace(c as usize - '1' as usize),
             'r' if review => self.close_review(),
@@ -1479,12 +1483,16 @@ impl App {
         self.workspaces.iter().find(|r| r.root == w.repo).map_or(&w.name, |r| &r.name)
     }
 
+    pub fn listed(&self) -> Vec<usize> {
+        // A project's own folder only while terminals run there, so they stay reachable.
+        let projects = (0..self.workspaces.len()).filter(|&i| !self.no_projects && !self.workspaces[i].is_worktree() && self.terms.iter().any(|t| t.info.cwd == self.workspaces[i].root));
+        self.workspace_order().into_iter().chain(projects).collect()
+    }
+
     pub fn picks(&self) -> Vec<Pick> {
         let query = self.picker.as_ref().map_or(String::new(), |p| p.query.trim().to_lowercase());
         let shown = |i: &usize| query.is_empty() || [&self.workspaces[*i].name, self.project_name(*i)].iter().any(|n| n.to_lowercase().contains(&query));
-        // A project's own folder only while terminals run there, so they stay reachable.
-        let projects = (0..self.workspaces.len()).filter(|&i| !self.no_projects && !self.workspaces[i].is_worktree() && self.terms.iter().any(|t| t.info.cwd == self.workspaces[i].root));
-        let mut picks: Vec<Pick> = self.workspace_order().into_iter().chain(projects).filter(shown).map(Pick::Go).collect();
+        let mut picks: Vec<Pick> = self.listed().into_iter().filter(shown).map(Pick::Go).collect();
         picks.push(Pick::New);
         picks
     }
@@ -2159,14 +2167,12 @@ impl App {
             self.open_review();
         } else if down && areas.waiting.contains(pos) {
             self.next_waiting();
-        } else if let Some(&(tab, _)) = areas.tabs.iter().find(|(_, r)| r.contains(pos)) {
+        } else if let Some(&(row, _)) = areas.sidebar.iter().find(|(_, r)| r.contains(pos)) {
             if down {
-                match tab {
-                    Some(id) => {
-                        self.select_term(id);
-                        self.set_focus(Focus::Terminal);
-                    }
-                    None => self.new_terminal(true),
+                match row {
+                    Some(i) if self.set_current(i) => self.set_focus(Focus::Terminal),
+                    Some(_) => {}
+                    None => self.open_repo_picker(),
                 }
             }
         } else if let Some(&(id, area)) = areas.panes.iter().find(|(_, r)| r.contains(pos)) {
@@ -2650,6 +2656,14 @@ fn arrow(key: Key) -> Option<Dir> {
     }
 }
 
+fn workspace_step(key: Key) -> Option<isize> {
+    match (key.code, key.mods) {
+        (KeyCode::Up, KeyModifiers::SHIFT) => Some(-1),
+        (KeyCode::Down, KeyModifiers::SHIFT) => Some(1),
+        _ => None,
+    }
+}
+
 fn scroll_rows(key: KeyEvent, height: usize) -> Option<isize> {
     let half = (height / 2).max(1) as isize;
     Some(match key.code {
@@ -2722,13 +2736,23 @@ fn rise<T: PartialEq>(order: &mut Vec<T>, item: T, urgency: impl Fn(&T) -> u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::{rise, typed_name};
+    use super::{rise, typed_name, workspace_step};
+    use crate::keymap::Key;
 
     #[test]
     fn names_a_workspace_as_typed() {
         assert_eq!(typed_name("  Fix Login page! "), "fix-login-page");
         assert_eq!(typed_name("FND-12_api"), "fnd-12_api");
         assert_eq!(typed_name("é/../"), "");
+    }
+
+    #[test]
+    fn steps_workspaces_with_shifted_up_and_down_only() {
+        let key = |text: &str| Key::parse(text).unwrap();
+        assert_eq!(workspace_step(key("shift-up")), Some(-1));
+        assert_eq!(workspace_step(key("shift-down")), Some(1));
+        assert_eq!(workspace_step(key("up")), None);
+        assert_eq!(workspace_step(key("ctrl-down")), None);
     }
 
     #[test]

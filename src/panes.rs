@@ -45,6 +45,30 @@ impl<T: Clone + PartialEq> Node<T> {
         }
     }
 
+    /// Next to the last of the shallowest leaves, so panes fill in as a grid: right at even depths, down at odd.
+    pub fn add(&mut self, new: T) {
+        let shallowest = self.depth_of_shallowest(0);
+        self.split_at_depth(0, shallowest, new);
+    }
+
+    fn depth_of_shallowest(&self, depth: usize) -> usize {
+        match self {
+            Node::Leaf(_) => depth,
+            Node::Split { a, b, .. } => a.depth_of_shallowest(depth + 1).min(b.depth_of_shallowest(depth + 1)),
+        }
+    }
+
+    fn split_at_depth(&mut self, depth: usize, wanted: usize, new: T) -> Option<T> {
+        match self {
+            Node::Leaf(t) if depth == wanted => {
+                *self = Node::Split { down: depth % 2 == 1, a: Box::new(Node::Leaf(t.clone())), b: Box::new(Node::Leaf(new)) };
+                None
+            }
+            Node::Leaf(_) => Some(new),
+            Node::Split { a, b, .. } => b.split_at_depth(depth + 1, wanted, new).and_then(|new| a.split_at_depth(depth + 1, wanted, new)),
+        }
+    }
+
     pub fn replace(&mut self, old: &T, new: T) {
         match self {
             Node::Leaf(t) if t == old => *t = new,
@@ -122,6 +146,16 @@ mod tests {
     fn splits_in_place_and_lists_leaves_in_order() {
         assert_eq!(tree().leaves(), vec![1, 2, 3]);
         assert!(!tree().split(&9, 4, true));
+    }
+
+    #[test]
+    fn added_leaves_fill_in_as_a_grid() {
+        let mut n = Node::Leaf(1);
+        for id in 2..=5 {
+            n.add(id);
+        }
+        let rects: Vec<_> = n.rects(Rect::new(0, 0, 80, 24)).into_iter().map(|(t, r)| (t, r.x, r.y, r.width, r.height)).collect();
+        assert_eq!(rects, vec![(1, 0, 0, 40, 12), (4, 0, 12, 40, 12), (2, 40, 0, 40, 12), (3, 40, 12, 20, 12), (5, 60, 12, 20, 12)]);
     }
 
     #[test]

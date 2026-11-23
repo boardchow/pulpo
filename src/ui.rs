@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::agents::State;
 use crate::app::{App, Areas, FileAsk, Focus, Pick};
@@ -25,7 +25,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.focus == Focus::Review {
         draw_review(frame, app, main);
     } else {
-        draw_center(frame, app, main);
+        let center = draw_sidebar(frame, app, main);
+        draw_center(frame, app, center);
     }
     draw_footer(frame, app, footer);
     draw_picker(frame, app, main);
@@ -50,34 +51,130 @@ static OWN_GLYPHS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     std::env::var("TERM_PROGRAM").is_ok_and(|t| t == "ghostty") || std::env::var("TERM").is_ok_and(|t| t == "xterm-kitty")
 });
 
-fn pulpo() -> Vec<String> {
+fn pulpo(wiggle: bool) -> Vec<String> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let art = if *OWN_GLYPHS { PULPO } else { PULPO_QUADRANTS };
-    art.iter().map(|row| row.to_string()).collect()
+    let mut rows: Vec<String> = art.iter().map(|row| row.to_string()).collect();
+    if wiggle && (now.as_millis() / 300) % 2 == 1 {
+        let mut legs: Vec<char> = rows[2].chars().collect();
+        legs.rotate_right(1);
+        rows[2] = legs.into_iter().collect();
+    }
+    rows
+}
+
+fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    let art_width = PULPO[0].chars().count() as u16;
+    let [art, text] = Layout::horizontal([Constraint::Length(art_width), Constraint::Fill(1)]).spacing(2).areas(area);
+    let working = app.terms.iter().any(|term| app.term_state(term) == State::Running);
+    let lines: Vec<Line> = pulpo(working).into_iter().map(|row| Line::from(row).fg(theme::blue())).collect();
+    frame.render_widget(Paragraph::new(lines), art);
+    let [_, title, _] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)]).areas(text);
+    let name = Line::from(vec![Span::from("Pulpo").fg(theme::fg()).bold(), Span::from(concat!(" v", env!("CARGO_PKG_VERSION"))).fg(theme::muted())]);
+    frame.render_widget(name, title);
 }
 
 fn framed(name: &str, focused: bool, rest: Vec<Span<'static>>) -> Block<'static> {
     Block::bordered().border_type(BorderType::Rounded).title(title(name, focused, rest)).border_style(border(focused)).style(Style::new().bg(theme::bg()))
 }
 
+const SIDEBAR_WIDTH: u16 = 30;
+const MIN_PANE_WIDTH: u16 = 10;
+const MIN_PANE_HEIGHT: u16 = 3;
+const MIN_BESIDE_SIDEBAR: u16 = 60;
+
+fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
+    if area.width < SIDEBAR_WIDTH + MIN_BESIDE_SIDEBAR {
+        return area;
+    }
+    let rows = app.listed();
+    let [column, rest] = Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)]).areas(area);
+    let logo = PULPO.len() as u16 + 1;
+    let side = if column.height > 2 * logo + 2 {
+        let header = Rect { x: column.x + 2, y: column.y + 1, width: column.width - 2, height: PULPO.len() as u16 };
+        draw_header(frame, app, header);
+        Rect { y: column.y + logo, height: column.height - logo, ..column }
+    } else {
+        column
+    };
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border(false)).style(Style::new().bg(theme::bg()));
+    let list = block.inner(side);
+    frame.render_widget(block, side);
+    let mut items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(k, &i)| {
+            let number = if k < 9 { format!(" {}", k + 1) } else { "  ".into() };
+            let mut spans = vec![Span::from(number).fg(theme::dim())];
+            spans.extend(state_name(app.workspace_state(i), &app.workspaces[i].name, i == app.current));
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    items.push(ListItem::new(Line::from(vec![Span::from("   + ").fg(theme::blue()).bold(), Span::from("new").fg(theme::muted())])));
+    let mut state = ListState::default().with_selected(rows.iter().position(|&i| i == app.current));
+    let count = items.len();
+    frame.render_stateful_widget(List::new(items).highlight_style(highlight(false)), list, &mut state);
+    let first = state.offset();
+    for k in first..count.min(first + list.height as usize) {
+        let row = Rect { y: list.y + (k - first) as u16, height: 1, ..list };
+        app.areas.sidebar.push((rows.get(k).copied(), row));
+    }
+    rest
+}
+
 fn draw_center(frame: &mut Frame, app: &mut App, area: Rect) {
     app.arrange();
     let focused = app.focus == Focus::Terminal;
-    let split = app.pane_rects(area).len() > 1;
-    let body = if split {
-        Rect { y: area.y + 1, height: area.height.saturating_sub(1), ..area }
-    } else {
+    let panes = app.pane_rects(area);
+    let Some(active) = app.active.filter(|_| !panes.is_empty()) else {
         let block = Block::bordered().border_type(BorderType::Rounded).border_style(border(focused)).style(Style::new().bg(theme::bg()));
-        let inner = block.inner(area);
+        let body = block.inner(area);
         frame.render_widget(block, area);
-        inner
+        if app.areas.sidebar.is_empty() {
+            let name = app.ws().name.clone();
+            app.areas.name = Rect { x: area.x + 1, y: area.y, width: name.chars().count() as u16 + 2, height: 1 };
+            frame.render_widget(Line::from(format!(" {name} ")).fg(theme::fg()).bold(), app.areas.name);
+        }
+        draw_badges(frame, app, area);
+        if app.opening(&app.ws().root) {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+            frame.render_widget(Line::from(format!("Warming up{}", ".".repeat(1 + (now.as_millis() / 400) as usize % 3))).fg(theme::muted()), body);
+            return;
+        }
+        let p = app.keymap.label();
+        let lines = vec![Line::from("No terminal in this workspace").bold(), Line::default(), Line::from(format!("{p} t opens one")).fg(theme::muted())];
+        let spot = Rect { y: body.y + body.height / 3, height: 3.min(body.height), ..body };
+        frame.render_widget(Paragraph::new(lines).centered(), spot);
+        return;
     };
+    let prefixed = app.prefixed;
+    for (id, rect) in panes {
+        let on = id == active;
+        let Some(term) = app.terms.iter().find(|t| t.id == id) else { continue };
+        let (icon, color) = state_icon(app.term_state(term));
+        let mut label = term.label().to_string();
+        let (top, left, right) = (rect.y == area.y, rect.x == area.x, rect.right() == area.right());
+        if top && left && app.areas.sidebar.is_empty() {
+            let name = app.ws().name.clone();
+            app.areas.name = Rect { x: rect.x + 1, y: rect.y, width: name.chars().count() as u16 + 2, height: 1 };
+            label = format!("{name} · {label}");
+        }
+        let block = framed(&label, on && focused, vec![Span::from(format!("{icon} ")).fg(color)]);
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+        if top && right {
+            draw_badges(frame, app, rect);
+        }
+        if on {
+            app.set_term_size(inner.height, inner.width);
+        }
+        app.areas.panes.push((id, inner));
+        draw_pane(frame, app, id, inner, on && focused && !prefixed);
+    }
+}
 
-    let ws = app.ws();
-    let project = if ws.is_worktree() { format!(" {}", app.project_name(app.current)) } else { String::new() };
-    let name = format!(" {}", ws.name);
-    let name_width = (name.chars().count() + project.chars().count() + 1) as u16;
-    app.areas.name = Rect { x: area.x + 1, y: area.y, width: name_width, height: 1 };
-    let mut spans = vec![Span::from(name).fg(theme::fg()).bold(), Span::from(project).fg(theme::dim()), Span::from("  ")];
+/// What waits elsewhere and what is left to review, on the right of a frame's top border.
+fn draw_badges(frame: &mut Frame, app: &mut App, area: Rect) {
     let waiting: Vec<usize> = (0..app.workspaces.len())
         .filter(|&i| i != app.current && matches!(app.workspace_state(i), Some(State::Waiting | State::Done | State::Ready | State::Failed)))
         .collect();
@@ -100,64 +197,13 @@ fn draw_center(frame: &mut Frame, app: &mut App, area: Rect) {
         frame.render_widget(Line::from(to_review).fg(theme::on_accent()).bg(theme::accent()).bold(), at);
         app.areas.to_review = at;
     }
-    let waiting_width = waiting_width + to_review_width;
-    let mut x = area.x + 2 + name_width;
-    let tabs: Vec<usize> = app.workspace_terms();
-    let room = area.width.saturating_sub(2 + 1 + 3 + name_width + waiting_width) as usize;
-    let tab_width = |n: usize, cap: usize| 1 + app.terms[tabs[n]].label().chars().count().min(cap) + 1 + 3;
-    let cap = (0..=20).rev().find(|&cap| (0..tabs.len()).map(|n| tab_width(n, cap)).sum::<usize>() <= room).unwrap_or(0);
-    for &i in &tabs {
-        let term = &app.terms[i];
-        let on = app.active == Some(term.id);
-        let (icon, color) = state_icon(app.term_state(term));
-        let label: String = term.label().chars().take(cap).collect();
-        let text = if label.is_empty() { " ".to_string() } else { format!(" {label} ") };
-        let width = text.chars().count() as u16 + 2;
-        let style = if on { Style::new().fg(theme::fg()).bg(theme::hover()).bold() } else { Style::new().fg(theme::muted()) };
-        spans.extend([Span::styled(text, style), Span::styled(format!("{icon} "), style.fg(color)), Span::from(" ")]);
-        app.areas.tabs.push((Some(term.id), Rect { x, y: area.y, width, height: 1 }));
-        x += width + 1;
-    }
-    spans.push(Span::from(" + ").fg(theme::muted()));
-    app.areas.tabs.push((None, Rect { x, y: area.y, width: 3, height: 1 }));
-    frame.render_widget(Line::from(spans), Rect { x: area.x + 1, y: area.y, width: area.width.saturating_sub(2 + waiting_width), height: 1 });
-
-    let Some(active) = app.active else {
-        if app.opening(&app.ws().root) {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-            frame.render_widget(Line::from(format!("Warming up{}", ".".repeat(1 + (now.as_millis() / 400) as usize % 3))).fg(theme::muted()), body);
-            return;
-        }
-        let p = app.keymap.label();
-        let lines = vec![Line::from("No terminal in this workspace").bold(), Line::default(), Line::from(format!("{p} t opens one, or click +")).fg(theme::muted())];
-        let spot = Rect { y: body.y + body.height / 3, height: 3.min(body.height), ..body };
-        frame.render_widget(Paragraph::new(lines).centered(), spot);
-        return;
-    };
-    let prefixed = app.prefixed;
-    for (id, rect) in app.pane_rects(body) {
-        let on = id == active;
-        let inner = if split {
-            let Some(term) = app.terms.iter().find(|t| t.id == id) else { continue };
-            let (icon, color) = state_icon(app.term_state(term));
-            let block = framed(term.label(), on && focused, vec![Span::from(format!("{icon} ")).fg(color)]);
-            let inner = block.inner(rect);
-            frame.render_widget(block, rect);
-            inner
-        } else {
-            rect
-        };
-        if on {
-            app.set_term_size(inner.height, inner.width);
-        }
-        app.areas.panes.push((id, inner));
-        draw_pane(frame, app, id, inner, on && focused && !prefixed);
-    }
 }
 
 fn draw_pane(frame: &mut Frame, app: &mut App, id: usize, inner: Rect, cursor: bool) {
     let Some(term) = app.terms.iter_mut().find(|t| t.id == id) else { return };
-    term.resize(inner.height.max(1), inner.width.max(1));
+    if inner.width >= MIN_PANE_WIDTH && inner.height >= MIN_PANE_HEIGHT {
+        term.resize(inner.height, inner.width);
+    }
     if let Some(at) = term.render(inner, frame.buffer_mut())
         && cursor
     {
@@ -660,7 +706,7 @@ fn draw_empty(frame: &mut Frame, area: Rect) {
         Constraint::Fill(2),
     ])
     .areas(area);
-    let lines: Vec<Line> = pulpo().into_iter().map(|row| Line::from(row).fg(theme::blue())).collect();
+    let lines: Vec<Line> = pulpo(false).into_iter().map(|row| Line::from(row).fg(theme::blue())).collect();
     frame.render_widget(Paragraph::new(lines).centered(), logo);
     frame.render_widget(Line::from("No workspaces").bold().centered(), title);
     frame.render_widget(Line::from(vec![Span::from("⏎ ").fg(theme::blue()).bold(), Span::from("new workspace").fg(theme::muted())]).centered(), hint);
@@ -682,15 +728,16 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
                 (prefixed("n"), "new workspace: pick its repository, then name it"),
                 (prefixed("X"), "delete this workspace, or hide this project, after asking"),
                 (prefixed("1-9"), "the first to ninth workspace in the list"),
+                (prefixed("⇧↑ ⇧↓"), "the previous, next one; more follow for a second"),
                 (prefixed("a"), "the next one waiting for you"),
             ],
         ),
         (
             "Terminals",
             vec![
-                (prefixed("t"), "new terminal"),
+                (prefixed("t"), "new terminal, in a split"),
                 (prefixed("x"), "close the terminal"),
-                (prefixed("[ ]"), "previous, next terminal"),
+                (prefixed("[ ]"), "previous, next pane"),
                 (prefixed("\\ -"), "split the pane right, down"),
                 (prefixed("← ↑ ↓ →"), "move between panes; more arrows follow for a second"),
                 (prefixed("z"), "zoom the pane, or show them all again"),
