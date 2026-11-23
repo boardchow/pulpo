@@ -27,6 +27,9 @@ Every key goes to the program, except the prefix.
 | :kp[t] | New terminal |
 | :kp[x] | Close the terminal, asking if a program runs |
 | :kp{k="["}, :kp{k="]"} | The previous, next terminal tab |
+| :kp[\\], :kp[-] | Split the pane right, down |
+| :kp[←] :kp[↑] :kp[↓] :kp[→] | Move between panes. For a second after, the arrows keep moving |
+| :kp[z] | Zoom the pane, or show them all |
 | :k[⌃b] :k[⌃b] | Sends :k[⌃b] to the program |
 
 ## Files
@@ -149,6 +152,7 @@ Naming a new workspace:
 | Click the workspace's name | Open the workspace list |
 | Click `◆ 2 waiting` | Go to the terminal that has waited longest |
 | Click a tab, `+` | Go to that terminal, open a new one |
+| Click a pane | Focus it |
 | Click `3 to review` | Open the review |
 | Click a row in a list | Select it. In the workspace list, go there |
 | Drag in a terminal | Select text and copy it. Hold :k[shift] if the program uses the mouse |

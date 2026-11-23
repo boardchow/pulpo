@@ -11,7 +11,7 @@ Press :k[⌃b], release it, then press one key. In these docs that's written :kp
 
 While Pulpo waits for the second key, the bottom left corner shows :k[⌃b]. If no key comes within three seconds, the prefix is dropped.
 
-The prefix works everywhere, including while a program runs in a terminal. Every other key goes to the program, the review or Files, wherever you are, so Pulpo never takes a key your agent or editor needs.
+The prefix works everywhere, including while a program runs in a terminal. Every other key goes to the program, the review or Files, wherever you are, so Pulpo never takes a key your agent or editor needs. The one exception: for a second after you move between panes, the arrow keys move again.
 
 :kp[?] lists every key. Any key closes the list.
 

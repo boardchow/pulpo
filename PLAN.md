@@ -90,9 +90,16 @@ terminal: a shell opens in a checkout on screen without any, at most once a seco
 so a shell that exits at once isn't started again and again. With no project yet, the screen
 is the pulpo and "No workspaces"; ⏎ opens the repository finder.
 
+A workspace's panes are a tree of splits (`panes.rs`), each leaf a terminal, halves only. With
+more than one, each pane has its own frame and the tabs sit on a line above; the tabs are the
+workspace's terminals, and going to one that isn't on screen swaps it into the focused pane.
+`App::arrange` keeps the tree to the workspace's terminals, each frame; the server sends output
+for every terminal on screen (`Watch { ids }`). The tree is kept in `layout.json` by the terminals' tags.
+
 Keys go to what has the focus: the terminal, the review or Files, each full screen. The prefix
 (⌃b) is taken from anywhere first: w the list, n a new workspace (in the review: a comment; in
-Files: a file), X deletes it, t and x a terminal, [ ] tabs, 1 to 9 a workspace, a who waits, r the
+Files: a file), X deletes it, t and x a terminal, [ ] tabs, \ and - split, arrows move between panes (and keep
+moving for a second without the prefix), z zooms, 1 to 9 a workspace, a who waits, r the
 review, f Files (where / searches, and e r d edit, rename, delete), e the editor (from the review), ?
 the keys, q and Q quit. The prefix waits 3 s for its key; a click cancels it. ⌃b twice
 sends one to the program. Only a click moves the focus.
@@ -175,10 +182,11 @@ they're pasted into the workspace's agent, for you to send with ⏎.
 - [x] Go to (every terminal of every repo, by state, with what its agent asks), the next one to read, back to the last place, and a menu of every action (`picker.rs`).
 - [x] Themes: following Ghostty's by default, any Ghostty theme, Omarchy's first, tried live in a picker. A Ghostty theme's background, foreground and ANSI colors give the rest (greys faded from the foreground, blue as the accent, syntax from the ANSI colors as Pulpo Dark's are).
 - [x] Layouts (`L`: main pane left, side by side, stacked, grid), the board (every terminal of the repository, tiled), swarms (N workspaces, Claude started on a task in each once set up), scrolling back and finding in a terminal, readline keys in every prompt (`input.rs`), right-click menus, dragging pane borders.
-- [x] Start again from Herdr's layout, keeping what's under it: projects and workspaces | terminal tabs | files over changes, a prefix from anywhere, the mouse for all of it. The palette, splits, layouts, the board, swarms, the graph, the review scroll, scrollback search and the theme picker are gone. A new workspace is yours at once, set up in the background.
+- [x] Start again from Herdr's layout, keeping what's under it: projects and workspaces | terminal tabs | files over changes, a prefix from anywhere, the mouse for all of it. The palette, layouts, the board, swarms, the graph, the review scroll, scrollback search and the theme picker are gone. A new workspace is yours at once, set up in the background.
 - [x] Workspaces as git worktrees, the industry's pattern (Conductor, Claude Code, Cursor): a branch from the remote's default branch, main's ignored files it needs, a block of ten ports, git in containers (see "Workspaces Pulpo makes").
 - [x] Workspace recipes: Conductor's settings read, an install guessed from lockfiles, a trust prompt for committed scripts (see "Workspaces Pulpo makes").
 - [x] Down to the essentials: the sidebar and History are gone, and Files (with the viewer and search) opens full screen only on ⌃b f. The terminal takes the screen, a list (⌃b w) holds the workspaces, a new one is a repository then a name, and the review opens full screen (⌃b r) when the frame says there are changes to review, against where the branch left main.
+- [x] Splits again, one tree per workspace (see "The screen"): a shell beside an agent, several agents at once.
 - [ ] Codex support.
 
 ## Terminals that keep running

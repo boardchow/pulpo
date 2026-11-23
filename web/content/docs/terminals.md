@@ -31,6 +31,18 @@ Each project and workspace has its own terminals, as tabs. A tab shows the progr
 | Go to the previous, next tab | :kp{k="["}, :kp{k="]"} | Click the tab |
 | Close the terminal | :kp[x]. Pulpo asks if a program still runs in it | |
 
+## Panes
+
+Split the screen to see several terminals at once, like a shell next to an agent. Each pane shows one terminal, and the focused pane has the bright frame.
+
+| To | Press | Or |
+| --- | --- | --- |
+| Split the pane right, down | :kp[\\], :kp[-] | |
+| Move between panes | :kp[←] :kp[↑] :kp[↓] :kp[→]. Within a second, the arrows keep moving without the prefix | Click a pane |
+| Zoom the pane, or show them all | :kp[z] | |
+
+A split opens a new terminal in the same workspace. Closing a pane's terminal gives its room to the next pane. Pulpo keeps your panes when you quit and open it again.
+
 A project or workspace always has a terminal. A shell opens, in your `$SHELL`, when you go to one without any, and when you close or exit its last one.
 
 Every key goes to the program in the terminal, except the [prefix](/docs/prefix-key). Terminals in a workspace have [its variables](/docs/docker#use-the-workspaces-ports), like `PULPO_PORT`.
