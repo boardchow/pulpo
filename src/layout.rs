@@ -6,12 +6,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::panes::Node;
+
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Layout {
     pub current: Option<PathBuf>,
     pub workspaces: BTreeMap<PathBuf, PathBuf>,
     pub terminals: BTreeMap<PathBuf, String>,
+    pub panes: BTreeMap<PathBuf, Node<String>>,
     pub open: Vec<Open>,
 }
 
@@ -60,6 +63,15 @@ pub fn reopen(open: &Open, shell: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_a_layout_from_before_panes_and_keeps_panes_across_a_round_trip() {
+        assert!(serde_json::from_str::<Layout>(r#"{"current":"/code","open":[]}"#).unwrap().panes.is_empty());
+        let mut tree = Node::Leaf("1-1".to_string());
+        tree.split(&"1-1".to_string(), "1-2".to_string(), true);
+        let layout = Layout { panes: [("/code".into(), tree)].into(), ..Default::default() };
+        assert_eq!(serde_json::from_slice::<Layout>(&serde_json::to_vec(&layout).unwrap()).unwrap(), layout);
+    }
 
     #[test]
     fn resumes_the_agent_then_leaves_a_shell() {

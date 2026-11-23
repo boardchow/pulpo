@@ -126,7 +126,7 @@ struct Client {
     id: u64,
     frames: SyncSender<Vec<u8>>,
     stream: UnixStream,
-    watching: Option<u32>,
+    watching: Vec<u32>,
 }
 
 struct Terminal {
@@ -497,7 +497,7 @@ impl Server {
                     terminal.feed(&bytes);
                     let frame = proto::output(id, &bytes);
                     for i in (0..self.clients.len()).rev() {
-                        if self.clients[i].watching == Some(id) {
+                        if self.clients[i].watching.contains(&id) {
                             self.deliver(i, frame.clone());
                         }
                     }
@@ -555,7 +555,7 @@ impl Server {
                     self.broadcast(&proto::encode(&ToClient::Resized { id, rows, cols }));
                 }
             }
-            ToServer::Watch { id } => self.watch(client, id),
+            ToServer::Watch { ids } => self.watch(client, ids),
             ToServer::Seen { id } => {
                 if let Some(terminal) = self.terminal(id) {
                     terminal.unread = false;
@@ -727,14 +727,17 @@ impl Server {
         self.send(client, &ToClient::Attach { info, rows, cols, token });
     }
 
-    fn watch(&mut self, client: u64, id: Option<u32>) {
+    fn watch(&mut self, client: u64, ids: Vec<u32>) {
         let Some(c) = self.clients.iter_mut().find(|c| c.id == client) else { return };
-        c.watching = id;
-        let Some(terminal) = id.and_then(|id| self.terminals.iter().find(|t| t.id == id)) else { return };
-        let (rows, cols) = terminal.size();
-        let snapshot = proto::output(terminal.id, &term::snapshot(&terminal.parser, &terminal.title));
-        self.send(client, &ToClient::Snapshot { id: terminal.id, rows, cols });
-        self.send_frame(client, snapshot);
+        let new: Vec<u32> = ids.iter().copied().filter(|id| !c.watching.contains(id)).collect();
+        c.watching = ids;
+        for id in new {
+            let Some(terminal) = self.terminals.iter().find(|t| t.id == id) else { continue };
+            let (rows, cols) = terminal.size();
+            let snapshot = proto::output(id, &term::snapshot(&terminal.parser, &terminal.title));
+            self.send(client, &ToClient::Snapshot { id, rows, cols });
+            self.send_frame(client, snapshot);
+        }
     }
 
     /// Waits on the process, not only for EOF: a background job can keep the terminal open after its shell exits.
@@ -794,7 +797,7 @@ impl Server {
             }
             let _ = tx.send(Event::Disconnected(id));
         });
-        self.clients.push(Client { id, frames, stream, watching: None });
+        self.clients.push(Client { id, frames, stream, watching: Vec::new() });
     }
 
     fn send(&mut self, client: u64, message: &ToClient) {

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -16,6 +16,7 @@ use crate::git;
 use crate::input;
 use crate::keymap::{Key, Keymap};
 use crate::layout::{self, Layout};
+use crate::panes::{self, Dir, Node};
 use crate::proto::{Info, PROTOCOL, ToClient, ToServer};
 use crate::review::{Changes, Comment, Shown};
 use crate::search::{Mode, Search, expand_home};
@@ -30,6 +31,9 @@ const NOTICE_EVERY: Duration = Duration::from_secs(10);
 const MESSAGE_FOR: Duration = Duration::from_secs(5);
 const UNSAVED: &str = "unsaved changes in the editor: ⌃s saves them, esc twice throws them away";
 const PREFIX_FOR: Duration = Duration::from_secs(3);
+const REPEAT_FOR: Duration = Duration::from_secs(1);
+const MIN_SPLIT_WIDTH: u16 = 40;
+const MIN_SPLIT_HEIGHT: u16 = 10;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// How long a terminal just switched to may wait for its snapshot before it's drawn empty.
 const SNAPSHOT: Duration = Duration::from_millis(100);
@@ -86,7 +90,7 @@ pub struct Areas {
     pub waiting: Rect,
     pub to_review: Rect,
     pub tabs: Vec<(Option<usize>, Rect)>,
-    pub term: Rect,
+    pub panes: Vec<(usize, Rect)>,
     pub review: Rect,
     pub changes_tree: Rect,
     pub changes_file: Rect,
@@ -153,6 +157,8 @@ pub struct App {
     last_term: HashMap<PathBuf, String>,
     last_workspace: HashMap<PathBuf, PathBuf>,
     saved: Layout,
+    /// Panes from before, until their terminals are back.
+    old_panes: BTreeMap<PathBuf, Node<String>>,
     ready: bool,
     /// The tag each reopened terminal had, and whether it was waiting for you.
     reopening: HashMap<u64, (String, bool)>,
@@ -172,7 +178,11 @@ pub struct App {
     pub release: Option<String>,
     pub updating: bool,
     /// The terminal the server sends output for: the one on screen.
-    watching: Option<usize>,
+    watching: Vec<usize>,
+    panes: HashMap<PathBuf, Node<usize>>,
+    zoomed: bool,
+    splits: HashMap<u64, bool>,
+    repeat: Option<Instant>,
     watched_at: Instant,
     reconnected: Option<usize>,
     last_reconnect: Option<Instant>,
@@ -241,6 +251,7 @@ impl App {
             gone: HashSet::new(),
             last_term: layout.terminals.clone().into_iter().collect(),
             last_workspace: layout.workspaces.clone().into_iter().collect(),
+            old_panes: layout.panes.clone(),
             saved: layout.clone(),
             ready: false,
             reopening: HashMap::new(),
@@ -256,7 +267,11 @@ impl App {
             upgrade_asked: false,
             release: None,
             updating: false,
-            watching: None,
+            watching: Vec::new(),
+            panes: HashMap::new(),
+            zoomed: false,
+            splits: HashMap::new(),
+            repeat: None,
             watched_at: Instant::now(),
             reconnected: None,
             last_reconnect: None,
@@ -376,6 +391,7 @@ impl App {
             self.viewer.close();
             (self.search, self.file_input) = (None, None);
             self.selecting = None;
+            self.zoomed = false;
             if !self.workspaces[i].reading_status() {
                 self.read_status(i);
             }
@@ -519,13 +535,15 @@ impl App {
     }
 
     pub fn settle(&mut self) {
-        if self.watching != self.active {
-            if let Some(term) = self.watching.and_then(|id| self.terms.iter_mut().find(|t| t.id == id)) {
+        self.arrange();
+        let shown = self.shown();
+        if self.watching != shown {
+            for term in self.terms.iter_mut().filter(|t| self.watching.contains(&t.id) && !shown.contains(&t.id)) {
                 term.unmirror();
             }
-            self.watching = self.active;
             self.watched_at = Instant::now();
-            self.link.send(&ToServer::Watch { id: self.active.map(|id| id as u32) });
+            self.link.send(&ToServer::Watch { ids: shown.iter().map(|&id| id as u32).collect() });
+            self.watching = shown;
         }
         if self.focus == Focus::Files && self.reading && self.editor.is_none()
             && let Some((path, stamp)) = self.viewer.blame_due()
@@ -753,10 +771,14 @@ impl App {
                 }
             })
             .collect();
+        let tag = |id: &usize| self.terms.iter().find(|t| t.id == *id).map(|t| t.info.tag.clone());
+        let mut panes = self.old_panes.clone();
+        panes.extend(self.panes.iter().filter_map(|(root, tree)| Some((root.clone(), tree.filter_map(&tag)?))));
         Layout {
             current: Some(self.ws().root.clone()),
             workspaces: self.last_workspace.clone().into_iter().collect(),
             terminals: self.last_term.clone().into_iter().collect(),
+            panes,
             open,
         }
     }
@@ -783,6 +805,9 @@ impl App {
                     for tag in self.last_term.values_mut().filter(|tag| **tag == old) {
                         *tag = new.clone();
                     }
+                    for tree in self.old_panes.values_mut() {
+                        tree.replace(&old, new.clone());
+                    }
                     self.spawning.remove(&token.unwrap_or_default());
                     if self.reopening.is_empty() || wt.is_none_or(|s| s == self.current) {
                         self.restore_term();
@@ -808,6 +833,14 @@ impl App {
                     && !self.set_current(wt)
                 {
                     return;
+                }
+                if let Some(down) = token.and_then(|t| self.splits.remove(&t)) {
+                    self.arrange();
+                    let root = self.ws().root.clone();
+                    if let (Some(at), Some(tree)) = (self.active, self.panes.get_mut(&root)) {
+                        tree.split(&at, id, down);
+                    }
+                    self.zoomed = false;
                 }
                 if focus || (self.active.is_none() && wt.is_none_or(|s| s == self.current)) {
                     self.select_term(id);
@@ -841,7 +874,7 @@ impl App {
                 }
             }
             ToClient::Snapshot { id, rows, cols } => {
-                if self.watching == Some(id as usize)
+                if self.watching.contains(&(id as usize))
                     && let Some(term) = self.terms.iter_mut().find(|t| t.id == id as usize)
                 {
                     term.mirror(rows, cols);
@@ -858,7 +891,7 @@ impl App {
     }
 
     pub fn shows(&self, id: u32) -> bool {
-        self.active == Some(id as usize)
+        self.areas.panes.iter().any(|(pane, _)| *pane == id as usize)
     }
 
     /// How much longer to wait for the snapshot of the terminal on screen: drawing now would flash it empty.
@@ -892,11 +925,12 @@ impl App {
 
     pub fn on_server_gone(&mut self) {
         let had = self.terms.len();
+        self.old_panes = self.layout().panes;
         self.ready = false;
         self.terms.clear();
         self.spawning.clear();
         self.active = None;
-        self.watching = None;
+        self.watching.clear();
         self.selecting = None;
         if self.last_reconnect.is_some_and(|at| at.elapsed() < Duration::from_secs(2)) {
             self.offline = true;
@@ -1068,6 +1102,12 @@ impl App {
     }
 
     fn select_term(&mut self, id: usize) {
+        let root = self.ws().root.clone();
+        if let (Some(old), Some(tree)) = (self.active, self.panes.get_mut(&root))
+            && !tree.contains(&id)
+        {
+            tree.replace(&old, id);
+        }
         self.active = Some(id);
         self.selecting = None;
         if let Some(term) = self.terms.iter().find(|t| t.id == id) {
@@ -1080,10 +1120,30 @@ impl App {
         let terms: Vec<&Term> = self.workspace_terms().into_iter().map(|i| &self.terms[i]).collect();
         let last = self.last_term.get(&root).and_then(|tag| terms.iter().find(|t| &t.info.tag == tag));
         self.active = last.or(terms.first()).map(|t| t.id);
+        if self.ready && self.reopening.is_empty() {
+            self.adopt_panes();
+        }
+    }
+
+    fn adopt_panes(&mut self) {
+        for (root, node) in std::mem::take(&mut self.old_panes) {
+            let id = |tag: &String| self.terms.iter().find(|t| &t.info.tag == tag).map(|t| t.id);
+            if self.panes.get(&root).is_none_or(|tree| tree.leaves().len() < 2)
+                && let Some(tree) = node.filter_map(&id)
+            {
+                self.panes.insert(root, tree);
+            }
+        }
+    }
+
+    /// The panes on screen, or when the workspace has just one, its tabs.
+    fn cycle_order(&self) -> Vec<usize> {
+        let leaves = self.workspaces.get(self.current).and_then(|w| self.panes.get(&w.root)).map(Node::leaves).unwrap_or_default();
+        if leaves.len() > 1 { leaves } else { self.workspace_terms().into_iter().map(|i| self.terms[i].id).collect() }
     }
 
     fn remove_term(&mut self, id: usize) {
-        let tabs: Vec<usize> = self.workspace_terms().into_iter().map(|i| self.terms[i].id).collect();
+        let tabs = self.cycle_order();
         self.terms.retain(|t| t.id != id);
         if self.active == Some(id) {
             let at = tabs.iter().position(|&t| t == id).unwrap_or(0);
@@ -1094,6 +1154,67 @@ impl App {
             }
         }
         self.keep_a_terminal();
+    }
+
+    pub fn arrange(&mut self) {
+        if self.no_projects || self.workspaces.is_empty() {
+            return;
+        }
+        let root = self.ws().root.clone();
+        let ids: Vec<usize> = self.workspace_terms().into_iter().map(|i| self.terms[i].id).collect();
+        let tree = self.panes.remove(&root).and_then(|tree| tree.filter_map(&|id| ids.contains(id).then_some(*id)));
+        let tree = match (tree, self.active) {
+            (Some(mut tree), Some(active)) => {
+                if !tree.contains(&active) {
+                    tree.replace(&tree.leaves()[0], active);
+                }
+                Some(tree)
+            }
+            (None, Some(active)) => Some(Node::Leaf(active)),
+            (tree, None) => tree,
+        };
+        if let Some(tree) = tree {
+            self.panes.insert(root, tree);
+        }
+    }
+
+    pub fn shown(&self) -> Vec<usize> {
+        let tree = self.workspaces.get(self.current).and_then(|w| self.panes.get(&w.root));
+        let mut shown: Vec<usize> = tree.filter(|_| !self.zoomed).map(Node::leaves).unwrap_or_default();
+        shown.retain(|id| self.terms.iter().any(|t| t.id == *id));
+        shown.extend(self.active.filter(|id| !shown.contains(id)));
+        shown.sort_unstable();
+        shown
+    }
+
+    pub fn pane_rects(&self, area: Rect) -> Vec<(usize, Rect)> {
+        let tree = self.workspaces.get(self.current).and_then(|w| self.panes.get(&w.root));
+        match (tree, self.active) {
+            (Some(tree), _) if !self.zoomed => tree.rects(area),
+            (_, Some(active)) => vec![(active, area)],
+            _ => Vec::new(),
+        }
+    }
+
+    fn focus_pane(&mut self, dir: Dir) -> bool {
+        let Some(from) = self.active.filter(|_| self.focus == Focus::Terminal) else { return false };
+        let Some(to) = panes::neighbor(&self.areas.panes, &from, dir) else { return false };
+        self.select_term(to);
+        self.repeat = Some(Instant::now() + REPEAT_FOR);
+        true
+    }
+
+    fn split_pane(&mut self, down: bool) {
+        let Some(area) = self.active.and_then(|id| self.areas.panes.iter().find(|(pane, _)| *pane == id)).map(|(_, area)| *area) else { return };
+        if self.focus != Focus::Terminal {
+            return;
+        }
+        if if down { area.height < MIN_SPLIT_HEIGHT } else { area.width < MIN_SPLIT_WIDTH } {
+            self.message = Some("this pane is too small to split".into());
+            return;
+        }
+        let token = self.spawn_in(self.ws().root.clone(), &shell(), &[], true);
+        self.splits.insert(token, down);
     }
 
     fn cycle_tab(&mut self, dir: isize) {
@@ -1205,10 +1326,14 @@ impl App {
             }
             return self.command(pressed);
         }
+        let repeating = self.repeat.take().is_some_and(|until| until > Instant::now());
         if self.keymap.is_prefix(pressed) {
             self.keep_writing();
             self.prefixed = true;
             self.prefixed_at = Some(Instant::now());
+            return false;
+        }
+        if repeating && let Some(dir) = arrow(pressed) && self.focus_pane(dir) {
             return false;
         }
         if !self.offline {
@@ -1233,6 +1358,10 @@ impl App {
     }
 
     fn command(&mut self, key: Key) -> bool {
+        if let Some(dir) = arrow(key) {
+            self.focus_pane(dir);
+            return false;
+        }
         let KeyCode::Char(c) = key.code else { return false };
         let review = self.focus == Focus::Review;
         let files = self.focus == Focus::Files;
@@ -1254,6 +1383,9 @@ impl App {
             't' if self.offline => self.retry_server(),
             't' => self.new_terminal(true),
             'x' if self.focus == Focus::Terminal => self.close_terminal_here(),
+            '\\' => self.split_pane(false),
+            '-' => self.split_pane(true),
+            'z' if self.focus == Focus::Terminal => self.zoomed = !self.zoomed,
             '[' => self.cycle_tab(-1),
             ']' => self.cycle_tab(1),
             'a' => self.next_waiting(),
@@ -1995,7 +2127,10 @@ impl App {
         if let Some(selecting) = self.selecting.as_mut().filter(|s| s.dragging)
             && matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left))
         {
-            let term = areas.term;
+            let Some(&(_, term)) = areas.panes.iter().find(|(id, _)| *id == selecting.id) else {
+                self.selecting = None;
+                return;
+            };
             let cell = (pos.y.clamp(term.y, term.bottom().saturating_sub(1)) - term.y, pos.x.clamp(term.x, term.right().saturating_sub(1)) - term.x);
             selecting.to = cell;
             if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
@@ -2034,8 +2169,8 @@ impl App {
                     None => self.new_terminal(true),
                 }
             }
-        } else if areas.term.contains(pos) {
-            self.mouse_in_terminal(mouse, pos, wheel);
+        } else if let Some(&(id, area)) = areas.panes.iter().find(|(_, r)| r.contains(pos)) {
+            self.mouse_in_terminal(mouse, id, area, pos, wheel);
         } else if areas.editor.contains(pos) {
             let Some(editor) = &mut self.editor else { return };
             if self.focus == Focus::Terminal {
@@ -2192,9 +2327,10 @@ impl App {
         }
     }
 
-    fn mouse_in_terminal(&mut self, mouse: MouseEvent, pos: Position, wheel: i32) {
-        let area = self.areas.term;
-        let Some(id) = self.active else { return };
+    fn mouse_in_terminal(&mut self, mouse: MouseEvent, id: usize, area: Rect, pos: Position, wheel: i32) {
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) && self.active != Some(id) {
+            self.select_term(id);
+        }
         let Some(term) = self.terms.iter_mut().find(|t| t.id == id) else { return };
         let (row, col) = (pos.y - area.y, pos.x - area.x);
         let down = mouse.kind == MouseEventKind::Down(MouseButton::Left);
@@ -2499,6 +2635,19 @@ fn run_in_background(script: &str, dir: &Path, wt: &worktree::Worktree, log: &Pa
         .stderr(out)
         .process_group(0)
         .spawn()
+}
+
+fn arrow(key: Key) -> Option<Dir> {
+    if !key.mods.is_empty() {
+        return None;
+    }
+    match key.code {
+        KeyCode::Left => Some(Dir::Left),
+        KeyCode::Right => Some(Dir::Right),
+        KeyCode::Up => Some(Dir::Up),
+        KeyCode::Down => Some(Dir::Down),
+        _ => None,
+    }
 }
 
 fn scroll_rows(key: KeyEvent, height: usize) -> Option<isize> {

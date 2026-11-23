@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 pub fn frame(kind: u8, payload: &[u8]) -> Vec<u8> {
     let mut out = (payload.len() as u32).to_be_bytes().to_vec();
@@ -53,7 +53,7 @@ impl Conn {
 
     /// Its output is sent from now on, after a snapshot.
     pub fn watch(&mut self, id: u64) {
-        self.send(json!({ "type": "watch", "id": id }));
+        self.send(json!({ "type": "watch", "ids": [id] }));
     }
 
     pub fn input(&mut self, id: u64, text: &str) {

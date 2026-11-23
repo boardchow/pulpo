@@ -105,3 +105,47 @@ fn keeps_terminals_across_an_upgrade_and_stops_them_on_close() {
     assert!(!sock.exists());
     let _ = std::fs::remove_dir_all(&state);
 }
+
+#[test]
+fn sends_output_for_every_watched_terminal_and_no_other() {
+    let state = PathBuf::from(format!("/tmp/pulpo-test-multi-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    let sock = state.join("pulpo/server/sock");
+    let mut server: Child = Command::new(env!("CARGO_BIN_EXE_pulpo"))
+        .arg("serve")
+        .env("XDG_STATE_HOME", &state)
+        .env("PULPO_SERVER_IDLE_SECS", "1")
+        .env_remove("PULPO_TAB")
+        .spawn()
+        .unwrap();
+
+    let mut conn = Conn::open(&sock);
+    conn.until("ready");
+    let mut spawn = |token: u64| {
+        conn.send(json!({ "type": "spawn", "token": token, "program": "/bin/sh", "args": [], "cwd": "/", "rows": 24, "cols": 80 }));
+        conn.until("attach")["info"]["id"].as_u64().unwrap()
+    };
+    let (a, b) = (spawn(1), spawn(2));
+    conn.send(json!({ "type": "watch", "ids": [a, b] }));
+    conn.input(a, "echo A$((1+1))\n");
+    conn.until_output("A2");
+    conn.input(b, "echo B$((1+1))\n");
+    conn.until_output("B2");
+
+    conn.send(json!({ "type": "watch", "ids": [b] }));
+    conn.input(a, "echo A$((2+2))\n");
+    conn.input(b, "echo B$((2+2))\n");
+    let mut seen = String::new();
+    while !seen.contains("B4") {
+        if let Err(output) = conn.read().expect("the server hung up") {
+            seen.push_str(&output);
+        }
+    }
+    assert!(!seen.contains("A4"), "a terminal no longer watched still sent output");
+
+    conn.send(json!({ "type": "close", "id": a }));
+    conn.send(json!({ "type": "close", "id": b }));
+    drop(conn);
+    wait_for("the server to leave", || server.try_wait().unwrap().is_some());
+    let _ = std::fs::remove_dir_all(&state);
+}

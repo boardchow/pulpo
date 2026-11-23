@@ -138,7 +138,7 @@ impl Client {
         }
         self.listen.lock().unwrap().push(id);
         let sent = Instant::now();
-        self.send(json!({ "type": "watch", "id": id }));
+        self.send(json!({ "type": "watch", "ids": [id] }));
         loop {
             if let (at, Got::Output(got, bytes)) = self.next(Duration::from_secs(30)).expect("a snapshot")
                 && got == id

@@ -7,6 +7,7 @@ mod git;
 mod input;
 mod keymap;
 mod layout;
+mod panes;
 mod review;
 mod procs;
 mod proto;

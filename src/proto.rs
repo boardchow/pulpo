@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::status::Status;
 
 /// Bumped when a message changes in a way the other side would misread.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 const MAX_FRAME: usize = 64 << 20;
 
 const JSON: u8 = 0;
@@ -30,8 +30,8 @@ pub enum ToServer {
         env: Vec<(String, String)>,
     },
     Resize { id: u32, rows: u16, cols: u16 },
-    /// Only the terminal on screen gets its output sent.
-    Watch { id: Option<u32> },
+    /// Only the terminals on screen get their output sent.
+    Watch { ids: Vec<u32> },
     Seen { id: u32 },
     Close { id: u32 },
     Upgrade { exe: PathBuf },

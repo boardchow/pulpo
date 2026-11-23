@@ -60,10 +60,17 @@ fn framed(name: &str, focused: bool, rest: Vec<Span<'static>>) -> Block<'static>
 }
 
 fn draw_center(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.arrange();
     let focused = app.focus == Focus::Terminal;
-    let block = Block::bordered().border_type(BorderType::Rounded).border_style(border(focused)).style(Style::new().bg(theme::bg()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let split = app.pane_rects(area).len() > 1;
+    let body = if split {
+        Rect { y: area.y + 1, height: area.height.saturating_sub(1), ..area }
+    } else {
+        let block = Block::bordered().border_type(BorderType::Rounded).border_style(border(focused)).style(Style::new().bg(theme::bg()));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        inner
+    };
 
     let ws = app.ws();
     let project = if ws.is_worktree() { format!(" {}", app.project_name(app.current)) } else { String::new() };
@@ -115,28 +122,46 @@ fn draw_center(frame: &mut Frame, app: &mut App, area: Rect) {
     app.areas.tabs.push((None, Rect { x, y: area.y, width: 3, height: 1 }));
     frame.render_widget(Line::from(spans), Rect { x: area.x + 1, y: area.y, width: area.width.saturating_sub(2 + waiting_width), height: 1 });
 
-    app.set_term_size(inner.height, inner.width);
-    app.areas.term = inner;
-    let Some(id) = app.active else {
+    let Some(active) = app.active else {
         if app.opening(&app.ws().root) {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-            frame.render_widget(Line::from(format!("Warming up{}", ".".repeat(1 + (now.as_millis() / 400) as usize % 3))).fg(theme::muted()), inner);
+            frame.render_widget(Line::from(format!("Warming up{}", ".".repeat(1 + (now.as_millis() / 400) as usize % 3))).fg(theme::muted()), body);
             return;
         }
         let p = app.keymap.label();
         let lines = vec![Line::from("No terminal in this workspace").bold(), Line::default(), Line::from(format!("{p} t opens one, or click +")).fg(theme::muted())];
-        let spot = Rect { y: inner.y + inner.height / 3, height: 3.min(inner.height), ..inner };
+        let spot = Rect { y: body.y + body.height / 3, height: 3.min(body.height), ..body };
         frame.render_widget(Paragraph::new(lines).centered(), spot);
         return;
     };
     let prefixed = app.prefixed;
+    for (id, rect) in app.pane_rects(body) {
+        let on = id == active;
+        let inner = if split {
+            let Some(term) = app.terms.iter().find(|t| t.id == id) else { continue };
+            let (icon, color) = state_icon(app.term_state(term));
+            let block = framed(term.label(), on && focused, vec![Span::from(format!("{icon} ")).fg(color)]);
+            let inner = block.inner(rect);
+            frame.render_widget(block, rect);
+            inner
+        } else {
+            rect
+        };
+        if on {
+            app.set_term_size(inner.height, inner.width);
+        }
+        app.areas.panes.push((id, inner));
+        draw_pane(frame, app, id, inner, on && focused && !prefixed);
+    }
+}
+
+fn draw_pane(frame: &mut Frame, app: &mut App, id: usize, inner: Rect, cursor: bool) {
     let Some(term) = app.terms.iter_mut().find(|t| t.id == id) else { return };
     term.resize(inner.height.max(1), inner.width.max(1));
-    if let Some(cursor) = term.render(inner, frame.buffer_mut())
-        && focused
-        && !prefixed
+    if let Some(at) = term.render(inner, frame.buffer_mut())
+        && cursor
     {
-        frame.set_cursor_position(cursor);
+        frame.set_cursor_position(at);
     }
     underline_links(frame.buffer_mut(), inner);
     if let Some(selecting) = app.selecting.as_ref().filter(|s| s.id == id) {
@@ -662,10 +687,17 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
         ),
         (
             "Terminals",
-            vec![(prefixed("t"), "new terminal"), (prefixed("x"), "close the terminal"), (prefixed("[ ]"), "previous, next terminal")]
-                .into_iter()
-                .chain(twice.map(|keys| (keys, "the key itself, to the program")))
-                .collect(),
+            vec![
+                (prefixed("t"), "new terminal"),
+                (prefixed("x"), "close the terminal"),
+                (prefixed("[ ]"), "previous, next terminal"),
+                (prefixed("\\ -"), "split the pane right, down"),
+                (prefixed("← ↑ ↓ →"), "move between panes; more arrows follow for a second"),
+                (prefixed("z"), "zoom the pane, or show them all again"),
+            ]
+            .into_iter()
+            .chain(twice.map(|keys| (keys, "the key itself, to the program")))
+            .collect(),
         ),
         (
             "Review",
