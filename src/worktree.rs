@@ -1010,7 +1010,7 @@ mod tests {
 "#;
 
     #[test]
-    fn guesses_shop() {
+    fn guesses_a_rails_app() {
         let g = guess(RAILS_APP);
         assert_eq!(g.ports, ["DB_PORT", "REDIS_PORT", "APP_PORT", "SIDEKIQ_WEB_PORT"]);
         assert_eq!(g.images, ["app", "sidekiq", "sidekiq-web"]);
