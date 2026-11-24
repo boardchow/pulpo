@@ -110,6 +110,11 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
             let number = if k < 9 { format!(" {}", k + 1) } else { "  ".into() };
             let mut spans = vec![Span::from(number).fg(theme::dim())];
             spans.extend(state_name(app.workspace_state(i), &app.workspaces[i].name, i == app.current));
+            if app.workspaces[i].is_worktree() {
+                let project = app.project_name(i).to_string();
+                let room = (list.width as usize).saturating_sub(spans.iter().map(Span::width).sum::<usize>() + project.chars().count() + 1);
+                spans.extend([Span::from(" ".repeat(room.max(1))), Span::from(project).fg(theme::dim())]);
+            }
             ListItem::new(Line::from(spans))
         })
         .collect();
@@ -408,7 +413,7 @@ fn draw_diff(frame: &mut Frame, app: &mut App, area: Rect) {
             rest.push(Span::from(format!("−{} ", diff.removed)).fg(theme::red()));
             let (approved, all) = changes.progress(&changes.root);
             if all > 0 {
-                rest.push(Span::from(format!("· {approved} of {all} approved ")).fg(if approved == all { theme::green() } else { theme::muted() }));
+                rest.push(Span::from(format!("· {approved} of {all} reviewed ")).fg(if approved == all { theme::green() } else { theme::muted() }));
             }
             path.strip_prefix(&changes.root).unwrap_or(path).display().to_string()
         }
@@ -1055,8 +1060,3 @@ mod tests {
         assert_eq!(text, vec!["Why", "text", "```", "  code", "```"]);
     }
 }
-            if app.workspaces[i].is_worktree() {
-                let project = app.project_name(i).to_string();
-                let room = (list.width as usize).saturating_sub(spans.iter().map(Span::width).sum::<usize>() + project.chars().count() + 1);
-                spans.extend([Span::from(" ".repeat(room.max(1))), Span::from(project).fg(theme::dim())]);
-            }

@@ -462,6 +462,7 @@ impl Changes {
 
     /// Deleting the last comment on a committed file takes the file out of the tree.
     fn relayout(&mut self) {
+        self.recount();
         self.layout(self.selected().map(|r| r.path.clone()));
         self.follow();
         self.refold();
@@ -820,7 +821,7 @@ impl Changes {
     pub fn recount(&mut self) {
         self.counts.clear();
         for (path, hunks) in &self.hunks {
-            let approved = hunks.iter().filter(|h| self.approved.contains(&h.id)).count();
+            let approved = hunks.iter().filter(|h| self.done(path, h)).count();
             for at in path.ancestors().take_while(|a| a.starts_with(&self.root)) {
                 let count = self.counts.entry(at.to_path_buf()).or_default();
                 (count.0, count.1) = (count.0 + approved, count.1 + hunks.len());
