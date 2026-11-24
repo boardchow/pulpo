@@ -33,6 +33,7 @@ pulpo (one binary)
 ├── proto.rs    the frames and messages between the two
 ├── pty.rs      pseudo-terminals with libc: a master fd and a pid, nothing to rebuild
 ├── procs.rs    process trees (`ps`), to hang up what a terminal started
+├── linear.rs   Linear's open issues and the one being read, with a personal API key through curl (⌃b l, full screen)
 ├── worktree.rs the workspaces Pulpo makes: worktree, includes, registry, ports, compose guess and override, setup and removal scripts
 ├── layout.rs   where you were, and what was open, across restarts and reboots
 ├── viewer.rs   Files' read-only view (syntect) with blame, and the diffs the review shows, inline with the words changed marked

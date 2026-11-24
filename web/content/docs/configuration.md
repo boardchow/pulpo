@@ -97,6 +97,8 @@ Pulpo reads these:
 | `CLAUDE_CONFIG_DIR` | Where the Claude Code hooks go, instead of `~/.claude` |
 | `CODEX_HOME` | Where the Codex hooks go, instead of `~/.codex` |
 | `SHELL` | The shell new terminals run, `/bin/zsh` without it |
+| `PULPO_LINEAR_PROMPT` | The prompt `claude` starts with in a workspace made from a Linear issue, `{id}` being its number. `Work on Linear issue {id}` without it |
+| `LINEAR_API_KEY` | The Linear key for :kp[l], instead of the file `linear` in `~/.config/pulpo` |
 
 ## Files Pulpo writes
 

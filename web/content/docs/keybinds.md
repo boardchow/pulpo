@@ -13,6 +13,7 @@ Keys written :kp[w] are the [prefix](/docs/prefix-key), :k[⌃b], then the key. 
 | --- | --- |
 | :kp[w] | The workspace list |
 | :kp[n] | New workspace: pick its repository, then type its name |
+| :kp[l] | Linear, full screen: read the issues, and press :kp[n] to start a workspace on one |
 | :kp[X] | Delete the workspace you're in, after asking. In a project's own folder: hide the project, its folder stays |
 | :kp[1] to :kp[9] | The first to ninth workspace in the list, in its terminal |
 | :kp[⇧↑], :kp[⇧↓] | The previous, next workspace. For a second after, the keys work without the prefix |

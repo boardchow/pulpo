@@ -21,6 +21,12 @@ To use a branch name of your own, for example a ticket's, press :k[tab] after ty
 
 If a branch of that name already has commits of its own, Pulpo refuses: pick another name.
 
+## Start from a Linear issue
+
+Press :kp[l] to read your open Linear issues full screen. Type to search all of Linear, including descriptions and comments, and add `@name`, `#project` or `is:state` to narrow the results. Issues are open ones unless you ask for a state: `@riley is:done` lists what Riley finished. Press :kp[n] on an issue, pick its repository, and Pulpo makes the workspace named after the issue, like `app-52`, on the issue's own branch, and starts `claude` in it with the prompt `Work on Linear issue APP-52`. Set `PULPO_LINEAR_PROMPT` to use another, where `{id}` is the issue's number.
+
+Pulpo only reads Linear, with a personal API key from `LINEAR_API_KEY` or from a file called `linear` in `~/.config/pulpo`. Create one in Linear's settings, under Security.
+
 ## Start an agent
 
 Type your agent's command, like `claude` or `codex`, in the workspace's shell. To run something next to it, like tests or a dev server, press :kp[t] to open another terminal. :kp{k="["} and :kp{k="]"} switch between them.
