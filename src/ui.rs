@@ -1055,3 +1055,8 @@ mod tests {
         assert_eq!(text, vec!["Why", "text", "```", "  code", "```"]);
     }
 }
+            if app.workspaces[i].is_worktree() {
+                let project = app.project_name(i).to_string();
+                let room = (list.width as usize).saturating_sub(spans.iter().map(Span::width).sum::<usize>() + project.chars().count() + 1);
+                spans.extend([Span::from(" ".repeat(room.max(1))), Span::from(project).fg(theme::dim())]);
+            }
