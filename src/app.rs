@@ -16,6 +16,7 @@ use crate::git;
 use crate::input;
 use crate::keymap::{Key, Keymap};
 use crate::layout::{self, Layout};
+use crate::linear::{self, Issue};
 use crate::panes::{self, Dir, Node};
 use crate::proto::{Info, PROTOCOL, ToClient, ToServer};
 use crate::review::{Changes, Comment, Shown};
@@ -32,6 +33,8 @@ const MESSAGE_FOR: Duration = Duration::from_secs(5);
 const UNSAVED: &str = "unsaved changes in the editor: ⌃s saves them, esc twice throws them away";
 const PREFIX_FOR: Duration = Duration::from_secs(3);
 const REPEAT_FOR: Duration = Duration::from_secs(1);
+const DETAIL_AFTER: Duration = Duration::from_millis(250);
+const SEARCH_AFTER: Duration = Duration::from_millis(350);
 const MIN_SPLIT_WIDTH: u16 = 40;
 const MIN_SPLIT_HEIGHT: u16 = 10;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -68,6 +71,85 @@ pub struct Naming {
     pub name: String,
     pub branch: String,
     pub on_branch: bool,
+}
+
+pub struct Issues {
+    pub query: String,
+    pub state: ListState,
+    pub loaded: Option<Result<linear::Loaded, String>>,
+    /// Everyone's issues rather than yours, when nothing is typed.
+    pub everyone: bool,
+    pub reading: bool,
+    pub scroll: usize,
+    pub details: HashMap<String, Result<linear::Detail, String>>,
+    pub fetching: HashSet<String>,
+    resting: Option<(String, Instant)>,
+    /// What Linear's search found for a term, and the term last asked.
+    found: Option<(String, Result<Vec<Issue>, String>)>,
+    asked: Option<String>,
+    typed_at: Instant,
+    /// The workspace it was opened from, whose own issue is shown first.
+    from: String,
+}
+
+impl Issues {
+    pub fn selected(&self) -> Option<&Issue> {
+        self.state.selected().and_then(|i| self.visible().get(i).copied())
+    }
+
+    /// Selects the issue the workspace is named after, widening the filters until it shows.
+    fn show_own(&mut self) {
+        let Some(Ok(loaded)) = &self.loaded else { return };
+        let Some(own) = loaded.issues.iter().find(|i| i.id.to_lowercase() == self.from).filter(|_| self.query.is_empty()) else { return };
+        let everyone = own.assignee != loaded.me;
+        if let Some(row) = loaded.visible("", everyone).iter().position(|i| *i == own) {
+            self.everyone = everyone;
+            self.state.select(Some(row));
+        }
+    }
+
+    /// The selected issue's detail isn't here yet.
+    pub fn loading(&self) -> bool {
+        self.selected().is_some_and(|i| !self.details.contains_key(&i.id))
+    }
+
+    fn parsed(&self) -> linear::Query {
+        linear::Query::parse(&self.query, self.loaded.as_ref().and_then(|l| l.as_ref().ok()).map_or("", |l| l.me.as_str()))
+    }
+
+    /// What Linear is asked for.
+    fn term(&self) -> String {
+        self.parsed().key()
+    }
+
+    pub fn visible(&self) -> Vec<&Issue> {
+        let Some(Ok(loaded)) = &self.loaded else { return Vec::new() };
+        match &self.found {
+            Some((term, Ok(found))) if !term.is_empty() && *term == self.term() => found.iter().collect(),
+            _ => loaded.visible(&self.query, self.everyone),
+        }
+    }
+
+    fn search_due(&self) -> bool {
+        let term = self.term();
+        !term.is_empty() && self.asked.as_deref() != Some(&term)
+    }
+
+    /// What to say beside the search: it is on its way, or it failed.
+    pub fn search_note(&self) -> String {
+        let term = self.term();
+        match &self.found {
+            Some((found, Err(error))) if *found == term && !term.is_empty() => format!("Linear search failed: {error}"),
+            Some((found, Ok(_))) if *found == term => String::new(),
+            _ if term.is_empty() => String::new(),
+            _ => "searching Linear…".into(),
+        }
+    }
+
+    fn step(&mut self, delta: isize) {
+        let last = self.visible().len().saturating_sub(1) as isize;
+        self.state.select(Some((self.state.selected().unwrap_or(0) as isize + delta).clamp(0, last) as usize));
+    }
 }
 
 pub struct Picker {
@@ -128,6 +210,11 @@ pub struct App {
     pub message: Option<String>,
     message_since: Option<(String, Instant)>,
     pub picker: Option<Picker>,
+    pub issues: Option<Issues>,
+    /// The issue the repository being picked is for.
+    pending_issue: Option<Issue>,
+    /// The issue each workspace being made starts its agent on, by folder.
+    starts: HashMap<PathBuf, String>,
     pub naming: Option<Naming>,
     /// Only while Files is open.
     pub search: Option<Search>,
@@ -228,6 +315,9 @@ impl App {
             }),
             message_since: None,
             picker: None,
+            issues: None,
+            pending_issue: None,
+            starts: HashMap::new(),
             naming: None,
             search: None,
             file_input: None,
@@ -420,9 +510,15 @@ impl App {
     }
 
     /// The workspaces Pulpo made, as `reorder` last left them.
+    /// A workspace Pulpo made, or a project's own folder while terminals run there, so they stay reachable.
+    fn is_listed(&self, i: usize) -> bool {
+        let w = &self.workspaces[i];
+        w.is_worktree() || (!self.no_projects && self.terms.iter().any(|t| t.info.cwd == w.root))
+    }
+
     pub fn workspace_order(&self) -> Vec<usize> {
-        let mut all: Vec<usize> = self.order.iter().filter_map(|root| self.workspaces.iter().position(|w| &w.root == root)).collect();
-        let unplaced: Vec<usize> = (0..self.workspaces.len()).filter(|&i| self.workspaces[i].is_worktree() && !all.contains(&i)).collect();
+        let mut all: Vec<usize> = self.order.iter().filter_map(|root| self.workspaces.iter().position(|w| &w.root == root)).filter(|&i| self.is_listed(i)).collect();
+        let unplaced: Vec<usize> = (0..self.workspaces.len()).filter(|&i| self.is_listed(i) && !all.contains(&i)).collect();
         all.extend(unplaced);
         all
     }
@@ -430,7 +526,7 @@ impl App {
     /// A workspace goes up when it starts waiting or working, and stays put when it calms down.
     pub fn reorder(&mut self) {
         let urgency: HashMap<PathBuf, u8> = (0..self.workspaces.len())
-            .filter(|&i| self.workspaces[i].is_worktree())
+            .filter(|&i| self.is_listed(i))
             .map(|i| (self.workspaces[i].root.clone(), self.workspace_state(i).map_or(0, State::urgency)))
             .collect();
         self.order.retain(|root| urgency.contains_key(root));
@@ -964,6 +1060,11 @@ impl App {
         } else if let Some(search) = &mut self.repos {
             search.query.push_str(text.trim());
             search.update(&self.tx);
+        } else if let Some(view) = self.issues.as_mut().filter(|view| !view.reading) {
+            view.query.push_str(text.trim());
+            view.state.select(Some(0));
+            view.typed_at = Instant::now();
+        } else if self.issues.is_some() {
         } else if let Some(picker) = &mut self.picker {
             picker.query.push_str(text.trim());
             picker.state.select(Some(0));
@@ -1009,6 +1110,8 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        self.fetch_resting_issue();
+        self.fetch_search();
         if self.prefixed_at.is_some_and(|at| at.elapsed() >= PREFIX_FOR) {
             self.prefixed = false;
             self.prefixed_at = None;
@@ -1056,7 +1159,7 @@ impl App {
     }
 
     pub fn animating(&self) -> bool {
-        !self.setting_up.is_empty() || !self.copying.is_empty() || !self.spawning.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
+        self.issues.as_ref().is_some_and(|view| view.loading() || view.search_due()) || !self.setting_up.is_empty() || !self.copying.is_empty() || !self.spawning.is_empty() || self.terms.iter().any(|term| self.term_state(term) == State::Running)
     }
 
     fn workspace_of(&self, term: &Term) -> Option<usize> {
@@ -1203,7 +1306,7 @@ impl App {
     }
 
     fn step_workspace(&mut self, delta: isize) {
-        let rows = self.listed();
+        let rows = self.workspace_order();
         let Some(at) = rows.iter().position(|&i| i == self.current) else { return };
         let next = rows[(at as isize + delta).rem_euclid(rows.len() as isize) as usize];
         if next != self.current && self.set_current(next) {
@@ -1224,7 +1327,7 @@ impl App {
     }
 
     fn go_to_workspace(&mut self, n: usize) {
-        match self.listed().get(n) {
+        match self.workspace_order().get(n) {
             Some(&i) if self.set_current(i) => self.set_focus(Focus::Terminal),
             Some(_) => {}
             None => self.message = Some(format!("no workspace {}", n + 1)),
@@ -1335,6 +1438,10 @@ impl App {
             self.step_workspace(delta);
             return false;
         }
+        if self.issues.is_some() {
+            self.issues_key(key);
+            return false;
+        }
         if !self.offline {
             self.message = None;
         }
@@ -1357,6 +1464,20 @@ impl App {
     }
 
     fn command(&mut self, key: Key) -> bool {
+        if self.issues.is_some() {
+            match key.code {
+                KeyCode::Char('n') => {
+                    self.start_from_issue();
+                    return false;
+                }
+                KeyCode::Char('l') => {
+                    self.issues = None;
+                    return false;
+                }
+                KeyCode::Char('?' | 'q' | 'Q') => {}
+                _ => self.issues = None,
+            }
+        }
         if let Some(dir) = arrow(key) {
             self.focus_pane(dir);
             return false;
@@ -1370,6 +1491,7 @@ impl App {
         let files = self.focus == Focus::Files;
         match c {
             'w' => self.open_picker(),
+            'l' => self.open_issues(),
             'f' if files => self.close_files(),
             'f' if self.no_projects => self.open_picker(),
             'f' => self.open_files(),
@@ -1483,16 +1605,10 @@ impl App {
         self.workspaces.iter().find(|r| r.root == w.repo).map_or(&w.name, |r| &r.name)
     }
 
-    pub fn listed(&self) -> Vec<usize> {
-        // A project's own folder only while terminals run there, so they stay reachable.
-        let projects = (0..self.workspaces.len()).filter(|&i| !self.no_projects && !self.workspaces[i].is_worktree() && self.terms.iter().any(|t| t.info.cwd == self.workspaces[i].root));
-        self.workspace_order().into_iter().chain(projects).collect()
-    }
-
     pub fn picks(&self) -> Vec<Pick> {
         let query = self.picker.as_ref().map_or(String::new(), |p| p.query.trim().to_lowercase());
         let shown = |i: &usize| query.is_empty() || [&self.workspaces[*i].name, self.project_name(*i)].iter().any(|n| n.to_lowercase().contains(&query));
-        let mut picks: Vec<Pick> = self.listed().into_iter().filter(shown).map(Pick::Go).collect();
+        let mut picks: Vec<Pick> = self.workspace_order().into_iter().filter(shown).map(Pick::Go).collect();
         picks.push(Pick::New);
         picks
     }
@@ -1996,6 +2112,11 @@ impl App {
     }
 
     fn open_repo_picker(&mut self) {
+        self.open_repo_picker_for(None);
+    }
+
+    fn open_repo_picker_for(&mut self, issue: Option<Issue>) {
+        self.pending_issue = issue;
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         let mut projects: Vec<PathBuf> = project::registered().into_iter().filter(|r| r.is_dir()).collect();
         projects.sort_by_key(|repo| *repo != self.ws().repo);
@@ -2018,7 +2139,10 @@ impl App {
                 let typed = picked.as_ref() == Some(&search.query);
                 if let Some(repo) = picked.and_then(|picked| self.add_repo(&picked, typed)) {
                     self.repos = None;
-                    self.naming = Some(Naming { repo, name: String::new(), branch: String::new(), on_branch: false });
+                    match self.pending_issue.take() {
+                        Some(issue) => self.create_from_issue(repo, issue),
+                        None => self.naming = Some(Naming { repo, name: String::new(), branch: String::new(), on_branch: false }),
+                    }
                 }
             }
             KeyCode::Up => search.step(-1),
@@ -2099,6 +2223,9 @@ impl App {
         }
         if self.repos.is_some() || self.picker.is_some() || self.search.is_some() {
             self.popup_mouse(mouse);
+            return;
+        }
+        if self.issues.is_some() {
             return;
         }
         if self.file_input.is_some() {
@@ -2406,6 +2533,172 @@ impl App {
         }
     }
 
+    fn open_issues(&mut self) {
+        if self.no_projects {
+            return self.open_picker();
+        }
+        let key = linear::api_key();
+        let missing = "no Linear API key: put one in $LINEAR_API_KEY, or in the file linear in ~/.config/pulpo".to_string();
+        let loaded = key.is_none().then_some(Err(missing));
+        let from = self.ws().name.clone();
+        self.issues = Some(Issues {
+            query: String::new(),
+            state: ListState::default().with_selected(Some(0)),
+            loaded,
+            everyone: false,
+            reading: false,
+            scroll: 0,
+            details: HashMap::new(),
+            fetching: HashSet::new(),
+            resting: None,
+            found: None,
+            asked: None,
+            typed_at: Instant::now(),
+            from,
+        });
+        if let Some(key) = key {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(Msg::Issues(linear::fetch(&key)));
+            });
+        }
+    }
+
+    pub fn on_issues(&mut self, loaded: Result<linear::Loaded, String>) {
+        if let Some(view) = &mut self.issues {
+            view.loaded = Some(loaded);
+            view.show_own();
+        }
+    }
+
+    pub fn on_found(&mut self, term: String, found: Result<Vec<Issue>, String>) {
+        if let Some(view) = self.issues.as_mut().filter(|view| view.asked.as_deref() == Some(&term)) {
+            let current = view.term() == term;
+            view.found = Some((term, found));
+            if current {
+                view.state.select(Some(0));
+            }
+        }
+    }
+
+    /// Linear is asked once the typing has paused, not at every letter.
+    fn fetch_search(&mut self) {
+        let Some(view) = &mut self.issues else { return };
+        if !view.search_due() || view.typed_at.elapsed() < SEARCH_AFTER {
+            return;
+        }
+        let query = view.parsed();
+        let term = query.key();
+        view.asked = Some(term.clone());
+        let Some(key) = linear::api_key() else { return };
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Found(term, linear::search(&key, &query)));
+        });
+    }
+
+    pub fn on_issue_detail(&mut self, id: String, detail: Result<linear::Detail, String>) {
+        if let Some(view) = &mut self.issues {
+            view.fetching.remove(&id);
+            view.details.insert(id, detail);
+        }
+    }
+
+    fn read_issue(&mut self) {
+        let Some(view) = &mut self.issues else { return };
+        let Some(id) = view.selected().map(|i| i.id.clone()) else { return };
+        view.reading = true;
+        view.scroll = 0;
+        if !matches!(view.details.get(&id), Some(Ok(_))) {
+            self.fetch_detail(id);
+        }
+    }
+
+    fn fetch_detail(&mut self, id: String) {
+        let Some(key) = linear::api_key() else {
+            if let Some(view) = &mut self.issues {
+                view.details.insert(id, Err("no Linear API key".into()));
+            }
+            return;
+        };
+        if self.issues.as_mut().is_none_or(|view| !view.fetching.insert(id.clone())) {
+            return;
+        }
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::IssueDetail(id.clone(), linear::fetch_detail(&key, &id)));
+        });
+    }
+
+    /// The selected issue is read once the selection has rested a moment, not on every row passed.
+    fn fetch_resting_issue(&mut self) {
+        let Some(view) = &mut self.issues else { return };
+        let Some(id) = view.selected().map(|i| i.id.clone()) else { return };
+        let now = Instant::now();
+        let since = match &view.resting {
+            Some((rested, at)) if *rested == id => *at,
+            _ => {
+                view.resting = Some((id.clone(), now));
+                now
+            }
+        };
+        if since.elapsed() >= DETAIL_AFTER && !view.details.contains_key(&id) {
+            self.fetch_detail(id);
+        }
+    }
+
+    fn start_from_issue(&mut self) {
+        if let Some(issue) = self.issues.as_ref().and_then(|view| view.selected().cloned()) {
+            self.issues = None;
+            self.open_repo_picker_for(Some(issue));
+        }
+    }
+
+    fn issues_key(&mut self, key: KeyEvent) {
+        let Some(view) = &mut self.issues else { return };
+        if view.reading {
+            let page = 20;
+            match key.code {
+                KeyCode::Esc => (view.reading, view.scroll) = (false, 0),
+                KeyCode::Up | KeyCode::Char('k') => view.scroll = view.scroll.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => view.scroll += 1,
+                KeyCode::PageUp | KeyCode::Char('b') => view.scroll = view.scroll.saturating_sub(page),
+                KeyCode::PageDown | KeyCode::Char(' ') => view.scroll += page,
+                KeyCode::Char('g') => view.scroll = 0,
+                KeyCode::Char('o') => {
+                    if let Some(url) = view.selected().map(|i| i.url.clone()).filter(|u| u.starts_with("https://")) {
+                        let _ = std::process::Command::new("open").arg(url).status();
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => self.issues = None,
+            KeyCode::Enter => self.read_issue(),
+            KeyCode::Up => view.step(-1),
+            KeyCode::Down => view.step(1),
+            KeyCode::PageUp => view.step(-10),
+            KeyCode::PageDown => view.step(10),
+            _ => {
+                if input::edit(&mut view.query, key) {
+                    view.state.select(Some(0));
+                    view.typed_at = Instant::now();
+                }
+            }
+        }
+    }
+
+    fn create_from_issue(&mut self, repo: PathBuf, issue: Issue) {
+        let Some(name) = issue.workspace_name() else {
+            self.message = Some(format!("{} isn't an issue number Pulpo can name a workspace after", issue.id));
+            return;
+        };
+        self.starts.insert(worktree::root_of(&repo, &name), issue.id);
+        self.create_workspace(repo, name, Some(issue.branch).filter(|b| !b.is_empty()));
+    }
+
     fn open_project(&mut self, repo: &Path) {
         project::register(repo);
         self.load_workspaces();
@@ -2444,6 +2737,7 @@ impl App {
         let (root, mut notes) = match made {
             Ok(made) => made,
             Err(e) => {
+                self.starts.remove(&worktree::root_of(&copy.0, &copy.1));
                 if new_project {
                     project::unregister(&copy.0);
                 }
@@ -2475,6 +2769,7 @@ impl App {
                 config
             }
             Err(e) => {
+                self.starts.remove(&root);
                 let error = format!("workspace {}: could not read its settings: {e:#}", wt.name);
                 let _ = std::fs::write(&log, format!("{error}\n"));
                 self.message = Some(error);
@@ -2498,12 +2793,16 @@ impl App {
                 });
                 self.message = Some(format!("workspace {} is yours; its setup tab shows the setup", wt.name));
             }
-            Err(e) => self.message = Some(format!("could not set up workspace {}: {e}", wt.name)),
+            Err(e) => {
+                self.starts.remove(&root);
+                self.message = Some(format!("could not set up workspace {}: {e}", wt.name));
+            }
         }
     }
 
     pub fn on_set_up(&mut self, root: PathBuf, log: PathBuf, ok: bool) {
         self.setting_up.remove(&root);
+        let start = self.starts.remove(&root);
         let name = root.file_name().unwrap_or_default().to_string_lossy().into_owned();
         self.message = Some(if ok {
             format!("workspace {name} is ready")
@@ -2518,7 +2817,8 @@ impl App {
             let place = self.place(&root).unwrap_or(name);
             notify(&if ok { format!("{place} is ready") } else { format!("the setup of {place} failed") });
         }
-        let token = self.spawn_in(root, &shell(), &[], false);
+        let agent = start.filter(|_| ok).map(|id| vec!["-l".into(), "-c".into(), linear::start_command(&shell(), &id)]);
+        let token = self.spawn_in(root, &shell(), &agent.unwrap_or_default(), false);
         if ok {
             self.handing_over.insert(token);
         }
@@ -2736,7 +3036,11 @@ fn rise<T: PartialEq>(order: &mut Vec<T>, item: T, urgency: impl Fn(&T) -> u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::{rise, typed_name, workspace_step};
+    use super::{Issues, rise, typed_name, workspace_step};
+    use crate::linear::{self, Issue};
+    use ratatui::widgets::ListState;
+    use std::collections::{HashMap, HashSet};
+    use std::time::Instant;
     use crate::keymap::Key;
 
     #[test]
@@ -2753,6 +3057,74 @@ mod tests {
         assert_eq!(workspace_step(key("shift-down")), Some(1));
         assert_eq!(workspace_step(key("up")), None);
         assert_eq!(workspace_step(key("ctrl-down")), None);
+    }
+
+    #[test]
+    fn shows_the_issue_a_workspace_is_named_after_whoever_has_it() {
+        let issue = |id: &str, assignee: &str| Issue {
+            id: id.into(),
+            title: String::new(),
+            url: String::new(),
+            branch: String::new(),
+            project: String::new(),
+            assignee: assignee.into(),
+            state: String::new(),
+        };
+        let loaded = linear::Loaded::new("Sam".into(), vec![issue("APP-1", "Sam"), issue("WEB-68", "Maria"), issue("WEB-70", "Sam")]);
+        let mut view = Issues {
+            query: String::new(),
+            state: ListState::default().with_selected(Some(0)),
+            loaded: Some(Ok(loaded)),
+            everyone: false,
+            reading: false,
+            scroll: 0,
+            details: HashMap::new(),
+            fetching: HashSet::new(),
+            resting: None,
+            found: None,
+            asked: None,
+            typed_at: Instant::now(),
+            from: "web-68".into(),
+        };
+        view.show_own();
+        assert_eq!((view.everyone, view.selected().map(|i| i.id.as_str())), (true, Some("WEB-68")));
+        view.from = "app-1".into();
+        view.everyone = false;
+        view.show_own();
+        assert_eq!((view.everyone, view.selected().map(|i| i.id.as_str())), (false, Some("APP-1")));
+    }
+
+    #[test]
+    fn shows_what_linear_found_by_description_and_says_when_it_is_still_asking() {
+        let issue = |id: &str, project: &str| Issue {
+            id: id.into(),
+            title: "nothing like the word".into(),
+            url: String::new(),
+            branch: String::new(),
+            project: project.into(),
+            assignee: String::new(),
+            state: String::new(),
+        };
+        let mut view = Issues {
+            query: "gym".into(),
+            state: ListState::default().with_selected(Some(0)),
+            loaded: Some(Ok(linear::Loaded::new("Sam".into(), vec![issue("APP-1", "Web App")]))),
+            everyone: false,
+            reading: false,
+            scroll: 0,
+            details: HashMap::new(),
+            fetching: HashSet::new(),
+            resting: None,
+            found: Some(("gym".into(), Ok(vec![issue("APP-7", "Web App"), issue("APP-8", "Mobile")]))),
+            asked: Some("gym".into()),
+            typed_at: Instant::now(),
+            from: String::new(),
+        };
+        let ids = |view: &Issues| view.visible().iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+        assert_eq!((ids(&view), view.search_note()), (vec!["APP-7".to_string(), "APP-8".to_string()], String::new()));
+        view.query = "gym x".into();
+        assert_eq!(view.search_note(), "searching Linear…");
+        assert!(ids(&view).is_empty(), "the old answer is not shown for another term");
     }
 
     #[test]

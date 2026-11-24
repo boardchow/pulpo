@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::agents::State;
+use crate::linear::{Detail, Issue};
 use crate::app::{App, Areas, FileAsk, Focus, Pick};
 use crate::search::Mode;
 use crate::review::{CURSOR, Shown};
@@ -20,6 +21,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.areas = Areas::default();
     if app.no_projects {
         draw_empty(frame, main);
+    } else if app.issues.is_some() {
+        draw_linear(frame, app, main);
     } else if app.focus == Focus::Files {
         draw_files(frame, app, main);
     } else if app.focus == Focus::Review {
@@ -87,7 +90,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
     if area.width < SIDEBAR_WIDTH + MIN_BESIDE_SIDEBAR {
         return area;
     }
-    let rows = app.listed();
+    let rows = app.workspace_order();
     let [column, rest] = Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)]).areas(area);
     let logo = PULPO.len() as u16 + 1;
     let side = if column.height > 2 * logo + 2 {
@@ -726,6 +729,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
             vec![
                 (prefixed("w"), "go to one: type to filter"),
                 (prefixed("n"), "new workspace: pick its repository, then name it"),
+                (prefixed("l"), "Linear: search issues (@name #project is:state), ⌃b n starts a workspace"),
                 (prefixed("X"), "delete this workspace, or hide this project, after asking"),
                 (prefixed("1-9"), "the first to ninth workspace in the list"),
                 (prefixed("⇧↑ ⇧↓"), "the previous, next one; more follow for a second"),
@@ -807,6 +811,170 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
+fn draw_linear(frame: &mut Frame, app: &mut App, area: Rect) {
+    let Some(view) = &mut app.issues else { return };
+    let [left, right] = Layout::horizontal([Constraint::Percentage(45), Constraint::Min(30)]).areas(area);
+    let hint = if view.reading { " j k scroll · o browser · esc back " } else { " ⏎ scroll it · ⌃b n workspace · esc close " };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(title("Linear", !view.reading, Vec::new()))
+        .title_bottom(Line::from(hint).fg(theme::muted()))
+        .border_style(border(!view.reading))
+        .style(Style::new().bg(theme::bg()));
+    let inner = block.inner(left);
+    frame.render_widget(block, left);
+    let [filters, input, _, list] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    if !view.query.trim().is_empty() {
+        let note = view.search_note();
+        let hint = if note.is_empty() { "@name #project is:state narrow it".to_string() } else { note };
+        let line = Line::from(vec![Span::from("all issues").fg(theme::fg()).bold(), Span::from(format!("   {hint}")).fg(theme::muted())]);
+        frame.render_widget(line, filters);
+    } else if matches!(view.loaded, Some(Ok(_))) {
+        let line = Line::from(vec![
+            Span::from(if view.everyone { "all open issues" } else { "your open issues" }).fg(theme::fg()).bold(),
+            Span::from("   type to search, @name #project is:state narrow it").fg(theme::muted()),
+        ]);
+        frame.render_widget(line, filters);
+    }
+    frame.render_widget(field("", &view.query, "search issues, or @name #project is:state…", !view.reading), input);
+    let visible = view.visible();
+    if visible.is_empty() {
+        let text = match &view.loaded {
+            None => "Loading issues…".to_string(),
+            Some(Err(error)) => error.clone(),
+            Some(Ok(_)) => "No issue matches".to_string(),
+        };
+        let color = if matches!(view.loaded, Some(Err(_))) { theme::yellow() } else { theme::muted() };
+        frame.render_widget(Paragraph::new(text).fg(color).wrap(ratatui::widgets::Wrap { trim: true }), list);
+    } else {
+        let id_width = visible.iter().map(|i| i.id.chars().count()).max().unwrap_or(0);
+        let project_width = if list.width >= 64 { visible.iter().map(|i| i.project.chars().count()).max().unwrap_or(0).min(16) } else { 0 };
+        let title_width = (list.width as usize).saturating_sub(id_width + project_width + 4 + usize::from(project_width > 0) * 2).max(8);
+        let clip = |text: &str, width: usize| -> String {
+            if text.chars().count() <= width { format!("{text:<width$}") } else { format!("{}…", text.chars().take(width.saturating_sub(1)).collect::<String>()) }
+        };
+        let items: Vec<ListItem> = visible
+            .iter()
+            .map(|i| {
+                let mut spans = vec![Span::from(format!("{:<id_width$}", i.id)).fg(theme::blue()), Span::from("  "), Span::from(clip(&i.title, title_width)).fg(theme::fg())];
+                if project_width > 0 {
+                    spans.extend([Span::from("  "), Span::from(clip(&i.project, project_width)).fg(theme::dim())]);
+                }
+                ListItem::new(Line::from(spans))
+            })
+            .collect();
+        frame.render_stateful_widget(List::new(items).highlight_style(highlight(!view.reading)), list, &mut view.state);
+    }
+
+    let selected = view.selected().cloned();
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(title(&selected.as_ref().map_or(String::new(), |i| i.id.clone()), view.reading, Vec::new()))
+        .border_style(border(view.reading))
+        .style(Style::new().bg(theme::bg()));
+    let inner = block.inner(right).inner(ratatui::layout::Margin::new(1, 0));
+    frame.render_widget(block, right);
+    let Some(issue) = selected else { return };
+    let rows = wrap_rows(issue_lines(&issue, view.details.get(&issue.id), view.fetching.contains(&issue.id)), inner.width.max(1) as usize);
+    view.scroll = view.scroll.min(rows.len().saturating_sub(inner.height as usize));
+    frame.render_widget(Paragraph::new(rows).scroll((view.scroll as u16, 0)), inner);
+}
+
+fn issue_lines(issue: &Issue, detail: Option<&Result<Detail, String>>, loading: bool) -> Vec<Line<'static>> {
+    let muted = |text: String| Line::from(text).fg(theme::muted());
+    let or = |text: &str, none: &str| if text.is_empty() { none.to_string() } else { text.to_string() };
+    let mut lines = vec![
+        Line::from(issue.title.clone()).fg(theme::fg()).bold(),
+        muted(format!("{} · {} · {}", or(&issue.state, "no state"), or(&issue.assignee, "unassigned"), or(&issue.project, "no project"))),
+        muted(format!("branch {}", issue.branch)),
+        Line::default(),
+    ];
+    match detail {
+        None if loading => lines.push(muted("Loading…".into())),
+        None => {}
+        Some(Err(error)) => lines.push(Line::from(error.clone()).fg(theme::yellow())),
+        Some(Ok(d)) => {
+            let facts: Vec<String> = [
+                Some(d.priority.clone()).filter(|p| !p.is_empty()).map(|p| format!("priority {p}")),
+                d.estimate.map(|e| format!("estimate {e}")),
+                Some(d.cycle.clone()).filter(|c| !c.is_empty()).map(|c| format!("cycle {c}")),
+                Some(d.labels.join(", ")).filter(|l| !l.is_empty()).map(|l| format!("labels {l}")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            lines.extend(facts.into_iter().map(muted));
+            if !d.parent.is_empty() {
+                lines.push(muted(format!("parent {}", d.parent)));
+            }
+            for (heading, items) in [("Sub-issues", &d.children), ("Linked", &d.attachments)] {
+                if !items.is_empty() {
+                    lines.extend([Line::default(), Line::from(heading).fg(theme::blue()).bold()]);
+                    lines.extend(items.iter().map(|item| Line::from(format!("  {item}")).fg(theme::fg())));
+                }
+            }
+            lines.extend([Line::default(), Line::from("Description").fg(theme::blue()).bold()]);
+            lines.extend(if d.description.is_empty() { vec![muted("None".into())] } else { markdown(&d.description) });
+            lines.extend([Line::default(), Line::from(format!("Comments ({})", d.comments.len())).fg(theme::blue()).bold()]);
+            for comment in &d.comments {
+                lines.push(Line::from(vec![Span::from(or(&comment.author, "someone")).fg(theme::fg()).bold(), Span::from(format!(" · {}", comment.day)).fg(theme::muted())]));
+                lines.extend(markdown(&comment.body));
+                lines.push(Line::default());
+            }
+        }
+    }
+    lines
+}
+
+/// Lines broken to `width` columns, at spaces where there are some, so their number is known.
+fn wrap_rows(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    let cols = |text: &str| Span::from(text.to_string()).width();
+    let mut rows = Vec::new();
+    for line in lines {
+        if line.width() <= width {
+            rows.push(line);
+            continue;
+        }
+        let style = line.spans.first().map_or(line.style, |span| line.style.patch(span.style));
+        let (mut row, mut used) = (String::new(), 0);
+        for word in line.to_string().split_inclusive(' ') {
+            if used > 0 && used + cols(word) > width {
+                rows.push(Line::from(std::mem::take(&mut row)).style(style));
+                used = 0;
+            }
+            for c in word.chars() {
+                let wide = cols(&c.to_string());
+                if used > 0 && used + wide > width {
+                    rows.push(Line::from(std::mem::take(&mut row)).style(style));
+                    used = 0;
+                }
+                row.push(c);
+                used += wide;
+            }
+        }
+        rows.push(Line::from(row).style(style));
+    }
+    rows
+}
+
+fn markdown(text: &str) -> Vec<Line<'static>> {
+    let mut code = false;
+    text.lines()
+        .map(|line| {
+            if line.trim_start().starts_with("```") {
+                code = !code;
+                Line::from(line.to_string()).fg(theme::dim())
+            } else if code {
+                Line::from(format!("  {line}")).fg(theme::muted())
+            } else if line.starts_with('#') {
+                Line::from(line.trim_start_matches('#').trim().to_string()).fg(theme::blue()).bold()
+            } else {
+                Line::from(line.to_string()).fg(theme::fg())
+            }
+        })
+        .collect()
+}
+
 fn draw_repos(frame: &mut Frame, app: &mut App, area: Rect) {
     let Some(search) = &mut app.repos else { return };
     let hint = if search.busy { " looking for repositories… " } else { " ⏎ pick it · esc close " };
@@ -861,12 +1029,28 @@ fn kind_color(kind: char) -> Color {
 
 #[cfg(test)]
 mod tests {
-    use super::wrapped_lines;
+    use super::{markdown, wrap_rows, wrapped_lines};
+    use ratatui::text::Line;
 
     #[test]
     fn counts_lines_wrapped_by_words() {
         assert_eq!(wrapped_lines("delete it?", 20), 1);
         assert_eq!(wrapped_lines("aaaa bbbb cccc", 9), 2);
         assert_eq!(wrapped_lines("aaaa bbbb cccc", 8), 3);
+    }
+
+    #[test]
+    fn breaks_lines_at_spaces_and_inside_long_words() {
+        let rows = |text: &str, width| wrap_rows(vec![Line::from(text.to_string())], width).iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        assert_eq!(rows("aaaa bbbb cccc", 9), vec!["aaaa ", "bbbb cccc"]);
+        assert_eq!(rows("https://example.com/long", 10), vec!["https://ex", "ample.com/", "long"]);
+        assert_eq!(rows("short", 10), vec!["short"]);
+    }
+
+    #[test]
+    fn styles_headings_and_fenced_code() {
+        let lines = markdown("# Why\ntext\n```\ncode\n```");
+        let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        assert_eq!(text, vec!["Why", "text", "```", "  code", "```"]);
     }
 }

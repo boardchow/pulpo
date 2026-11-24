@@ -1,11 +1,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn registry_path() -> PathBuf {
+pub fn config_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
-    base.join("pulpo").join("projects")
+    base.join("pulpo")
+}
+
+fn registry_path() -> PathBuf {
+    config_dir().join("projects")
 }
 
 pub fn registered() -> Vec<PathBuf> {

@@ -7,6 +7,7 @@ mod git;
 mod input;
 mod keymap;
 mod layout;
+mod linear;
 mod panes;
 mod review;
 mod procs;
@@ -81,6 +82,9 @@ pub enum Msg {
     Viewed(Box<viewer::Loaded>),
     Blamed(PathBuf, viewer::Stamp, Vec<String>),
     Release(String),
+    Issues(Result<linear::Loaded, String>),
+    IssueDetail(String, Result<linear::Detail, String>),
+    Found(String, Result<Vec<linear::Issue>, String>),
 }
 
 fn main() -> Result<()> {
@@ -241,6 +245,9 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, rx: &Receiver<Msg>)
                 Msg::Viewed(loaded) => app.on_viewed(*loaded),
                 Msg::Blamed(path, stamp, blame) => app.viewer.on_blame(path, stamp, blame),
                 Msg::Release(version) => app.release = Some(version),
+                Msg::Issues(issues) => app.on_issues(issues),
+                Msg::IssueDetail(id, detail) => app.on_issue_detail(id, detail),
+                Msg::Found(term, found) => app.on_found(term, found),
             }
             app.settle();
         }
