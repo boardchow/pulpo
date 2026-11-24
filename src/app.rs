@@ -668,7 +668,8 @@ impl App {
 
     /// The one on screen first.
     fn agent_term(&self) -> Option<usize> {
-        let agent = |t: &Term| t.info.running.is_some() && self.agents.session_for_tab(&t.info.tag).is_some();
+        // An agent started as the terminal's own command shares the shell's process group, so `running` can't tell.
+        let agent = |t: &Term| self.agents.session_for_tab(&t.info.tag).is_some();
         let terms = self.workspace_terms();
         let on_screen = terms.iter().map(|&t| &self.terms[t]).find(|t| Some(t.id) == self.active);
         on_screen.filter(|t| agent(t)).or_else(|| terms.iter().map(|&t| &self.terms[t]).find(|t| agent(t))).map(|t| t.id)
@@ -2174,9 +2175,8 @@ impl App {
             KeyCode::PageUp => changes.page(false),
             KeyCode::Char(c @ ('n' | 'p')) if self.reading => self.message = changes.next_change(c == 'n', false),
             KeyCode::Char('a') if self.reading => {
-                let left = changes.left();
                 self.message = changes.approve();
-                if changes.left() < left {
+                if changes.left() == 0 {
                     self.finish_review();
                 }
             }
