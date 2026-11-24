@@ -186,6 +186,7 @@ fn draw_badges(frame: &mut Frame, app: &mut App, area: Rect) {
         [i] => format!(" ◆ {} waiting ", app.workspaces[i].name),
         _ => format!(" ◆ {} waiting ", waiting.len()),
     };
+    let waiting = if app.areas.sidebar.is_empty() { waiting } else { String::new() };
     let left = app.changes.as_ref().map_or(0, |c| c.left());
     let to_review = if left > 0 { format!(" {left} to review ") } else { String::new() };
     let to_review_width = to_review.chars().count() as u16;
