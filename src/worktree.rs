@@ -1282,7 +1282,7 @@ mod tests {
         assert_eq!(remote_host("ssh://git@git.example.com:22/o/r").as_deref(), Some("git.example.com"));
         assert_eq!(remote_host("/tmp/origin.git"), None);
         assert_eq!(remote_host("origin.git"), None);
-        assert_eq!(branch_name(Path::new("/nowhere"), "fix", "Alex/"), "Alex/fix");
+        assert_eq!(branch_name(Path::new("/nowhere"), "fix", "Valentin/"), "Valentin/fix");
         assert_ne!(override_path(Path::new("/a/app"), "app-x"), override_path(Path::new("/b/app"), "app-x"));
     }
 
